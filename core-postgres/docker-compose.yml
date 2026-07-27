@@ -31,10 +31,13 @@ services:
   pgbouncer:
     image: edoburu/pgbouncer:v1.25.2-p0
     container_name: pgbouncer
+    ports:
+      - "127.0.0.1:6432:5432"
     environment:
       DB_HOST: core-postgres
       DB_USER: postgres
       DB_PASSWORD: ${MASTER_DB_PASSWORD}
+      AUTH_TYPE: scram-sha-256
       POOL_MODE: transaction
       MAX_CLIENT_CONN: 1000
     depends_on:

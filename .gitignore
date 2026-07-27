@@ -1,56 +1,10 @@
-# --- Secrets: NIEMALS committen, egal wo im Baum ---
 .env
-.env.*
-!.env.example
-*.pem
-*.key
-*.crt
-!provisioning-agent/src/**/*.key.ts
-
-# --- SSH / Deploy-Keys ---
-.ssh/
-id_rsa*
-id_ed25519*
-github_deploy*
-
-# --- Vom Provisioning Agent generierte Kunden-Configs (enthalten echte Secrets!) ---
-# siehe provisioning-agent-demo-setup.md § 8/9 — JWT-Secret & Authenticator-Passwort
-# werden direkt ins Compose-File des Kunden eingesetzt.
-kunden-instances/*
-!kunden-instances/.gitkeep
-
-# --- Traefik: TLS-Zertifikate + generierte Custom-Domain-Router ---
-traefik/letsencrypt/
-traefik/dynamic/*
-!traefik/dynamic/.gitkeep
-
-# --- Build-/Deploy-Artefakte (geklonter Kundencode, gebaute Images) ---
-deployments/builds/*
-!deployments/builds/.gitkeep
-deployments/apps/*
-!deployments/apps/.gitkeep
-
-# --- Backups (können Kunden-DB-Dumps enthalten) ---
-backups/files/*
-!backups/files/.gitkeep
-backups/rclone.conf
-
-# --- Docker-Volume-Daten (falls versehentlich im Baum, sollten eigentlich named volumes sein) ---
-core-postgres/pgdata/
-minio/minio-data/
-monitoring/uptime-kuma/uptime-kuma-data/
-
-# --- Node / Build ---
+*/.env
+**/.env
 node_modules/
 dist/
-build/
 .next/
-*.tsbuildinfo
-npm-debug.log*
-
-# --- Redundante Staging-Kopie (bereits in provisioning-agent/ + dashboard/ gemergt) ---
-deployment-engine/
-
-# --- OS / Editor ---
-.DS_Store
-*.swp
+backups/files/*
+backups/rclone.conf
+core-postgres/init-scripts/auth-schema.sql
+kunden-instances/*/docker-compose.yml
