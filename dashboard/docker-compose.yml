@@ -1,0 +1,16 @@
+services:
+  dashboard:
+    build: .
+    container_name: dashboard
+    environment:
+      PROVISIONING_AGENT_URL: http://provisioning-agent:3001
+      PROVISIONING_AGENT_SECRET: ${PROVISIONING_AGENT_SECRET}
+      DATABASE_URL: postgres://postgres:${MASTER_DB_PASSWORD}@core-postgres:5432/admin_dashboard
+    ports:
+      - "3000:3000"
+    networks:
+      - traefik-net
+    restart: always
+networks:
+  traefik-net:
+    external: true

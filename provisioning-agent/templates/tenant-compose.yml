@@ -1,0 +1,32 @@
+services:
+  api:
+    image: postgrest/postgrest:v14.15
+    container_name: api-${SLUG}
+    environment:
+      PGRST_DB_URI: "postgres://authenticator:${AUTH_PW}@core-postgres:5432/kunde_${SLUG}"
+      PGRST_DB_SCHEMA: "public"
+      PGRST_DB_ANON_ROLE: "anon"
+      PGRST_JWT_SECRET: "${JWT_SECRET}"
+    networks:
+      - traefik-net
+    restart: always
+
+  auth:
+    image: supabase/gotrue:v2.193.1
+    container_name: auth-${SLUG}
+    environment:
+      GOTRUE_JWT_SECRET: "${JWT_SECRET}"
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: "postgres://authenticator:${AUTH_PW}@core-postgres:5432/kunde_${SLUG}?search_path=auth"
+      GOTRUE_SITE_URL: "https://app.${SLUG}.vps.local"
+      GOTRUE_API_HOST: "0.0.0.0"
+      API_EXTERNAL_URL: "https://app.${SLUG}.vps.local"
+      GOTRUE_MAILER_AUTOCONFIRM: "true"
+      GOTRUE_DISABLE_SIGNUP: "false"
+    networks:
+      - traefik-net
+    restart: always
+
+networks:
+  traefik-net:
+    external: true

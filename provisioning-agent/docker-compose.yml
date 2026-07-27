@@ -1,0 +1,19 @@
+services:
+  provisioning-agent:
+    build: .
+    container_name: provisioning-agent
+    environment:
+      PROVISIONING_AGENT_SECRET: ${PROVISIONING_AGENT_SECRET}
+      MASTER_DB_PASSWORD: ${MASTER_DB_PASSWORD}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      PGBOUNCER_HOST: core-postgres
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /opt/multitenant-platform:/opt/multitenant-platform
+    networks:
+      - traefik-net
+    restart: always
+networks:
+  traefik-net:
+    external: true

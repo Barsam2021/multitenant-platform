@@ -1,0 +1,29 @@
+services:
+  uptime-kuma:
+    image: louislam/uptime-kuma:2.4.0
+    container_name: uptime-kuma
+    volumes:
+      - uptime-kuma-data:/app/data
+    networks:
+      - traefik-net
+    mem_limit: 128m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "extra/healthcheck.js"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.uptime.rule=Host(`status-vps.meine-domain.com`)"
+      - "traefik.http.routers.uptime.entrypoints=websecure"
+      - "traefik.http.routers.uptime.tls.certresolver=myresolver"
+      - "traefik.http.services.uptime.loadbalancer.server.port=3001"
+
+volumes:
+  uptime-kuma-data:
+
+networks:
+  traefik-net:
+    external: true
