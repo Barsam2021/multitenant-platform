@@ -1,16 +1,30 @@
 services:
   dashboard:
     build: .
-    container_name: dashboard
-    environment:
-      PROVISIONING_AGENT_URL: http://provisioning-agent:3001
-      PROVISIONING_AGENT_SECRET: ${PROVISIONING_AGENT_SECRET}
-      DATABASE_URL: postgres://postgres:${MASTER_DB_PASSWORD}@core-postgres:5432/admin_dashboard
+    container_name: admin-dashboard
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
+    environment:
+      HOSTNAME: 0.0.0.0
+      PORT: 3000
+      DATABASE_URL: postgres://postgres:${MASTER_DB_PASSWORD}@pgbouncer:5432/admin_dashboard
+      MASTER_DB_PASSWORD: ${MASTER_DB_PASSWORD}
+      PGBOUNCER_HOST: pgbouncer
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH}
+      AUTH_SECRET: ${NEXTAUTH_SECRET}
+      AUTH_URL: ${NEXTAUTH_URL}
+      PROVISIONING_AGENT_URL: ${PROVISIONING_AGENT_URL}
+      PROVISIONING_AGENT_SECRET: ${PROVISIONING_AGENT_SECRET}
+    mem_limit: 512m
+    cpus: 1
     networks:
       - traefik-net
     restart: always
+    # KEINE Traefik-Labels -> nur über Cloudflare Tunnel erreichbar (siehe
+    # 02_vps_bootstrap_guide.md § 5.5). cloudflared muss admin.vps.meine-domain.com
+    # auf http://admin-dashboard:3000 routen (Ingress-Rule im Zero-Trust-Dashboard).
+
 networks:
   traefik-net:
     external: true

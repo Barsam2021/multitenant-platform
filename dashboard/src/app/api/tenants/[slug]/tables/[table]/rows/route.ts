@@ -1,0 +1,54 @@
+import { NextResponse } from "next/server";
+import { getTenantBySlug } from "@/lib/adminDb";
+import { getRows, insertRow } from "@/lib/tenantDb";
+
+const TABLE_NAME_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+export async function GET(
+  req: Request,
+  { params }: { params: Promise<{ slug: string; table: string }> }
+) {
+  const { slug, table } = await params;
+  if (!TABLE_NAME_RE.test(table)) {
+    return NextResponse.json({ error: "invalid table name" }, { status: 400 });
+  }
+  const tenant = await getTenantBySlug(slug);
+  if (!tenant) {
+    return NextResponse.json({ error: "tenant not found" }, { status: 404 });
+  }
+
+  const url = new URL(req.url);
+  const limit = Math.min(Number(url.searchParams.get("limit") ?? 50), 500);
+  const offset = Math.max(Number(url.searchParams.get("offset") ?? 0), 0);
+
+  try {
+    const { rows, columns } = await getRows(tenant.db_name, table, limit, offset);
+    return NextResponse.json({ rows, columns });
+  } catch (err) {
+    console.error("Failed to fetch rows:", (err as Error).message);
+    return NextResponse.json({ error: "internal error" }, { status: 500 });
+  }
+}
+
+export async function POST(
+  req: Request,
+  { params }: { params: Promise<{ slug: string; table: string }> }
+) {
+  const { slug, table } = await params;
+  if (!TABLE_NAME_RE.test(table)) {
+    return NextResponse.json({ error: "invalid table name" }, { status: 400 });
+  }
+  const tenant = await getTenantBySlug(slug);
+  if (!tenant) {
+    return NextResponse.json({ error: "tenant not found" }, { status: 404 });
+  }
+
+  const values = await req.json();
+  try {
+    const row = await insertRow(tenant.db_name, table, values);
+    return NextResponse.json({ row }, { status: 201 });
+  } catch (err) {
+    console.error("Failed to insert row:", (err as Error).message);
+    return NextResponse.json({ error: (err as Error).message }, { status: 400 });
+  }
+}
