@@ -9,6 +9,7 @@ import { projectsRouter } from './routes/projects';
 import { deploymentsRouter } from './routes/deployments';
 import { domainsRouter } from './routes/domains';
 import { webhooksRouter } from './routes/webhooks';
+import { encrypt } from './lib/crypto';
 
 const execFileP = promisify(execFile);
 const app = express();
@@ -28,7 +29,8 @@ app.use((req, res, next) => {
 });
 
 app.post('/tenants', async (req, res) => {
-  const { tenantSlug } = req.body;
+  const { tenantSlug, tariff } = req.body;
+  const tenantTariff = ['starter','business','premium'].includes(tariff) ? tariff : 'starter';
 
   if (!tenantSlug || !/^[a-z0-9-]+$/.test(tenantSlug)) {
     return res.status(400).json({ error: 'invalid slug' });
@@ -77,6 +79,25 @@ app.post('/tenants', async (req, res) => {
       if (!e.message.includes('already own it')) throw e;
     }
 
+    const minioAccessKey = crypto.randomBytes(16).toString('hex');
+    const minioSecretKey = crypto.randomBytes(24).toString('hex');
+    await execFileP('mc', ['admin', 'user', 'add', 'localminio', minioAccessKey, minioSecretKey]);
+    const policyDoc = JSON.stringify({
+      Version: '2012-10-17',
+      Statement: [{
+        Effect: 'Allow',
+        Action: ['s3:GetObject', 's3:PutObject', 's3:DeleteObject', 's3:ListBucket'],
+        Resource: [
+          `arn:aws:s3:::kunde-${tenantSlug}-storage`,
+          `arn:aws:s3:::kunde-${tenantSlug}-storage/*`,
+        ],
+      }],
+    });
+    const policyPath = `/tmp/policy-${tenantSlug}.json`;
+    await writeFile(policyPath, policyDoc);
+    await execFileP('mc', ['admin', 'policy', 'create', 'localminio', `kunde-${tenantSlug}-policy`, policyPath]);
+    await execFileP('mc', ['admin', 'policy', 'attach', 'localminio', `kunde-${tenantSlug}-policy`, '--user', minioAccessKey]);
+
     await execFileP('docker', ['compose', '-f', `${tenantDir}/docker-compose.yml`, 'up', '-d', 'api']);
 
     const admin = new Client({
@@ -84,8 +105,8 @@ app.post('/tenants', async (req, res) => {
     });
     await admin.connect();
     await admin.query(
-      'INSERT INTO kunden (slug, db_name, gotrue_jwt_secret, authenticator_password) VALUES ($1, $2, $3, $4)',
-      [tenantSlug, dbName, jwtSecret, authenticatorPw]
+      'INSERT INTO kunden (slug, db_name, tariff, gotrue_jwt_secret, authenticator_password, minio_access_key, minio_secret_key_encrypted) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+      [tenantSlug, dbName, tenantTariff, jwtSecret, authenticatorPw, minioAccessKey, encrypt(minioSecretKey)]
     );
     await admin.end();
 

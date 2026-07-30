@@ -8,3 +8,7 @@ backups/files/*
 backups/rclone.conf
 core-postgres/init-scripts/auth-schema.sql
 kunden-instances/*/docker-compose.yml
+deployments/builds/*
+!deployments/builds/.gitkeep
+deployments/apps/*
+!deployments/apps/.gitkeep
