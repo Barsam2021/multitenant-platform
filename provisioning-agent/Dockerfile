@@ -1,5 +1,5 @@
 FROM node:20-alpine
-RUN apk add --no-cache docker-cli docker-cli-compose curl bash git
+RUN apk add --no-cache docker-cli docker-cli-compose docker-cli-buildx curl bash git
 RUN curl -sSL https://dl.min.io/client/mc/release/linux-amd64/mc -o /usr/local/bin/mc \
     && chmod +x /usr/local/bin/mc
 
