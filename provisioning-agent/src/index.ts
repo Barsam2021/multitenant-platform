@@ -130,6 +130,66 @@ app.post('/tenants', async (req, res) => {
   }
 });
 
+
+app.delete('/tenants/:slug', async (req, res) => {
+  const { slug } = req.params;
+  if (!slug || !/^[a-z0-9-]+$/.test(slug)) {
+    return res.status(400).json({ error: 'invalid slug' });
+  }
+  const dbName = `kunde_${slug}`;
+  const tenantDir = `/opt/multitenant-platform/kunden-instances/${slug}`;
+
+  try {
+    try {
+      await execFileP('docker', ['compose', '-f', `${tenantDir}/docker-compose.yml`, 'down']);
+    } catch (e: any) {
+      console.error('Container stop failed (continuing):', e.message);
+    }
+
+    const master = new Client({
+      connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/postgres`,
+    });
+    await master.connect();
+    await master.query('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1', [dbName]);
+    await master.query(format('DROP DATABASE IF EXISTS %I;', dbName));
+    await master.end();
+
+    try {
+      await execFileP('mc', ['rb', '--force', `localminio/kunde-${slug}-storage`]);
+    } catch (e: any) {
+      console.error('MinIO bucket removal failed (continuing):', e.message);
+    }
+
+    const admin2 = new Client({
+      connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
+    });
+    await admin2.connect();
+    const { rows } = await admin2.query('SELECT minio_access_key FROM kunden WHERE slug = $1', [slug]);
+    if (rows[0]?.minio_access_key) {
+      try {
+        await execFileP('mc', ['admin', 'user', 'remove', 'localminio', rows[0].minio_access_key]);
+      } catch (e: any) {
+        console.error('MinIO user removal failed (continuing):', e.message);
+      }
+    }
+    try {
+      await execFileP('mc', ['admin', 'policy', 'remove', 'localminio', `kunde-${slug}-policy`]);
+    } catch (e: any) {
+      console.error('MinIO policy removal failed (continuing):', e.message);
+    }
+
+    await execFileP('rm', ['-rf', tenantDir]);
+
+    await admin2.query('DELETE FROM kunden WHERE slug = $1', [slug]);
+    await admin2.end();
+
+    res.json({ status: 'ok', slug });
+  } catch (err: any) {
+    console.error('Tenant deletion failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.use(projectsRouter);
 app.use(deploymentsRouter);
 app.use(domainsRouter);
