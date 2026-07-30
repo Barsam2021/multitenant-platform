@@ -43,10 +43,10 @@ Deutlich weiter als gedacht: Provisioning Agent hat eine **vollständige Deploym
 ---
 
 ## Phase 2 — Dashboard-UI für das, was der Agent schon kann (3–4 Tage)
-- [ ] `/dashboard/database`: "Tenant erstellen"-Button + Formular (`POST /tenants` über `/api/provision-tenant`) + "Löschen"-Aktion
-- [ ] `/dashboard/hosting`: Projekt-Liste, "New Project"-Wizard (ohne GitHub-Repo-Picker erstmal), Deployment-Historie, Rollback-Button, Live-Build-Logs via Polling
-- [ ] Env-Var-Editor pro Projekt
-- [ ] Domain-UI
+- [X] `/dashboard/database`: "Tenant erstellen"-Button + Formular (`POST /tenants` über `/api/provision-tenant`) + "Löschen"-Aktion
+- [X] `/dashboard/hosting`: Projekt-Liste, "New Project"-Wizard (ohne GitHub-Repo-Picker erstmal), Deployment-Historie, Rollback-Button, Live-Build-Logs via Polling
+- [X] Env-Var-Editor pro Projekt
+- [X] Domain-UI
 
 ---
 
