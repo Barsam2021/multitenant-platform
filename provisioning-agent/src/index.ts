@@ -194,6 +194,28 @@ app.use(projectsRouter);
 app.use(deploymentsRouter);
 app.use(domainsRouter);
 
+
+app.get('/stats', async (_req, res) => {
+  try {
+    const { stdout } = await execFileP('docker', ['stats', '--no-stream', '--format', '{{json .}}']);
+    const containers = stdout.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+
+    const master = new Client({
+      connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/postgres`,
+    });
+    await master.connect();
+    const { rows: dbConnections } = await master.query(
+      "SELECT datname, count(*) AS connections FROM pg_stat_activity WHERE datname LIKE 'kunde_%' GROUP BY datname"
+    );
+    await master.end();
+
+    res.json({ containers, dbConnections });
+  } catch (err: any) {
+    console.error('Stats fetch failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
 app.listen(3001, () => console.log('Provisioning Agent (mit Deployment Engine) listening on :3001'));
