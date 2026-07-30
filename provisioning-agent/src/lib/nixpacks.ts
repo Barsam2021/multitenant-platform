@@ -27,6 +27,10 @@ export async function nixpacksBuild(
     const { stdout, stderr } = await execFileP('nixpacks', args, {
       maxBuffer: 1024 * 1024 * 32, // 32MB — Build-Logs können lang werden
       timeout: 10 * 60 * 1000, // 10 Minuten Hard-Timeout pro Build
+      // BuildKit braucht das buildx-Plugin, das im Agent-Image (Alpine, docker-cli
+      // ohne docker-cli-buildx) nicht vorhanden ist ("BuildKit is enabled but the
+      // buildx component is missing"). Legacy-Builder funktioniert ohne Zusatzpaket.
+      env: { ...process.env, DOCKER_BUILDKIT: '0' },
     });
     return { imageTag, log: maskSecrets(stdout + '\n' + stderr) };
   } catch (err: any) {
