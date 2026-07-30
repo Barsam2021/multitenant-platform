@@ -25,7 +25,7 @@ export default function TenantTablesPage({
   }, [slug]);
 
   return (
-    <div className="content">
+    <div>
       <div className="topbar" style={{ padding: 0, border: "none", marginBottom: 18 }}>
         <h2 style={{ margin: 0, fontSize: 16 }}>Tabellen</h2>
         <span className="conn-chip">
@@ -44,7 +44,7 @@ export default function TenantTablesPage({
         {tables?.map((t) => (
           <Link
             key={t.name}
-            href={`/dashboard/database/${slug}/${t.name}`}
+            href={`/dashboard/projects/${slug}/tables/${t.name}`}
             className="card"
           >
             <div className="card-title">{t.name}</div>

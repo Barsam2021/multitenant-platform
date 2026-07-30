@@ -44,6 +44,8 @@ services:
       ENCRYPTION_MASTER_KEY: ${ENCRYPTION_MASTER_KEY}
       PGBOUNCER_HOST: core-postgres
       PLATFORM_DOMAIN: ${PLATFORM_DOMAIN}
+      WEBHOOK_PUBLIC_URL: ${WEBHOOK_PUBLIC_URL}
+      GITHUB_PAT: ${GITHUB_PAT}
       STARTER_POSTGREST_MEM: ${STARTER_POSTGREST_MEM}
       STARTER_POSTGREST_CPUS: ${STARTER_POSTGREST_CPUS}
       STARTER_GOTRUE_MEM: ${STARTER_GOTRUE_MEM}
@@ -63,6 +65,14 @@ services:
     networks:
       - traefik-net
     restart: always
+    labels:
+      - "traefik.enable=true"
+      # NUR /webhooks/* öffentlich — alle anderen Pfade brauchen weiterhin X-Agent-Secret
+      # und sind über diesen Router technisch zwar erreichbar, aber ohne Secret 401.
+      - "traefik.http.routers.agent-webhooks.rule=Host(`webhooks.${PLATFORM_DOMAIN:-up2-web.com}`) && PathPrefix(`/webhooks`)"
+      - "traefik.http.routers.agent-webhooks.entrypoints=websecure"
+      - "traefik.http.routers.agent-webhooks.tls.certresolver=myresolver"
+      - "traefik.http.services.agent-webhooks.loadbalancer.server.port=3001"
 networks:
   traefik-net:
     external: true

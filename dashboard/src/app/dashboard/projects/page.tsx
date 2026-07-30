@@ -11,8 +11,16 @@ interface Tenant {
   created_at: string;
 }
 
-export default function DatabaseOverviewPage() {
+interface Project {
+  slug: string;
+  tenant_slug: string;
+  repo_url: string | null;
+  active_container: string | null;
+}
+
+export default function ProjectsPage() {
   const [tenants, setTenants] = useState<Tenant[] | null>(null);
+  const [projects, setProjects] = useState<Project[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [slug, setSlug] = useState("");
@@ -21,16 +29,20 @@ export default function DatabaseOverviewPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [deletingSlug, setDeletingSlug] = useState<string | null>(null);
 
-  function loadTenants() {
+  function load() {
     setTenants(null);
     fetch("/api/tenants")
       .then((r) => r.json())
       .then((d) => (d.error ? setError(d.error) : setTenants(d.tenants)))
       .catch(() => setError("Verbindung zum Dashboard fehlgeschlagen"));
+    fetch("/api/projects")
+      .then((r) => r.json())
+      .then((d) => Array.isArray(d) && setProjects(d))
+      .catch(() => {});
   }
 
   useEffect(() => {
-    loadTenants();
+    load();
   }, []);
 
   async function handleCreate(e: React.FormEvent) {
@@ -54,7 +66,7 @@ export default function DatabaseOverviewPage() {
       }
       setSlug("");
       setShowForm(false);
-      loadTenants();
+      load();
     } catch {
       setFormError("Verbindung zum Provisioning Agent fehlgeschlagen");
     } finally {
@@ -63,7 +75,7 @@ export default function DatabaseOverviewPage() {
   }
 
   async function handleDelete(s: string) {
-    if (!confirm(`Tenant "${s}" wirklich löschen? DB, Container und Bucket werden entfernt.`)) return;
+    if (!confirm(`Projekt "${s}" wirklich löschen? DB, Container, App und Bucket werden entfernt.`)) return;
     setDeletingSlug(s);
     try {
       const res = await fetch(`/api/tenants/${s}`, { method: "DELETE" });
@@ -72,7 +84,7 @@ export default function DatabaseOverviewPage() {
         alert(data.error || "Löschen fehlgeschlagen");
         return;
       }
-      loadTenants();
+      load();
     } catch {
       alert("Verbindung zum Provisioning Agent fehlgeschlagen");
     } finally {
@@ -83,9 +95,9 @@ export default function DatabaseOverviewPage() {
   return (
     <div className="content">
       <div className="topbar" style={{ padding: 0, border: "none", marginBottom: 18 }}>
-        <h2 style={{ margin: 0, fontSize: 16 }}>Datenbanken</h2>
+        <h2 style={{ margin: 0, fontSize: 16 }}>Projekte</h2>
         <button className="btn btn-primary" onClick={() => setShowForm((v) => !v)}>
-          {showForm ? "Abbrechen" : "+ Tenant erstellen"}
+          {showForm ? "Abbrechen" : "+ Neues Projekt"}
         </button>
       </div>
 
@@ -122,34 +134,40 @@ export default function DatabaseOverviewPage() {
       )}
 
       {error && <div className="error-box">{error}</div>}
-      {!tenants && !error && <div className="empty-state">Lade Tenants…</div>}
+      {!tenants && !error && <div className="empty-state">Lade Projekte…</div>}
       {tenants && tenants.length === 0 && (
-        <div className="empty-state">Noch keine Tenants angelegt.</div>
+        <div className="empty-state">Noch keine Projekte angelegt.</div>
       )}
 
       <div className="card-grid">
-        {tenants?.map((t) => (
-          <div key={t.id} className="card" style={{ position: "relative" }}>
-            <Link href={`/dashboard/database/${t.slug}`}>
-              <div className="card-title">{t.slug}</div>
-              <div className="card-sub">{t.db_name}</div>
-              <div style={{ marginTop: 10, display: "flex", gap: 6 }}>
-                <span className="pk-badge">{t.tariff}</span>
-              </div>
-            </Link>
-            <button
-              className="btn"
-              style={{ position: "absolute", top: 10, right: 10, color: "var(--danger)" }}
-              onClick={(e) => {
-                e.preventDefault();
-                handleDelete(t.slug);
-              }}
-              disabled={deletingSlug === t.slug}
-            >
-              {deletingSlug === t.slug ? "…" : "Löschen"}
-            </button>
-          </div>
-        ))}
+        {tenants?.map((t) => {
+          const project = projects.find((p) => p.tenant_slug === t.slug);
+          return (
+            <div key={t.id} className="card" style={{ position: "relative" }}>
+              <Link href={`/dashboard/projects/${t.slug}`}>
+                <div className="card-title">{t.slug}</div>
+                <div className="card-sub">
+                  {project ? project.repo_url || "Repo nicht gesetzt" : "Kein Projekt verbunden"}
+                </div>
+                <div style={{ marginTop: 10, display: "flex", gap: 6 }}>
+                  <span className="pk-badge">{t.tariff}</span>
+                  {project?.active_container && <span className="pk-badge">live</span>}
+                </div>
+              </Link>
+              <button
+                className="btn"
+                style={{ position: "absolute", top: 10, right: 10, color: "var(--danger)" }}
+                onClick={(e) => {
+                  e.preventDefault();
+                  handleDelete(t.slug);
+                }}
+                disabled={deletingSlug === t.slug}
+              >
+                {deletingSlug === t.slug ? "…" : "Löschen"}
+              </button>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

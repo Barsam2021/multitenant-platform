@@ -5,6 +5,9 @@ import { encrypt } from '../lib/crypto';
 
 const PGBOUNCER_HOST = process.env.PGBOUNCER_HOST || 'pgbouncer';
 const MASTER_DB_PASSWORD = process.env.MASTER_DB_PASSWORD!;
+const PREVIEW_DOMAIN_SUFFIX = process.env.PLATFORM_DOMAIN || 'up2-web.com';
+const WEBHOOK_PUBLIC_URL = process.env.WEBHOOK_PUBLIC_URL || 'https://webhooks.up2-web.com';
+const GITHUB_PAT = process.env.GITHUB_PAT; // Fine-grained PAT, Scope: Webhooks (write) — Solo-Admin-Setup, kein OAuth-Flow (Phase 3 YAGNI für 1 User).
 
 function adminClient(): PGClient {
   return new PGClient({
@@ -12,9 +15,57 @@ function adminClient(): PGClient {
   });
 }
 
+// slug-<10 zufällige Hex-Zeichen>.<suffix> — kollisionsarm, keine Rückschlüsse auf Kundenzahl.
+function generatePreviewHostname(slug: string): string {
+  return `${slug}-${crypto.randomBytes(5).toString('hex')}.${PREVIEW_DOMAIN_SUFFIX}`;
+}
+
+interface GithubWebhookResult {
+  registered: boolean;
+  reason?: string;
+}
+
+async function registerGithubWebhook(
+  repoUrl: string,
+  webhookUrl: string,
+  secret: string
+): Promise<GithubWebhookResult> {
+  if (!GITHUB_PAT) return { registered: false, reason: 'GITHUB_PAT nicht gesetzt — manuell in GitHub eintragen.' };
+
+  const match = repoUrl.match(/github\.com[:/]([^/]+)\/([^/.]+)(\.git)?\/?$/);
+  if (!match) return { registered: false, reason: 'Keine GitHub-URL erkannt.' };
+  const [, owner, repo] = match;
+
+  try {
+    const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/hooks`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${GITHUB_PAT}`,
+        Accept: 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+      body: JSON.stringify({
+        name: 'web',
+        active: true,
+        events: ['push'],
+        config: { url: webhookUrl, content_type: 'json', secret, insecure_ssl: '0' },
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      return { registered: false, reason: `GitHub API ${res.status}: ${body.slice(0, 200)}` };
+    }
+    return { registered: true };
+  } catch (err: any) {
+    return { registered: false, reason: err.message };
+  }
+}
+
 export const projectsRouter = Router();
 
-// POST /projects — neues Deployment-Projekt für einen bestehenden Tenant anlegen
+// POST /projects — neues Deployment-Projekt für einen bestehenden Tenant anlegen,
+// inkl. automatischer Preview-Domain + automatischer GitHub-Webhook-Registrierung.
 projectsRouter.post('/projects', async (req, res) => {
   const { tenantSlug, slug, repoUrl, repoProvider, defaultBranch, buildCommand } = req.body;
 
@@ -23,25 +74,31 @@ projectsRouter.post('/projects', async (req, res) => {
   if (!repoUrl) return res.status(400).json({ error: 'repoUrl required' });
 
   const webhookSecret = crypto.randomBytes(32).toString('hex');
+  const previewHostname = generatePreviewHostname(slug);
   const db = adminClient();
   await db.connect();
   try {
     const { rows } = await db.query(
-      `INSERT INTO projects (tenant_slug, slug, repo_url, repo_provider, default_branch, build_command, webhook_secret)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, slug`,
-      [tenantSlug, slug, repoUrl, repoProvider || 'github', defaultBranch || 'main', buildCommand || null, webhookSecret]
+      `INSERT INTO projects (tenant_slug, slug, repo_url, repo_provider, default_branch, build_command, webhook_secret, preview_hostname)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, slug, tenant_slug, repo_url, default_branch, active_container, preview_hostname, created_at`,
+      [tenantSlug, slug, repoUrl, repoProvider || 'github', defaultBranch || 'main', buildCommand || null, webhookSecret, previewHostname]
     );
-    // Standard-Subdomain gleich mit anlegen
     await db.query(
       `INSERT INTO domains (project_id, hostname, kind, dns_verified, tls_issued)
        VALUES ($1, $2, 'subdomain', true, true)`,
-      [rows[0].id, `app.${slug}.vps.meine-domain.com`]
+      [rows[0].id, previewHostname]
     );
+
+    const webhookUrl = `${WEBHOOK_PUBLIC_URL}/webhooks/github/${rows[0].id}`;
+    const githubWebhook = await registerGithubWebhook(repoUrl, webhookUrl, webhookSecret);
+
     res.json({
       status: 'ok',
       project: rows[0],
+      previewHostname,
       webhookSecret, // einmalig im Klartext zurückgeben, danach nur noch verschlüsselt/gehashed genutzt
-      webhookUrl: `https://webhooks.vps.meine-domain.com/webhooks/github/${rows[0].id}`,
+      webhookUrl,
+      githubWebhook,
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -56,8 +113,8 @@ projectsRouter.get('/projects', async (_req, res) => {
   await db.connect();
   try {
     const { rows } = await db.query(
-      `SELECT p.id, p.tenant_slug, p.slug, p.repo_url, p.default_branch, p.active_container, p.created_at,
-              k.tariff
+      `SELECT p.id, p.tenant_slug, p.slug, p.repo_url, p.default_branch, p.active_container,
+              p.preview_hostname, p.created_at, k.tariff
        FROM projects p JOIN kunden k ON k.slug = p.tenant_slug
        ORDER BY p.created_at DESC`
     );

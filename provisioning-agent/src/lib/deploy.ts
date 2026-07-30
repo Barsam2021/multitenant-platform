@@ -31,6 +31,7 @@ export interface Project {
   default_branch: string;
   build_command: string | null;
   active_container: string | null;
+  preview_hostname: string;
 }
 
 async function updateDeployment(
@@ -151,7 +152,7 @@ export async function runDeployment(
       `--memory=${limits.mem}`,
       `--cpus=${limits.cpus}`,
       '--label', 'traefik.enable=true',
-      '--label', `traefik.http.routers.${project.slug}-app.rule=Host(\`app.${project.slug}.vps.meine-domain.com\`)`,
+      '--label', `traefik.http.routers.${project.slug}-app.rule=Host(\`${project.preview_hostname}\`)`,
       '--label', `traefik.http.routers.${project.slug}-app.entrypoints=websecure`,
       '--label', `traefik.http.routers.${project.slug}-app.tls.certresolver=myresolver`,
       '--label', `traefik.http.services.${project.slug}-app.loadbalancer.server.port=3000`,
@@ -216,7 +217,7 @@ export async function rollbackToDeployment(project: Project, targetDeploymentId:
       `--memory=${limits.mem}`,
       `--cpus=${limits.cpus}`,
       '--label', 'traefik.enable=true',
-      '--label', `traefik.http.routers.${project.slug}-app.rule=Host(\`app.${project.slug}.vps.meine-domain.com\`)`,
+      '--label', `traefik.http.routers.${project.slug}-app.rule=Host(\`${project.preview_hostname}\`)`,
       '--label', `traefik.http.routers.${project.slug}-app.entrypoints=websecure`,
       '--label', `traefik.http.routers.${project.slug}-app.tls.certresolver=myresolver`,
       '--label', `traefik.http.services.${project.slug}-app.loadbalancer.server.port=3000`,

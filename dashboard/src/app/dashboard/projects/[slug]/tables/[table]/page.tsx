@@ -115,7 +115,7 @@ export default function TableEditorPage({
       <div className="topbar" style={{ padding: 0, border: "none", marginBottom: 14 }}>
         <div>
           <div style={{ fontSize: 12, color: "var(--text-faint)" }}>
-            <Link href={`/dashboard/database/${slug}`}>{slug}</Link> /
+            <Link href={`/dashboard/projects/${slug}/tables`}>{slug}</Link> /
           </div>
           <h2 style={{ margin: 0, fontSize: 16 }}>{table}</h2>
         </div>

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { auth, signOut } from "@/auth";
 import { redirect } from "next/navigation";
+import ThemeToggle from "@/components/ThemeToggle";
 
 export default async function DashboardLayout({
   children,
@@ -18,16 +19,11 @@ export default async function DashboardLayout({
         <div className="sidebar-brand">
           UP2 <span>Console</span>
         </div>
-        <Link href="/dashboard/database" className="nav-link">
-          Datenbank
-        </Link>
-        <Link href="/dashboard/sql" className="nav-link">
-          SQL Editor
-        </Link>
-        <Link href="/dashboard/hosting" className="nav-link">
-          Hosting
+        <Link href="/dashboard/projects" className="nav-link">
+          Projekte
         </Link>
         <div style={{ flex: 1 }} />
+        <ThemeToggle />
         <form
           action={async () => {
             "use server";
