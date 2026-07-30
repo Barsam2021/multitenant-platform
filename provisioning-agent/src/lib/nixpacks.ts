@@ -15,7 +15,15 @@ export async function nixpacksBuild(
   imageTag: string,
   buildCommand?: string
 ): Promise<{ imageTag: string; log: string }> {
-  const args = ['build', buildPath, '--name', imageTag];
+  const args = [
+  'build',
+  buildPath,
+  '--name',
+  imageTag,
+  '--docker-output',
+  'type=docker',
+  ];
+
   if (buildCommand) {
     // Nixpacks erlaubt Override einzelner Build-Phasen über --build-cmd.
     // buildCommand kommt aus project.build_command (DB), wird NIE in eine Shell interpoliert —
