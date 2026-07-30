@@ -1,8 +1,42 @@
 services:
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:v0.4.2
+    container_name: docker-socket-proxy
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1
+      NETWORKS: 1
+      VOLUMES: 1
+      BUILD: 1
+      POST: 1
+      INFO: 1
+      PING: 1
+      EXEC: 0
+      SERVICES: 0
+      SWARM: 0
+      SYSTEM: 0
+      TASKS: 0
+      NODES: 0
+      PLUGINS: 0
+      SECRETS: 0
+      CONFIGS: 0
+      DISTRIBUTION: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - traefik-net
+    restart: always
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /run
+      - /var/lib/haproxy
+
   provisioning-agent:
     build: .
     container_name: provisioning-agent
     environment:
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
       PROVISIONING_AGENT_SECRET: ${PROVISIONING_AGENT_SECRET}
       MASTER_DB_PASSWORD: ${MASTER_DB_PASSWORD}
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
@@ -23,8 +57,9 @@ services:
       PREMIUM_GOTRUE_MEM: ${PREMIUM_GOTRUE_MEM}
       PREMIUM_GOTRUE_CPUS: ${PREMIUM_GOTRUE_CPUS}
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
       - /opt/multitenant-platform:/opt/multitenant-platform
+    depends_on:
+      - docker-socket-proxy
     networks:
       - traefik-net
     restart: always
