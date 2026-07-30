@@ -65,3 +65,4 @@ Webhook-Setup).
 
 Privat/proprietär — kein Open-Source-Lizenz-Grant impliziert durch die öffentliche
 Sichtbarkeit dieses Repos.
+
