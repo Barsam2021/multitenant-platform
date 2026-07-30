@@ -11,7 +11,7 @@ services:
       POST: 1
       INFO: 1
       PING: 1
-      EXEC: 0
+      EXEC: 1
       SERVICES: 0
       SWARM: 0
       SYSTEM: 0
