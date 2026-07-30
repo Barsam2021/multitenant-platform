@@ -22,6 +22,23 @@ interface Project {
 
 const ACTIVE_STATES = ["queued", "building", "healthchecking"];
 
+const STATUS_COLOR: Record<string, string> = {
+  queued: "var(--text-dim)",
+  building: "var(--accent)",
+  healthchecking: "var(--accent)",
+  deployed: "#2da44e",
+  failed: "var(--danger)",
+  rolled_back: "var(--text-dim)",
+};
+
+function duration(start: string, end: string | null): string {
+  const s = new Date(start).getTime();
+  const e = end ? new Date(end).getTime() : Date.now();
+  const secs = Math.max(0, Math.round((e - s) / 1000));
+  if (secs < 60) return `${secs}s`;
+  return `${Math.floor(secs / 60)}m ${secs % 60}s`;
+}
+
 export default function DeploymentsPage({
   params,
 }: {
@@ -32,6 +49,7 @@ export default function DeploymentsPage({
   const [deployments, setDeployments] = useState<Deployment[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [deploying, setDeploying] = useState(false);
+  const [openLogs, setOpenLogs] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     fetch("/api/projects")
@@ -68,9 +86,19 @@ export default function DeploymentsPage({
     return () => clearInterval(interval);
   }, [project, loadDeployments]);
 
+  function toggleLogs(id: string) {
+    setOpenLogs((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
   async function handleDeploy() {
     if (!project) return;
     setDeploying(true);
+    setError(null);
     try {
       const res = await fetch("/api/deployments", {
         method: "POST",
@@ -79,12 +107,12 @@ export default function DeploymentsPage({
       });
       const data = await res.json();
       if (!res.ok) {
-        alert(data.error || "Deploy fehlgeschlagen");
+        setError(data.error || "Deploy fehlgeschlagen");
         return;
       }
       loadDeployments(project.id);
     } catch {
-      alert("Verbindung zum Provisioning Agent fehlgeschlagen");
+      setError("Verbindung zum Provisioning Agent fehlgeschlagen");
     } finally {
       setDeploying(false);
     }
@@ -93,6 +121,7 @@ export default function DeploymentsPage({
   async function handleRollback(deploymentId: string) {
     if (!project) return;
     if (!confirm("Auf dieses Deployment zurückrollen?")) return;
+    setError(null);
     try {
       const res = await fetch(`/api/deployments/${deploymentId}/rollback`, {
         method: "POST",
@@ -101,17 +130,16 @@ export default function DeploymentsPage({
       });
       const data = await res.json();
       if (!res.ok) {
-        alert(data.error || "Rollback fehlgeschlagen");
+        setError(data.error || "Rollback fehlgeschlagen");
         return;
       }
       loadDeployments(project.id);
     } catch {
-      alert("Verbindung zum Provisioning Agent fehlgeschlagen");
+      setError("Verbindung zum Provisioning Agent fehlgeschlagen");
     }
   }
 
-  if (error) return <div className="error-box">{error}</div>;
-  if (!project) return <div className="empty-state">Lade…</div>;
+  if (!project) return <div className="empty-state">{error || "Lade…"}</div>;
 
   const latest = deployments[0];
 
@@ -124,51 +152,72 @@ export default function DeploymentsPage({
         </button>
       </div>
 
+      {error && <div className="error-box" style={{ marginBottom: 12 }}>{error}</div>}
       {deployments.length === 0 && <div className="empty-state">Noch kein Deployment.</div>}
-      {deployments.map((d) => (
-        <div
-          key={d.id}
-          style={{
-            border: "1px solid var(--border)",
-            borderRadius: 8,
-            padding: 12,
-            marginBottom: 8,
-            background: "var(--panel)",
-          }}
-        >
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div>
-              <span className="pk-badge">{d.status}</span>{" "}
-              <span style={{ color: "var(--text-dim)", fontSize: 12 }}>
-                {d.commit_sha?.slice(0, 7) || "—"} · {d.triggered_by} ·{" "}
-                {new Date(d.created_at).toLocaleString("de-DE")}
-              </span>
+      {deployments.map((d) => {
+        const logsOpen = openLogs.has(d.id);
+        return (
+          <div
+            key={d.id}
+            style={{
+              border: "1px solid var(--border)",
+              borderRadius: 8,
+              padding: 12,
+              marginBottom: 8,
+              background: "var(--panel)",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span
+                  style={{
+                    display: "inline-block",
+                    width: 8,
+                    height: 8,
+                    borderRadius: "50%",
+                    background: STATUS_COLOR[d.status] || "var(--text-dim)",
+                  }}
+                />
+                <span className="pk-badge">{d.status}</span>
+                <span style={{ color: "var(--text-dim)", fontSize: 12 }}>
+                  {d.commit_sha?.slice(0, 7) || "—"} · {d.triggered_by} ·{" "}
+                  {new Date(d.created_at).toLocaleString("de-DE")} ·{" "}
+                  {duration(d.created_at, d.finished_at)}
+                </span>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                {d.build_log && (
+                  <button className="btn" onClick={() => toggleLogs(d.id)}>
+                    {logsOpen ? "Logs verbergen" : "Logs anzeigen"}
+                  </button>
+                )}
+                {d.status === "deployed" && d.id !== latest?.id && (
+                  <button className="btn" onClick={() => handleRollback(d.id)}>
+                    Rollback hierauf
+                  </button>
+                )}
+              </div>
             </div>
-            {d.status === "deployed" && d.id !== latest?.id && (
-              <button className="btn" onClick={() => handleRollback(d.id)}>
-                Rollback hierauf
-              </button>
+            {logsOpen && d.build_log && (
+              <pre
+                style={{
+                  marginTop: 8,
+                  maxHeight: 300,
+                  overflowY: "auto",
+                  fontFamily: "var(--font-mono)",
+                  fontSize: 12,
+                  background: "var(--bg)",
+                  padding: 8,
+                  borderRadius: 6,
+                  whiteSpace: "pre-wrap",
+                }}
+              >
+                {d.build_log}
+              </pre>
             )}
           </div>
-          {ACTIVE_STATES.includes(d.status) && d.build_log && (
-            <pre
-              style={{
-                marginTop: 8,
-                maxHeight: 200,
-                overflowY: "auto",
-                fontFamily: "var(--font-mono)",
-                fontSize: 12,
-                background: "var(--bg)",
-                padding: 8,
-                borderRadius: 6,
-                whiteSpace: "pre-wrap",
-              }}
-            >
-              {d.build_log}
-            </pre>
-          )}
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

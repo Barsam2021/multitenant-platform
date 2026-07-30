@@ -149,3 +149,37 @@ projectsRouter.put('/projects/:id/env', async (req, res) => {
     await db.end();
   }
 });
+
+// GET /projects/:id/env — gesetzte Keys auflisten (Werte bleiben verborgen)
+projectsRouter.get('/projects/:id/env', async (req, res) => {
+  const db = adminClient();
+  await db.connect();
+  try {
+    const { rows } = await db.query(
+      `SELECT key FROM project_env_vars WHERE project_id = $1 ORDER BY key ASC`,
+      [req.params.id]
+    );
+    res.json(rows);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    await db.end();
+  }
+});
+
+// DELETE /projects/:id/env/:key — Env-Var entfernen
+projectsRouter.delete('/projects/:id/env/:key', async (req, res) => {
+  const db = adminClient();
+  await db.connect();
+  try {
+    await db.query(
+      `DELETE FROM project_env_vars WHERE project_id = $1 AND key = $2`,
+      [req.params.id, req.params.key]
+    );
+    res.json({ status: 'ok' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    await db.end();
+  }
+});

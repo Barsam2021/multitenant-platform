@@ -102,3 +102,21 @@ domainsRouter.delete('/domains/:id', async (req, res) => {
     await db.end();
   }
 });
+
+// GET /domains/:projectId — Domain-Liste für Dashboard
+domainsRouter.get('/domains/:projectId', async (req, res) => {
+  const db = adminClient();
+  await db.connect();
+  try {
+    const { rows } = await db.query(
+      `SELECT id, hostname, kind, dns_verified, tls_issued, created_at
+       FROM domains WHERE project_id = $1 ORDER BY created_at ASC`,
+      [req.params.projectId]
+    );
+    res.json(rows);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    await db.end();
+  }
+});

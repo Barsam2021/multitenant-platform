@@ -28,6 +28,7 @@ export default function ProjectsPage() {
   const [creating, setCreating] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [deletingSlug, setDeletingSlug] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   function load() {
     setTenants(null);
@@ -77,16 +78,17 @@ export default function ProjectsPage() {
   async function handleDelete(s: string) {
     if (!confirm(`Projekt "${s}" wirklich löschen? DB, Container, App und Bucket werden entfernt.`)) return;
     setDeletingSlug(s);
+    setDeleteError(null);
     try {
       const res = await fetch(`/api/tenants/${s}`, { method: "DELETE" });
       const data = await res.json();
       if (!res.ok) {
-        alert(data.error || "Löschen fehlgeschlagen");
+        setDeleteError(data.error || "Löschen fehlgeschlagen");
         return;
       }
       load();
     } catch {
-      alert("Verbindung zum Provisioning Agent fehlgeschlagen");
+      setDeleteError("Verbindung zum Provisioning Agent fehlgeschlagen");
     } finally {
       setDeletingSlug(null);
     }
@@ -134,6 +136,7 @@ export default function ProjectsPage() {
       )}
 
       {error && <div className="error-box">{error}</div>}
+      {deleteError && <div className="error-box" style={{ marginBottom: 12 }}>{deleteError}</div>}
       {!tenants && !error && <div className="empty-state">Lade Projekte…</div>}
       {tenants && tenants.length === 0 && (
         <div className="empty-state">Noch keine Projekte angelegt.</div>
@@ -149,9 +152,22 @@ export default function ProjectsPage() {
                 <div className="card-sub">
                   {project ? project.repo_url || "Repo nicht gesetzt" : "Kein Projekt verbunden"}
                 </div>
-                <div style={{ marginTop: 10, display: "flex", gap: 6 }}>
+                <div style={{ marginTop: 10, display: "flex", gap: 6, alignItems: "center" }}>
                   <span className="pk-badge">{t.tariff}</span>
-                  {project?.active_container && <span className="pk-badge">live</span>}
+                  {project?.active_container && (
+                    <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                      <span
+                        style={{
+                          display: "inline-block",
+                          width: 7,
+                          height: 7,
+                          borderRadius: "50%",
+                          background: "#2da44e",
+                        }}
+                      />
+                      <span className="pk-badge">live</span>
+                    </span>
+                  )}
                 </div>
               </Link>
               <button
