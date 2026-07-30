@@ -38,6 +38,7 @@ services:
       DB_USER: postgres
       DB_PASSWORD: ${MASTER_DB_PASSWORD}
       AUTH_TYPE: scram-sha-256
+      IGNORE_STARTUP_PARAMETERS: search_path
       POOL_MODE: transaction
       MAX_CLIENT_CONN: 1000
     depends_on:

@@ -59,11 +59,24 @@ app.post('/tenants', async (req, res) => {
     await tenant.query(`GRANT ALL ON SCHEMA auth TO authenticator;`);
     await tenant.end();
 
+    const tierPrefix = tenantTariff.toUpperCase();
+    const postgrestMem = process.env[`${tierPrefix}_POSTGREST_MEM`] || '64m';
+    const postgrestCpus = process.env[`${tierPrefix}_POSTGREST_CPUS`] || '0.25';
+    const gotrueMem = process.env[`${tierPrefix}_GOTRUE_MEM`] || '128m';
+    const gotrueCpus = process.env[`${tierPrefix}_GOTRUE_CPUS`] || '0.25';
+
     const template = await readFile('/app/templates/tenant-compose.yml', 'utf8');
     const compose = template
       .replace(/\$\{SLUG\}/g, tenantSlug)
       .replace(/\$\{JWT_SECRET\}/g, jwtSecret)
-      .replace(/\$\{AUTH_PW\}/g, authenticatorPw);
+      .replace(/\$\{AUTH_PW\}/g, authenticatorPw)
+      .replace(/\$\{PLATFORM_DOMAIN\}/g, process.env.PLATFORM_DOMAIN as string)
+      .replace(/\$\{POSTGREST_MEM\}/g, postgrestMem)
+      .replace(/\$\{POSTGREST_CPUS\}/g, postgrestCpus)
+      .replace(/\$\{GOTRUE_MEM\}/g, gotrueMem)
+      .replace(/\$\{GOTRUE_CPUS\}/g, gotrueCpus)
+      .replace(/\$\{RESEND_API_KEY\}/g, '')
+      .replace(/\$\{TENANT_NAME\}/g, tenantSlug);
 
     const tenantDir = `/opt/multitenant-platform/kunden-instances/${tenantSlug}`;
     await mkdir(tenantDir, { recursive: true });
