@@ -22,6 +22,9 @@ export default async function DashboardLayout({
         <Link href="/dashboard/projects" className="nav-link">
           Projekte
         </Link>
+        <Link href="/dashboard/backups" className="nav-link">
+          Backups
+        </Link>
         <div style={{ flex: 1 }} />
         <ThemeToggle />
         <form

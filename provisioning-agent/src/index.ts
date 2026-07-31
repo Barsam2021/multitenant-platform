@@ -10,6 +10,7 @@ import { deploymentsRouter } from './routes/deployments';
 import { domainsRouter } from './routes/domains';
 import { webhooksRouter } from './routes/webhooks';
 import { githubRouter } from './routes/github';
+import { backupsRouter } from './routes/backups';
 import { encrypt } from './lib/crypto';
 
 const execFileP = promisify(execFile);
@@ -203,6 +204,7 @@ app.use(projectsRouter);
 app.use(deploymentsRouter);
 app.use(domainsRouter);
 app.use(githubRouter);
+app.use(backupsRouter);
 
 
 app.get('/stats', async (_req, res) => {
