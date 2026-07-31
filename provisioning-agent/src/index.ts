@@ -9,6 +9,7 @@ import { projectsRouter } from './routes/projects';
 import { deploymentsRouter } from './routes/deployments';
 import { domainsRouter } from './routes/domains';
 import { webhooksRouter } from './routes/webhooks';
+import { githubRouter } from './routes/github';
 import { encrypt } from './lib/crypto';
 
 const execFileP = promisify(execFile);
@@ -201,6 +202,7 @@ app.delete('/tenants/:slug', async (req, res) => {
 app.use(projectsRouter);
 app.use(deploymentsRouter);
 app.use(domainsRouter);
+app.use(githubRouter);
 
 
 app.get('/stats', async (_req, res) => {

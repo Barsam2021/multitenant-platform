@@ -17,6 +17,15 @@ interface Project {
   active_container: string | null;
 }
 
+interface GithubRepo {
+  name: string;
+  fullName: string;
+  cloneUrl: string;
+  defaultBranch: string;
+  private: boolean;
+  updatedAt: string;
+}
+
 export default function ProjectOverviewPage({
   params,
 }: {
@@ -34,6 +43,9 @@ export default function ProjectOverviewPage({
   const [connectError, setConnectError] = useState<string | null>(null);
   const [deploying, setDeploying] = useState(false);
   const [webhookNote, setWebhookNote] = useState<string | null>(null);
+  const [repos, setRepos] = useState<GithubRepo[] | null>(null);
+  const [reposError, setReposError] = useState<string | null>(null);
+  const [manualEntry, setManualEntry] = useState(false);
 
   useEffect(() => {
     fetch("/api/tenants")
@@ -51,7 +63,28 @@ export default function ProjectOverviewPage({
         setPreviewHostname(p?.preview_hostname || null);
         setLoading(false);
       });
+    fetch("/api/github/repos")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.error) {
+          setReposError(d.error);
+          setManualEntry(true);
+        } else if (Array.isArray(d.repos)) {
+          setRepos(d.repos);
+        }
+      })
+      .catch(() => {
+        setReposError("Repo-Liste konnte nicht geladen werden.");
+        setManualEntry(true);
+      });
   }, [slug]);
+
+  function handleRepoSelect(fullName: string) {
+    const repo = repos?.find((r) => r.fullName === fullName);
+    if (!repo) return;
+    setRepoUrl(repo.cloneUrl);
+    setDefaultBranch(repo.defaultBranch || "main");
+  }
 
   async function handleConnect(e: React.FormEvent) {
     e.preventDefault();
@@ -131,23 +164,64 @@ export default function ProjectOverviewPage({
             background: "var(--panel)",
           }}
         >
-          <input
-            placeholder="Repo-URL (https://github.com/...)"
-            value={repoUrl}
-            onChange={(e) => setRepoUrl(e.target.value)}
-            style={{ minWidth: 320 }}
-            required
-          />
+          {!manualEntry && repos && repos.length > 0 && (
+            <select
+              value={repos.find((r) => r.cloneUrl === repoUrl)?.fullName || ""}
+              onChange={(e) => handleRepoSelect(e.target.value)}
+              style={{ minWidth: 320 }}
+              required
+            >
+              <option value="" disabled>
+                Repo auswählen…
+              </option>
+              {repos.map((r) => (
+                <option key={r.fullName} value={r.fullName}>
+                  {r.fullName}
+                  {r.private ? " (privat)" : ""}
+                </option>
+              ))}
+            </select>
+          )}
+
+          {!manualEntry && (!repos || repos.length === 0) && !reposError && (
+            <span style={{ color: "var(--text-dim)", fontSize: 13 }}>Lade Repos…</span>
+          )}
+
+          {manualEntry && (
+            <input
+              placeholder="Repo-URL (https://github.com/...)"
+              value={repoUrl}
+              onChange={(e) => setRepoUrl(e.target.value)}
+              style={{ minWidth: 320 }}
+              required
+            />
+          )}
+
           <input
             placeholder="Branch"
             value={defaultBranch}
             onChange={(e) => setDefaultBranch(e.target.value)}
             style={{ width: 100 }}
           />
-          <button className="btn btn-primary" type="submit" disabled={connecting}>
+          <button className="btn btn-primary" type="submit" disabled={connecting || !repoUrl}>
             {connecting ? "Verbinde…" : "Projekt verbinden"}
           </button>
+          {repos && repos.length > 0 && (
+            <button
+              type="button"
+              className="btn"
+              onClick={() => {
+                setManualEntry((v) => !v);
+                setRepoUrl("");
+              }}
+            >
+              {manualEntry ? "Aus Liste wählen" : "URL manuell eintragen"}
+            </button>
+          )}
           {connectError && <span style={{ color: "var(--danger)" }}>{connectError}</span>}
+          {reposError && (
+            <span style={{ color: "var(--text-dim)", fontSize: 12 }}>{reposError}</span>
+          )}
         </form>
       )}
 
