@@ -66,11 +66,11 @@ Deutlich weiter als gedacht: Provisioning Agent hat eine **vollständige Deploym
 ---
 
 ## Phase 5 — Backup, Verschlüsselung, Restore-Test (2 Tage)
-- [ ] Prüfen ob `backup-script.sh` als Cron läuft
-- [ ] Backup-Script + Cron-Eintrag ins Repo
-- [ ] Verschlüsselung der Dumps vor `rclone`-Upload (`age`/`gpg`)
-- [ ] Einmaliger Restore-Test
-- [ ] Trockenlauf von `09_disaster_recovery_runbook.md`
+- [X] Prüfen ob `backup-script.sh` als Cron läuft
+- [X] Backup-Script + Cron-Eintrag ins Repo
+- [X] Verschlüsselung der Dumps vor `rclone`-Upload (`age`/`gpg`)
+- [X] Einmaliger Restore-Test
+- [X] Trockenlauf von `09_disaster_recovery_runbook.md`
 
 ---
 
