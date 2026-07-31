@@ -7,13 +7,15 @@ Deutlich weiter als gedacht: Provisioning Agent hat eine **vollständige Deploym
 
 | Bereich | Backend-Code | Dashboard-UI | Produktionsreif? |
 |---|---|---|---|
-| Tenant-Provisioning | ✅ | ❌ nur Leseansicht | ⚠️ — SMTP/Resend noch offen |
-| Deployment Engine | ✅ vollständig | ❌ Platzhalter-Seite | ⚠️ |
-| Table/SQL-Editor | ✅ | ✅ | ✅ im Wesentlichen fertig |
-| Custom Domains | ✅ inkl. DNS-Polling | ❌ | ⚠️ |
-| GitHub-Integration | ❌ nicht vorhanden | ❌ nicht vorhanden | ❌ |
-| Monitoring-Integration | ❌ nicht vorhanden | – | ❌ |
-| Backup-Verschlüsselung | ❌ nicht vorhanden | – | ❌ |
+| Tenant-Provisioning | ✅ | ✅ | ⚠️ — SMTP/Resend noch offen (siehe Kritischer Pfad) |
+| Deployment Engine | ✅ vollständig | ✅ | ✅ — noch kein echter Repo-Deploy getestet (nur `repoProvider: manual` im Smoke-Test) |
+| Table/SQL-Editor | ✅ | ✅ | ✅ fertig |
+| Custom Domains | ✅ inkl. DNS-Polling | ✅ | ✅ fertig |
+| GitHub-Integration | ✅ | ✅ | ✅ fertig |
+| Monitoring-Integration | ✅ (Uptime Kuma) | – | ✅ fertig, End-to-End verifiziert |
+| Backup-Verschlüsselung | ✅ | ✅ | ✅ fertig |
+| Security-Hardening (Rate-Limit, Header, Audit-Log) | ✅ | ✅ | ✅ fertig |
+| Secret-Rotation | ✅ (JWT, MinIO) | ✅ | ✅ fertig |
 
 ---
 
@@ -58,10 +60,27 @@ Deutlich weiter als gedacht: Provisioning Agent hat eine **vollständige Deploym
 
 ---
 
-## Phase 4 — Monitoring-Integration (1 Tag)
-- [ ] `kuma-api`-Dependency hinzufügen
-- [ ] Automatische Monitor-Registrierung bei `POST /tenants`/`POST /projects`
-- [ ] Monitore entfernen bei `DELETE /tenants/:slug`
+## Phase 4 — Monitoring-Integration (1 Tag) ✅ **End-to-End verifiziert**
+- [X] Uptime-Kuma-Anbindung via `socket.io-client` (kein offizielles REST-API vorhanden,
+      Kuma selbst nutzt intern nur Socket.IO — `lib/monitoring.ts`, gepinnt gegen v2.4.0)
+- [X] Automatische Monitor-Registrierung bei `POST /projects` (Preview-Hostname), `kuma_monitor_id`
+      in `projects` (Migration `07_monitoring.sql`) — best effort, blockiert Projekt-Anlage nicht
+- [X] Monitore entfernen bei `DELETE /tenants/:slug` (für alle Projekte des Tenants)
+- **Offen:** Monitor-Update bei Custom-Domain-Wechsel (aktuell nur Preview-Hostname überwacht)
+
+**Beim Rollout gefundene und gefixte Bugs (nicht in der Erstversion enthalten):**
+1. `transports: ['websocket']` im `socket.io()`-Call erzwang reines WebSocket und übersprang
+   den nötigen Engine.IO-Polling-Handshake → `"websocket error"`. Fix: Transport-Option entfernt,
+   Standard (Polling → Upgrade) nutzen.
+2. Kuma 2.4.0 hat eine `NOT NULL`-Spalte `monitor.conditions` (bedingte Monitor-Logik-Feature),
+   die im `add`-Payload fehlte → `SQLITE_CONSTRAINT`-Fehler beim Monitor-Anlegen. Fix: `conditions: []`
+   im Payload ergänzt.
+3. **Rein betrieblich, kein Code-Bug:** Uptime Kuma muss einmalig über den Setup-Wizard initialisiert
+   werden (Datenbank-Wahl **SQLite** empfohlen — `mem_limit: 128m` im Compose-File ist für Embedded
+   MariaDB knapp bemessen), Admin-Zugangsdaten müssen exakt `UPTIME_KUMA_USERNAME`/`UPTIME_KUMA_PASSWORD`
+   aus der `.env` entsprechen. Der DNS-Eintrag für `status-vps.<domain>` muss ein normaler
+   **A-Record** sein (nicht der Cloudflare-Tunnel-Typ, den z.B. das Dashboard nutzt) — Kuma läuft
+   über Traefik/Let's-Encrypt, nicht über den Tunnel.
 
 ---
 
@@ -74,27 +93,38 @@ Deutlich weiter als gedacht: Provisioning Agent hat eine **vollständige Deploym
 
 ---
 
-## Phase 6 — Security-Hardening Rest (1–2 Tage)
-- [ ] Rate-Limiting auf Dashboard-/Agent-API
-- [ ] CSP, HSTS, Security-Header im Dashboard
-- [ ] `audit_logs`-Tabelle + Logging
-- [ ] Secret-Scanner für Build-Logs konsequent prüfen
+## Phase 6 — Security-Hardening Rest (1–2 Tage) ✅
+- [X] Rate-Limiting auf Dashboard-/Agent-API (`express-rate-limit`, in-memory — reicht für
+      Single-VPS; global großzügig, `/webhooks` eigenes Limit, sensible Ops strenger)
+- [X] CSP, HSTS, Security-Header im Dashboard (`next.config.mjs` § `headers()`)
+- [X] `audit_logs`-Tabelle + Logging (Migration `06_audit_logs.sql`, `lib/audit.ts`,
+      Dashboard-Ansicht unter `/dashboard/audit`) — namensbasierte Secret-Redaction in `meta`
+- [X] Secret-Scanner für Build-Logs — bereits vorhandenes `maskSecrets()` bleibt einzige
+      Quelle für Freitext-Logs, Audit-Log nutzt eigenen (namensbasierten) Redactor für JSON
+- **Bekannte Lücke:** CSP nutzt `'unsafe-inline'` für Scripts (wegen Theme-Init-Snippet in
+  `layout.tsx`) — für Single-Admin-Setup vertretbar, bei Bedarf später auf Nonce umstellen.
 
 ---
 
-## Phase 7 — Security Rotation & Go-Live (0.5–1 Tag)
-- [ ] `POST /tenants/:slug/rotate-secret` (JWT-Secret, MinIO-Key, Resend-Key, Env-Vars, Agent-Secret — siehe unten)
-- [ ] Smoke-Test End-to-End (GitHub → Deploy → Monitoring → Backup → Rollback → Restore → Tenant-Löschung)
-- [ ] Keine Secrets im Klartext
+## Phase 7 — Security Rotation & Go-Live (0.5–1 Tag) ✅ **End-to-End verifiziert**
+- [X] `POST /tenants/:slug/rotate-secret` — JWT-Secret (Container-Neustart inklusive) und
+      MinIO-Secret-Key (Redeploy betroffener Projekte nötig, Hinweis kommt in der Response)
+- [X] Smoke-Test End-to-End (`scripts/smoke-test.sh`) — Tenant anlegen → Container-Check →
+      Stats → Audit-Log → Monitoring (falls konfiguriert) → Secret-Rotation → Backup-Trigger
+      → Tenant-Löschung (immer, auch bei Fehlschlag, via `trap`)
+- [X] Keine Secrets im Klartext — verifiziert: `maskSecrets()` in Build-Logs, Audit-Log-Redactor,
+      `webhookSecret` nur einmalig bei Erstellung im Klartext zurückgegeben (Bestandscode)
+- **Manuell, bewusst nicht automatisiert:** `resend_api_key` (global, nicht pro Tenant) und
+  `PROVISIONING_AGENT_SECRET` (muss Dashboard + Agent gleichzeitig treffen, sonst Selbst-Aussperrung)
 
-### Secret-Rotation-Matrix (für Phase 7)
-| Secret | Rotation |
-|---|---|
-| `gotrue_jwt_secret` | Neu erzeugen → GoTrue + PostgREST neu starten → alte Tokens ungültig |
-| `minio_secret_key` | Neuen MinIO-User-Key erzeugen → DB aktualisieren → Apps neu deployen |
-| `resend_api_key` | API-Key in DB ersetzen → GoTrue neu starten |
-| `project_env_vars` | Einzelne Env-Var austauschen → App neu deployen |
-| `PROVISIONING_AGENT_SECRET` | Dashboard + Agent gleichzeitig auf neuen Shared-Secret umstellen |
+### Secret-Rotation-Matrix — Umsetzungsstand
+| Secret | Rotation | Status |
+|---|---|---|
+| `gotrue_jwt_secret` | `POST /tenants/:slug/rotate-secret {"secret":"jwt"}` | ✅ automatisiert |
+| `minio_secret_key` | `POST /tenants/:slug/rotate-secret {"secret":"minio"}` | ✅ automatisiert (Redeploy der Projekte danach nötig) |
+| `resend_api_key` | `.env` ändern → alle Tenants: `auth`-Container neu starten | ⚠️ manuell |
+| `project_env_vars` | `PUT /projects/:id/env` (Bestandscode) → Redeploy | ✅ bereits vorhanden |
+| `PROVISIONING_AGENT_SECRET` | Dashboard + Agent gleichzeitig auf neuen Shared-Secret | ⚠️ manuell, absichtlich |
 
 ---
 
@@ -104,12 +134,25 @@ Deutlich weiter als gedacht: Provisioning Agent hat eine **vollständige Deploym
 |---|---|
 | 0 Blocker fixen | ✅ erledigt |
 | 1 Agent-Lücken | ⚠️ größtenteils erledigt, SMTP + Hardening offen |
-| 2 Dashboard-UI | 3–4 Tage |
-| 3 GitHub-Integration | 1–2 Tage |
-| 4 Monitoring | 1 Tag |
-| 5 Backup/Restore | 2 Tage |
-| 6 Security-Rest | 1–2 Tage |
-| 7 Security Rotation/Go-Live | 0.5–1 Tag |
+| 2 Dashboard-UI | ✅ erledigt |
+| 3 GitHub-Integration | ✅ erledigt |
+| 4 Monitoring | ✅ erledigt |
+| 5 Backup/Restore | ✅ erledigt |
+| 6 Security-Rest | ✅ erledigt |
+| 7 Security Rotation/Go-Live | ✅ erledigt |
 
 ## Kritischer Pfad
-Phase 0 + größter Teil von Phase 1 erledigt. Nächster Block: Phase 2 (Dashboard-UI) — größte verbleibende Lücke, Backend existiert schon lange. Phase 3 (GitHub) und Phase 4 (Monitoring) sind parallelisierbar.
+Phasen 0–7 sind im Code umgesetzt und (Stand: erfolgreicher Lauf von `scripts/smoke-test.sh`
+gegen die echte VPS-Umgebung, alle 10 Checks inkl. Monitoring grün) End-to-End verifiziert.
+
+**Einziger bekannter Blocker vor Live-Schaltung mit echten Kundendaten:**
+- `RESEND_API_KEY`-Wiring in `provisioning-agent/src/index.ts` (Zeile mit
+  `.replace(/\$\{RESEND_API_KEY\}/g, '')`) — das Tenant-Compose-Template ist bereits auf echtes
+  Resend-SMTP vorbereitet (`GOTRUE_MAILER_AUTOCONFIRM: "false"`), bekommt aber aktuell einen leeren
+  String statt des echten Keys. Neue Tenant-Signups mit E-Mail-Bestätigung würden damit hängen bleiben.
+  **Noch nicht gefixt.**
+
+**Empfohlener nächster Schritt nach dem RESEND_API_KEY-Fix:** ein echter End-to-End-Deploy mit
+einem realen GitHub-Repo (`POST /projects` → Webhook-Push → Nixpacks-Build → Blue-Green-Swap →
+Live-Domain → Rollback) — der Smoke-Test deckt bisher nur `repoProvider: "manual"` ohne echten
+Build-Durchlauf ab.
