@@ -63,6 +63,9 @@ services:
       PREMIUM_POSTGREST_CPUS: ${PREMIUM_POSTGREST_CPUS}
       PREMIUM_GOTRUE_MEM: ${PREMIUM_GOTRUE_MEM}
       PREMIUM_GOTRUE_CPUS: ${PREMIUM_GOTRUE_CPUS}
+      UPTIME_KUMA_URL: ${UPTIME_KUMA_URL}
+      UPTIME_KUMA_USERNAME: ${UPTIME_KUMA_USERNAME}
+      UPTIME_KUMA_PASSWORD: ${UPTIME_KUMA_PASSWORD}
     volumes:
       - /opt/multitenant-platform:/opt/multitenant-platform
     depends_on:

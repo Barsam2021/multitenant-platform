@@ -1,4 +1,5 @@
 import express from 'express';
+import rateLimit from 'express-rate-limit';
 import { Client } from 'pg';
 import format from 'pg-format';
 import { execFile } from 'child_process';
@@ -11,17 +12,45 @@ import { domainsRouter } from './routes/domains';
 import { webhooksRouter } from './routes/webhooks';
 import { githubRouter } from './routes/github';
 import { backupsRouter } from './routes/backups';
+import { secretsRouter } from './routes/secrets';
+import { auditRouter } from './routes/audit';
 import { encrypt } from './lib/crypto';
+import { logAudit } from './lib/audit';
+import { deleteMonitor, isMonitoringConfigured } from './lib/monitoring';
 
 const execFileP = promisify(execFile);
 const app = express();
+
+// Phase 6: Rate-Limiting. In-Memory reicht für Single-VPS-Setup (kein Redis nötig,
+// ein Prozess = ein Zähler-Store). Drei Stufen: global grosszügig, Webhooks eigenes
+// Limit (kommen von GitHub, nicht vom Admin), Tenant-/Secret-Operationen strenger,
+// weil sie teuer sind (DB-Erstellung, Container-Start, Secret-Rotation).
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+const webhookLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  limit: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+const sensitiveOpLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 const AGENT_SECRET = process.env.PROVISIONING_AGENT_SECRET!;
 const MASTER_DB_PASSWORD = process.env.MASTER_DB_PASSWORD!;
 const PGBOUNCER_HOST = process.env.PGBOUNCER_HOST || 'pgbouncer';
 
-app.use('/webhooks', express.raw({ type: 'application/json', limit: '5mb' }), webhooksRouter);
+app.use('/webhooks', webhookLimiter, express.raw({ type: 'application/json', limit: '5mb' }), webhooksRouter);
 
+app.use(globalLimiter);
 app.use(express.json());
 app.use((req, res, next) => {
   if (req.headers['x-agent-secret'] !== AGENT_SECRET) {
@@ -30,7 +59,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.post('/tenants', async (req, res) => {
+app.post('/tenants', sensitiveOpLimiter, async (req, res) => {
   const { tenantSlug, tariff } = req.body;
   const tenantTariff = ['starter','business','premium'].includes(tariff) ? tariff : 'starter';
 
@@ -132,6 +161,7 @@ app.post('/tenants', async (req, res) => {
     );
     await admin.end();
 
+    await logAudit('tenant.create', tenantSlug, { tariff: tenantTariff, dbName });
     res.json({ status: 'ok', slug: tenantSlug, dbName });
   } catch (err: any) {
     console.error('Provisioning failed:', err.message);
@@ -140,7 +170,7 @@ app.post('/tenants', async (req, res) => {
 });
 
 
-app.delete('/tenants/:slug', async (req, res) => {
+app.delete('/tenants/:slug', sensitiveOpLimiter, async (req, res) => {
   const { slug } = req.params;
   if (!slug || !/^[a-z0-9-]+$/.test(slug)) {
     return res.status(400).json({ error: 'invalid slug' });
@@ -149,6 +179,31 @@ app.delete('/tenants/:slug', async (req, res) => {
   const tenantDir = `/opt/multitenant-platform/kunden-instances/${slug}`;
 
   try {
+    // Phase 4: verknüpfte Uptime-Kuma-Monitore entfernen, bevor die Projekte durch das
+    // Löschen der DB-Zeilen "verwaist" sind (kunden.slug wird unten gelöscht, projects.tenant_slug
+    // hat ON DELETE SET NULL — die Projekt-Zeilen selbst bleiben also bestehen, siehe
+    // 03_fix_projects_schema.sql; wir räumen hier nur die Monitore auf, best effort).
+    if (isMonitoringConfigured()) {
+      try {
+        const monitorAdmin = new Client({
+          connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
+        });
+        await monitorAdmin.connect();
+        const { rows: projectRows } = await monitorAdmin.query(
+          'SELECT kuma_monitor_id FROM projects WHERE tenant_slug = $1 AND kuma_monitor_id IS NOT NULL',
+          [slug]
+        );
+        await monitorAdmin.end();
+        for (const p of projectRows) {
+          await deleteMonitor(p.kuma_monitor_id).catch((e: any) =>
+            console.error(`Monitor ${p.kuma_monitor_id} löschen fehlgeschlagen (weiter):`, e.message)
+          );
+        }
+      } catch (e: any) {
+        console.error('Monitor-Cleanup fehlgeschlagen (weiter):', e.message);
+      }
+    }
+
     try {
       await execFileP('docker', ['compose', '-f', `${tenantDir}/docker-compose.yml`, 'down']);
     } catch (e: any) {
@@ -193,6 +248,7 @@ app.delete('/tenants/:slug', async (req, res) => {
     await admin2.query('DELETE FROM kunden WHERE slug = $1', [slug]);
     await admin2.end();
 
+    await logAudit('tenant.delete', slug, {});
     res.json({ status: 'ok', slug });
   } catch (err: any) {
     console.error('Tenant deletion failed:', err.message);
@@ -205,6 +261,8 @@ app.use(deploymentsRouter);
 app.use(domainsRouter);
 app.use(githubRouter);
 app.use(backupsRouter);
+app.use(secretsRouter); // rate-limitet sich selbst, siehe routes/secrets.ts
+app.use(auditRouter);
 
 
 app.get('/stats', async (_req, res) => {

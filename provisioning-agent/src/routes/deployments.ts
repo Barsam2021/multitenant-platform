@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { Client as PGClient } from 'pg';
 import { runDeployment, rollbackToDeployment, Project } from '../lib/deploy';
+import { logAudit } from '../lib/audit';
 
 const PGBOUNCER_HOST = process.env.PGBOUNCER_HOST || 'pgbouncer';
 const MASTER_DB_PASSWORD = process.env.MASTER_DB_PASSWORD!;
@@ -44,6 +45,7 @@ deploymentsRouter.post('/deployments', async (req, res) => {
       console.error(`Deployment ${deploymentId} crashed unexpectedly:`, err.message);
     });
 
+    await logAudit('deployment.trigger', project.slug, { deploymentId, ref: ref || project.default_branch, triggeredBy: triggeredBy || 'manual' });
     res.json({ status: 'queued', deploymentId });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -83,6 +85,7 @@ deploymentsRouter.post('/deployments/:id/rollback', async (req, res) => {
     const tariff = tariffRows[0]?.tariff || 'starter';
 
     await rollbackToDeployment(project, req.params.id, tariff);
+    await logAudit('deployment.rollback', project.slug, { targetDeploymentId: req.params.id });
     res.json({ status: 'ok' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

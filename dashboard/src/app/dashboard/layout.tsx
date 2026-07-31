@@ -25,6 +25,9 @@ export default async function DashboardLayout({
         <Link href="/dashboard/backups" className="nav-link">
           Backups
         </Link>
+        <Link href="/dashboard/audit" className="nav-link">
+          Audit-Log
+        </Link>
         <div style={{ flex: 1 }} />
         <ThemeToggle />
         <form

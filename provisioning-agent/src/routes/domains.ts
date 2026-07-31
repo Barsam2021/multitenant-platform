@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { Client as PGClient } from 'pg';
 import dns from 'dns/promises';
 import { writeCustomDomainRouter, removeCustomDomainRouter } from '../lib/traefikDynamic';
+import { logAudit } from '../lib/audit';
 
 const PGBOUNCER_HOST = process.env.PGBOUNCER_HOST || 'pgbouncer';
 const MASTER_DB_PASSWORD = process.env.MASTER_DB_PASSWORD!;
@@ -41,6 +42,8 @@ domainsRouter.post('/domains', async (req, res) => {
     pollDnsAndActivate(rows[0].id, projectId, hostname).catch((err) =>
       console.error(`DNS polling for ${hostname} failed:`, err.message)
     );
+
+    await logAudit('domain.create', hostname, { projectId });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   } finally {
@@ -95,6 +98,7 @@ domainsRouter.delete('/domains/:id', async (req, res) => {
     if (rows.length === 0) return res.status(404).json({ error: 'domain not found' });
     await removeCustomDomainRouter(rows[0].slug);
     await db.query('DELETE FROM domains WHERE id = $1', [req.params.id]);
+    await logAudit('domain.delete', rows[0].hostname, { projectSlug: rows[0].slug });
     res.json({ status: 'ok' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

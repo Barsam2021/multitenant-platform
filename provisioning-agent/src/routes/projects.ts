@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { Client as PGClient } from 'pg';
 import crypto from 'crypto';
 import { encrypt } from '../lib/crypto';
+import { createHttpMonitor, isMonitoringConfigured } from '../lib/monitoring';
+import { logAudit } from '../lib/audit';
 
 const PGBOUNCER_HOST = process.env.PGBOUNCER_HOST || 'pgbouncer';
 const MASTER_DB_PASSWORD = process.env.MASTER_DB_PASSWORD!;
@@ -92,6 +94,22 @@ projectsRouter.post('/projects', async (req, res) => {
     const webhookUrl = `${WEBHOOK_PUBLIC_URL}/webhooks/github/${rows[0].id}`;
     const githubWebhook = await registerGithubWebhook(repoUrl, webhookUrl, webhookSecret);
 
+    // Monitoring-Registrierung (Phase 4) — "best effort", analog zu registerGithubWebhook:
+    // ein Kuma-Ausfall darf das Projekt-Anlegen nicht scheitern lassen.
+    let monitoring: { registered: boolean; reason?: string } = { registered: false, reason: 'not configured' };
+    if (isMonitoringConfigured()) {
+      try {
+        const monitorId = await createHttpMonitor(`${tenantSlug}/${slug}`, `https://${previewHostname}`);
+        await db.query('UPDATE projects SET kuma_monitor_id = $1 WHERE id = $2', [monitorId, rows[0].id]);
+        monitoring = { registered: true };
+      } catch (e: any) {
+        monitoring = { registered: false, reason: e.message };
+        console.error(`Uptime-Kuma monitor registration failed for ${slug}:`, e.message);
+      }
+    }
+
+    await logAudit('project.create', slug, { tenantSlug, repoUrl, repoProvider: repoProvider || 'github' });
+
     res.json({
       status: 'ok',
       project: rows[0],
@@ -99,6 +117,7 @@ projectsRouter.post('/projects', async (req, res) => {
       webhookSecret, // einmalig im Klartext zurückgeben, danach nur noch verschlüsselt/gehashed genutzt
       webhookUrl,
       githubWebhook,
+      monitoring,
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -142,6 +161,7 @@ projectsRouter.put('/projects/:id/env', async (req, res) => {
        ON CONFLICT (project_id, key) DO UPDATE SET value_encrypted = EXCLUDED.value_encrypted`,
       [id, key, encrypted]
     );
+    await logAudit('project.env.set', id, { key }); // Wert bewusst NICHT geloggt
     res.json({ status: 'ok' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -176,6 +196,7 @@ projectsRouter.delete('/projects/:id/env/:key', async (req, res) => {
       `DELETE FROM project_env_vars WHERE project_id = $1 AND key = $2`,
       [req.params.id, req.params.key]
     );
+    await logAudit('project.env.delete', req.params.id, { key: req.params.key });
     res.json({ status: 'ok' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

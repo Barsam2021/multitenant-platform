@@ -46,6 +46,8 @@ export default function ProjectOverviewPage({
   const [repos, setRepos] = useState<GithubRepo[] | null>(null);
   const [reposError, setReposError] = useState<string | null>(null);
   const [manualEntry, setManualEntry] = useState(false);
+  const [rotating, setRotating] = useState<"jwt" | "minio" | null>(null);
+  const [rotateNote, setRotateNote] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/tenants")
@@ -139,6 +141,25 @@ export default function ProjectOverviewPage({
     }
   }
 
+  async function handleRotate(secret: "jwt" | "minio") {
+    if (!confirm(`${secret === "jwt" ? "JWT-Secret" : "MinIO-Secret"} für "${slug}" jetzt rotieren? Bestehende Sessions/Zugriffe können ungültig werden.`)) return;
+    setRotating(secret);
+    setRotateNote(null);
+    try {
+      const res = await fetch(`/api/tenants/${slug}/rotate-secret`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ secret }),
+      });
+      const data = await res.json();
+      setRotateNote(res.ok ? data.note || "Rotation abgeschlossen." : data.error || "Rotation fehlgeschlagen");
+    } catch {
+      setRotateNote("Verbindung zum Provisioning Agent fehlgeschlagen");
+    } finally {
+      setRotating(null);
+    }
+  }
+
   if (loading) return <div className="empty-state">Lade…</div>;
   if (error) return <div className="error-box">{error}</div>;
 
@@ -146,8 +167,20 @@ export default function ProjectOverviewPage({
     <div>
       <h2 style={{ marginTop: 0, fontSize: 16 }}>{slug}</h2>
       {tenant && (
-        <div style={{ fontSize: 13, color: "var(--text-dim)", marginBottom: 20 }}>
+        <div style={{ fontSize: 13, color: "var(--text-dim)", marginBottom: 12 }}>
           {tenant.db_name} · Tarif {tenant.tariff}
+        </div>
+      )}
+
+      {tenant && (
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 20 }}>
+          <button className="btn" onClick={() => handleRotate("jwt")} disabled={rotating !== null}>
+            {rotating === "jwt" ? "Rotiere…" : "JWT-Secret rotieren"}
+          </button>
+          <button className="btn" onClick={() => handleRotate("minio")} disabled={rotating !== null}>
+            {rotating === "minio" ? "Rotiere…" : "MinIO-Secret rotieren"}
+          </button>
+          {rotateNote && <span style={{ fontSize: 12, color: "var(--text-dim)" }}>{rotateNote}</span>}
         </div>
       )}
 
