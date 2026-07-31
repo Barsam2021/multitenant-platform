@@ -51,10 +51,10 @@ Deutlich weiter als gedacht: Provisioning Agent hat eine **vollständige Deploym
 ---
 
 ## Phase 3 — GitHub-Integration (1–2 Tage)
-- [ ] GitHub OAuth App anlegen
-- [ ] `github_connections`-Tabelle nutzen
-- [ ] Connect-Flow + Repo-Picker im Wizard
-- [ ] Automatische Webhook-Registrierung bei Projekt-Erstellung
+- [X] GitHub OAuth App anlegen
+- [X] `github_connections`-Tabelle nutzen
+- [X] Connect-Flow + Repo-Picker im Wizard
+- [X] Automatische Webhook-Registrierung bei Projekt-Erstellung
 
 ---
 
