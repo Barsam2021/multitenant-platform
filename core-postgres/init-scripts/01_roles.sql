@@ -1,11 +1,8 @@
--- Login-Rolle: PostgREST & GoTrue verbinden sich hiermit
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'authenticator') THEN
-    CREATE ROLE authenticator LOGIN NOINHERIT PASSWORD 'CHANGE_ME';
-  END IF;
-END
-$$;
+-- HINWEIS: Die 'authenticator'-Login-Rolle wird NICHT hier erzeugt.
+-- Sie ist pro Tenant eindeutig benannt (authenticator_<slug>), weil Postgres-Rollen
+-- cluster-weit sind — ein global geteilter Name würde bei jedem neuen Tenant das
+-- Passwort des vorherigen überschreiben. Siehe core-postgres/templates/authenticator-role.sql.template,
+-- das vom Provisioning Agent pro Tenant mit dem echten Rollennamen befüllt und ausgeführt wird.
 
 -- Anonyme Rolle (nicht eingeloggte Requests)
 DO $$
@@ -33,7 +30,3 @@ BEGIN
   END IF;
 END
 $$;
-
-GRANT anon TO authenticator;
-GRANT authenticated TO authenticator;
-GRANT service_role TO authenticator;

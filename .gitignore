@@ -12,3 +12,5 @@ deployments/builds/*
 !deployments/builds/.gitkeep
 deployments/apps/*
 !deployments/apps/.gitkeep
+traefik/letsencrypt/*
+!traefik/letsencrypt/.gitkeep

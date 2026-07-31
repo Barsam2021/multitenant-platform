@@ -39,6 +39,7 @@ app.post('/tenants', async (req, res) => {
   const dbName = `kunde_${tenantSlug}`;
   const jwtSecret = crypto.randomBytes(32).toString('hex');
   const authenticatorPw = crypto.randomBytes(16).toString('hex');
+  const authenticatorRole = `authenticator_${tenantSlug}`;
 
   try {
     const master = new Client({
@@ -52,11 +53,16 @@ app.post('/tenants', async (req, res) => {
       connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/${dbName}`,
     });
     await tenant.connect();
-    const rolesSql = await readFile('/opt/multitenant-platform/core-postgres/init-scripts/01_roles.sql', 'utf8');
-    await tenant.query(rolesSql.replace(/CHANGE_ME/g, authenticatorPw));
-    await tenant.query(`ALTER ROLE authenticator WITH PASSWORD '${authenticatorPw}';`);
-    await tenant.query(`CREATE SCHEMA IF NOT EXISTS auth AUTHORIZATION authenticator;`);
-    await tenant.query(`GRANT ALL ON SCHEMA auth TO authenticator;`);
+    const rolesSql = await readFile(
+      '/opt/multitenant-platform/core-postgres/templates/authenticator-role.sql.template',
+      'utf8'
+    );
+    await tenant.query(
+      rolesSql.replace(/__AUTH_ROLE__/g, authenticatorRole).replace(/CHANGE_ME/g, authenticatorPw)
+    );
+    await tenant.query(format('CREATE SCHEMA IF NOT EXISTS auth AUTHORIZATION %I;', authenticatorRole));
+    await tenant.query(format('GRANT ALL ON SCHEMA auth TO %I;', authenticatorRole));
+    await tenant.query(format('ALTER ROLE %I IN DATABASE %I SET search_path = auth, public;', authenticatorRole, dbName));
     await tenant.end();
 
     const tierPrefix = tenantTariff.toUpperCase();
@@ -70,6 +76,7 @@ app.post('/tenants', async (req, res) => {
       .replace(/\$\{SLUG\}/g, tenantSlug)
       .replace(/\$\{JWT_SECRET\}/g, jwtSecret)
       .replace(/\$\{AUTH_PW\}/g, authenticatorPw)
+      .replace(/\$\{AUTH_ROLE\}/g, authenticatorRole)
       .replace(/\$\{PLATFORM_DOMAIN\}/g, process.env.PLATFORM_DOMAIN as string)
       .replace(/\$\{POSTGREST_MEM\}/g, postgrestMem)
       .replace(/\$\{POSTGREST_CPUS\}/g, postgrestCpus)
@@ -152,6 +159,7 @@ app.delete('/tenants/:slug', async (req, res) => {
     await master.connect();
     await master.query('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1', [dbName]);
     await master.query(format('DROP DATABASE IF EXISTS %I;', dbName));
+    await master.query(format('DROP ROLE IF EXISTS %I;', `authenticator_${slug}`));
     await master.end();
 
     try {

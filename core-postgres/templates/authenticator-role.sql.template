@@ -1,0 +1,17 @@
+-- Login-Rolle für PostgREST & GoTrue eines einzelnen Tenants.
+-- __AUTH_ROLE__ wird vom Provisioning Agent (index.ts) durch einen eindeutigen,
+-- tenant-spezifischen Namen ersetzt (z.B. "authenticator_<slug>"), CHANGE_ME durch
+-- das generierte Passwort. Bewusst NICHT unter core-postgres/init-scripts/, damit
+-- Postgres diese Datei niemals automatisch beim Cluster-Start ausführt — sie darf
+-- nur genau einmal pro Tenant, mit bereits aufgelöstem Rollennamen, laufen.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '__AUTH_ROLE__') THEN
+    CREATE ROLE "__AUTH_ROLE__" LOGIN NOINHERIT PASSWORD 'CHANGE_ME';
+  END IF;
+END
+$$;
+
+GRANT anon TO "__AUTH_ROLE__";
+GRANT authenticated TO "__AUTH_ROLE__";
+GRANT service_role TO "__AUTH_ROLE__";

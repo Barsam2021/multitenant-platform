@@ -3,17 +3,19 @@ services:
     image: postgrest/postgrest:v14.15
     container_name: api-${SLUG}
     environment:
-      PGRST_DB_URI: "postgres://authenticator:${AUTH_PW}@pgbouncer:5432/kunde_${SLUG}"
+      PGRST_DB_URI: "postgres://${AUTH_ROLE}:${AUTH_PW}@pgbouncer:5432/kunde_${SLUG}"
       PGRST_DB_SCHEMA: "public"
       PGRST_DB_ANON_ROLE: "anon"
       PGRST_JWT_SECRET: "${JWT_SECRET}"
     mem_limit: ${POSTGREST_MEM}
     cpus: ${POSTGREST_CPUS}
+    # Image-eigenen HEALTHCHECK explizit deaktivieren (nicht nur weglassen!):
+    # postgrest/postgrest bringt selbst einen wget-basierten HEALTHCHECK im
+    # Dockerfile mit, der ohne diesen "disable: true" von Compose übernommen
+    # würde — und genau wie unser vorheriger Check technisch unausführbar ist,
+    # weil das Image weder Shell noch wget/curl/nc enthält.
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
+      disable: true
     networks:
       - traefik-net
     restart: always
@@ -24,7 +26,7 @@ services:
     environment:
       GOTRUE_JWT_SECRET: "${JWT_SECRET}"
       GOTRUE_DB_DRIVER: postgres
-      GOTRUE_DB_DATABASE_URL: "postgres://authenticator:${AUTH_PW}@pgbouncer:5432/kunde_${SLUG}?search_path=auth"
+      GOTRUE_DB_DATABASE_URL: "postgres://${AUTH_ROLE}:${AUTH_PW}@pgbouncer:5432/kunde_${SLUG}?search_path=auth"
       GOTRUE_SITE_URL: "https://${SLUG}.${PLATFORM_DOMAIN}"
       GOTRUE_API_HOST: "0.0.0.0"
       API_EXTERNAL_URL: "https://${SLUG}.${PLATFORM_DOMAIN}"
@@ -38,7 +40,7 @@ services:
     mem_limit: ${GOTRUE_MEM}
     cpus: ${GOTRUE_CPUS}
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9999/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8081/health"]
       interval: 30s
       timeout: 5s
       retries: 3
