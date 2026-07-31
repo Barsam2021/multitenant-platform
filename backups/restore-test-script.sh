@@ -51,7 +51,7 @@ log "Spiele Dump ein..."
 gunzip -c "$SQL_FILE" | docker exec -i core-postgres psql -U postgres -d "$TEST_DB" -q -v ON_ERROR_STOP=1
 
 TABLE_COUNT=$(docker exec core-postgres psql -U postgres -d "$TEST_DB" -tAc \
-  "SELECT count(*) FROM information_schema.tables WHERE table_schema='public';")
+  "SELECT count(*) FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema');")
 
 log "Restore-Test OK: $TABLE_COUNT Tabellen in $TEST_DB gefunden."
 echo "RESTORE_TEST_RESULT:OK:${TABLE_COUNT}"
