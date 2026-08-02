@@ -10,20 +10,20 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "next": "15.3.9",
-    "react": "19.0.0",
-    "react-dom": "19.0.0",
+    "bcryptjs": "2.4.3",
+    "next": "^15.5.22",
+    "next-auth": "^5.0.0-beta.32",
     "pg": "8.13.1",
     "pg-format": "1.0.4",
-    "next-auth": "5.0.0-beta.25",
-    "bcryptjs": "2.4.3"
+    "react": "19.0.0",
+    "react-dom": "19.0.0"
   },
   "devDependencies": {
-    "typescript": "5.6.3",
     "@types/bcryptjs": "2.4.6",
     "@types/node": "20.14.10",
+    "@types/pg": "8.11.10",
     "@types/react": "19.0.1",
     "@types/react-dom": "19.0.1",
-    "@types/pg": "8.11.10"
+    "typescript": "5.6.3"
   }
 }

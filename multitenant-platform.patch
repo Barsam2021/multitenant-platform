@@ -1,0 +1,1152 @@
+diff --git a/.env.example b/.env.example
+index 92e8a39..fef310b 100644
+--- a/.env.example
++++ b/.env.example
+@@ -1,6 +1,6 @@
+ # .env.example — Vorlage. Kopieren nach .env und mit echten Werten befüllen.
+ # NIEMALS die ausgefüllte .env committen (siehe .gitignore).
+-# Vollständige Referenz: 10_env_reference.md
++# Erklärung jeder Variable: SETUP.md, Schritt 2.
+ 
+ # --- Core Database ---
+ MASTER_DB_PASSWORD=CHANGE_ME_generate_with_openssl_rand_hex_32
+@@ -26,17 +26,17 @@ ENCRYPTION_MASTER_KEY=CHANGE_ME_generate_with_openssl_rand_hex_32
+ VPS_PUBLIC_IP=CHANGE_ME_your_hetzner_ip
+ 
+ # --- Traefik / Let's Encrypt ---
+-ACME_EMAIL=deine-email@meine-domain.com
++ACME_EMAIL=deine-email@example.com
+ 
+ # --- Preview-Domains & GitHub-Webhooks (neu) ---
+ # Basis-Domain für automatische Tenant-/Preview-Subdomains: <slug>-<random>.<PLATFORM_DOMAIN>
+ # Kostenlos (Let's Encrypt/Cloudflare-Zertifikate sind pro Subdomain gratis, kein
+ # Wildcard-Zertifikat nötig). DNS: A-Record für *.PLATFORM_DOMAIN einmalig auf VPS-IP.
+-PLATFORM_DOMAIN=up2-web.com
++PLATFORM_DOMAIN=example.com
+ # Öffentlich erreichbare Basis-URL des Agent-Webhook-Endpunkts (Traefik-Router,
+ # NUR /webhooks/* ist public — Rest des Agents bleibt intern). DNS: A-Record für
+ # webhooks.PLATFORM_DOMAIN auf VPS-IP.
+-WEBHOOK_PUBLIC_URL=https://webhooks.up2-web.com
++WEBHOOK_PUBLIC_URL=https://webhooks.example.com
+ # Fine-grained GitHub Personal Access Token, Scope "Webhooks: Read & write", nur
+ # für Repos die du selbst verbindest. Ohne diesen Wert: Webhook muss manuell in
+ # GitHub eingetragen werden (URL wird bei Projekt-Erstellung angezeigt).
+@@ -48,8 +48,8 @@ HETZNER_SBX_PASS=CHANGE_ME
+ 
+ # --- Dashboard (Next.js) ---
+ NEXTAUTH_SECRET=CHANGE_ME_generate_with_openssl_rand_hex_32
+-NEXTAUTH_URL=https://admin.vps.meine-domain.com
+-ADMIN_EMAIL=admin@meine-domain.com
++NEXTAUTH_URL=https://admin.example.com
++ADMIN_EMAIL=admin@example.com
+ ADMIN_PASSWORD_HASH=CHANGE_ME_bcrypt_hash
+ PROVISIONING_AGENT_URL=http://provisioning-agent:3001
+ DATABASE_URL=postgres://postgres:CHANGE_ME@pgbouncer:5432/admin_dashboard
+@@ -71,19 +71,3 @@ PREMIUM_POSTGREST_CPUS=0.5
+ PREMIUM_GOTRUE_MEM=256m
+ PREMIUM_GOTRUE_CPUS=0.5
+ 
+-# Resource-Tiers pro Tarif (mem_limit/cpus für GoTrue+PostgREST-Container)
+-# TODO: Werte für 8GB-VPS (statt geplanter 16GB) neu kalkulieren, aktuell nur Platzhalter aus Blueprint
+-STARTER_POSTGREST_MEM=64m
+-STARTER_POSTGREST_CPUS=0.25
+-STARTER_GOTRUE_MEM=128m
+-STARTER_GOTRUE_CPUS=0.25
+-
+-BUSINESS_POSTGREST_MEM=128m
+-BUSINESS_POSTGREST_CPUS=0.5
+-BUSINESS_GOTRUE_MEM=128m
+-BUSINESS_GOTRUE_CPUS=0.25
+-
+-PREMIUM_POSTGREST_MEM=256m
+-PREMIUM_POSTGREST_CPUS=0.5
+-PREMIUM_GOTRUE_MEM=256m
+-PREMIUM_GOTRUE_CPUS=0.5
+diff --git a/ARCHITECTURE.md b/ARCHITECTURE.md
+new file mode 100644
+index 0000000..5eb97ea
+--- /dev/null
++++ b/ARCHITECTURE.md
+@@ -0,0 +1,80 @@
++# Architektur-Übersicht
++
++## Module
++
++```
++multitenant-platform/
++├── dashboard/              Next.js Admin-UI — Tenant-Verwaltung, Table/SQL-Editor,
++│                           Deployment-Historie, Domain-/Env-Verwaltung, Audit-Log
++│                           Auth: NextAuth v5 (Credentials, Single-Admin)
++│
++├── provisioning-agent/     Node/Express-Backend — der eigentliche "Motor":
++│                           - Tenant anlegen/löschen (DB, Auth, Storage)
++│                           - Deployment-Pipeline (GitHub-Webhook → Build → Deploy)
++│                           - Domain-/TLS-Management (Traefik-Dynamic-Config)
++│                           - Backup-Steuerung, Monitoring-Integration
++│                           Auth: X-Agent-Secret-Header (nur vom Dashboard/intern erreichbar)
++│
++├── core-postgres/          Zentrale Postgres-Instanz + PgBouncer davor.
++│                           init-scripts/ = versionierte SQL-Migrationen (Rollen,
++│                           Admin-Schema, Audit-Logs, Backups, Monitoring, Previews)
++│
++├── minio/                  S3-kompatibler Object Storage, ein Bucket pro Tenant
++├── traefik/                Reverse Proxy + automatisches TLS (Let's Encrypt, DNS-01)
++├── cloudflared/             Cloudflare Tunnel für Admin-Zugriff ohne offenen Port
++├── monitoring/uptime-kuma/  Uptime-Monitoring pro Projekt/Tenant
++├── backups/                 Backup- und Restore-Test-Skripte (age + rclone)
++├── deployments/             Laufzeit-Verzeichnis für Build-Artefakte (gitignored)
++└── bootstrap.sh              Onboarding-Skript für frischen Server
++```
++
++## Datenfluss: Tenant-Erstellung
++
++```
++Dashboard (POST /api/provision-tenant)
++   │  X-Agent-Secret
++   ▼
++Provisioning Agent (POST /tenants)
++   ├─ CREATE DATABASE kunde_<slug>          (core-postgres, via PgBouncer)
++   ├─ CREATE ROLE authenticator_<slug>       (eingeschränkte Rolle für PostgREST/GoTrue)
++   ├─ MinIO: Bucket + IAM-User + Policy anlegen
++   ├─ AES-256-GCM: Secrets (JWT, MinIO-Key) verschlüsselt in `kunden`-Tabelle ablegen
++   └─ Docker: Container für GoTrue + PostgREST starten
++       (Ressourcen-Limits nach Tarif, Healthchecks, eigenes Compose-Template)
++```
++
++## Datenfluss: Deployment (Push-to-Deploy)
++
++```
++GitHub Push
++   │  HMAC-SHA256-signierter Webhook
++   ▼
++Provisioning Agent (POST /webhooks/github/:projectId)
++   ├─ Signatur gegen rohen Body verifizieren (express.raw, nicht express.json!)
++   ├─ Nur reagieren, wenn Ziel-Branch == default_branch
++   ├─ Repo klonen, Nixpacks-Build ausführen
++   ├─ Blue-Green: neuen Container hochfahren, Healthcheck abwarten,
++   │  Traefik-Routing umschalten, alten Container stoppen
++   └─ Deployment-Log live ins Dashboard (Polling) + Rollback-Option
++```
++
++## Docker-Sicherheitsmodell
++
++Der Provisioning Agent hat **keinen direkten Zugriff** auf `/var/run/docker.sock`.
++Stattdessen läuft ein `docker-socket-proxy` (Tecnativa) dazwischen, der nur
++folgende API-Gruppen freischaltet: `CONTAINERS`, `IMAGES`, `NETWORKS`, `VOLUMES`,
++`BUILD`, `POST`, `INFO`, `PING`, `EXEC`. Alles andere (Swarm, Secrets, Configs,
++Nodes, System, Plugins) ist deaktiviert. `EXEC` ist bewusst aktiviert, weil der
++Buildx-Builder-Container es für den Build-Prozess benötigt — das ist eine
++bewusst in Kauf genommene, im Vergleich zum vollen Socket aber stark
++eingeschränkte Rechteausweitung.
++
++## Auth-Modell
++
++- **Dashboard:** Single-Admin, NextAuth-Credentials-Login (bcrypt-Hash aus `.env`),
++  Middleware schützt `/dashboard/*` und `/api/tenants/*`.
++- **Provisioning Agent:** Shared-Secret-Header (`X-Agent-Secret`), nur vom
++  Dashboard-Backend intern aufgerufen (nicht öffentlich geroutet, außer
++  `/webhooks/*`, die eigene HMAC-Verifikation haben).
++- **Pro Tenant:** eigene GoTrue-Instanz mit eigenem JWT-Secret — Tenants sind
++  vollständig voneinander isoliert, kein gemeinsames Auth-System.
+diff --git a/CONTRIBUTING.md b/CONTRIBUTING.md
+new file mode 100644
+index 0000000..caa0e0e
+--- /dev/null
++++ b/CONTRIBUTING.md
+@@ -0,0 +1,39 @@
++# Contributing
++
++Dieses Repository ist ein **Portfolio-/Showcase-Projekt** (siehe
++[README.md](./README.md) und [LICENSE](./LICENSE)). Es gibt aktuell **keinen
++offenen Contribution-Prozess** — Pull Requests von Dritten werden nicht aktiv
++geprüft oder gemerged, da der Code „All Rights Reserved" ist und keine
++Weiterverbreitung/Bearbeitung durch Dritte lizenziert ist.
++
++Trotzdem, falls du als Entwickler den Code liest, forkst (zum reinen Ansehen)
++oder Fehler findest:
++
++## Fehler melden
++
++Ein GitHub Issue mit kurzer Beschreibung reicht — es besteht keine Zusage auf
++Bearbeitung, aber Hinweise (insbesondere sicherheitsrelevante) sind willkommen.
++Für sicherheitsrelevante Findings siehe den Abschnitt „Security" unten.
++
++## Code-Style (zur Referenz)
++
++- **TypeScript strict**, keine `any`-Typen ohne guten Grund
++- **Next.js App Router**-Konventionen (Server Components wo möglich,
++  `route.ts`-Handler für API-Routen)
++- SQL-Identifier (Tabellen-/Spaltennamen) **immer** über `pg-format` (`%I`)
++  einsetzen, nie String-Konkatenation — siehe `dashboard/src/lib/tenantDb.ts`
++  und `provisioning-agent/src/lib/*` als Referenz
++- Secrets/Env-Vars: nie hartkodieren, immer über `process.env`, sinnvolle
++  Fallback-Defaults nur für nicht-sensible Werte (siehe Findings zu
++  hartkodierten Domain-Fallbacks — das ist ein bekanntes Gegenbeispiel, kein
++  Vorbild)
++- Commit-Messages: `feat(bereich): kurzbeschreibung` / `fix(bereich): ...` /
++  `docs: ...` / `chore: ...`
++
++## Security
++
++Wenn du eine Sicherheitslücke findest, bitte **kein öffentliches Issue**
++öffnen, sondern den Repo-Owner direkt kontaktieren (Kontaktinfo siehe
++GitHub-Profil). Bekannte, bereits dokumentierte offene Punkte stehen in
++[SETUP.md](./SETUP.md) unter „Bekannte offene Punkte" und im README unter
++„Sicherheitsdesign" — diese müssen nicht separat gemeldet werden.
+diff --git a/LICENSE b/LICENSE
+new file mode 100644
+index 0000000..9423ac9
+--- /dev/null
++++ b/LICENSE
+@@ -0,0 +1,21 @@
++All Rights Reserved
++
++Copyright (c) 2026 Barsam Aghajani Rizi / UP2 Web Solutions e.U.
++
++Dieses Repository ist öffentlich einsehbar zu Demonstrations- und
++Portfolio-Zwecken. Es wird KEINE Lizenz zur Nutzung, Kopie, Modifikation,
++Zusammenführung, Veröffentlichung, Verbreitung, Unterlizenzierung und/oder
++zum Verkauf von Kopien der Software erteilt.
++
++Alle Rechte an Source-Code, Dokumentation und zugehörigen Dateien in diesem
++Repository liegen ausschließlich beim Urheber. Jede Nutzung über das reine
++Betrachten des Quellcodes hinaus (insbesondere produktiver Einsatz,
++Weiterverbreitung, Erstellung abgeleiteter Werke oder kommerzielle Nutzung)
++bedarf der vorherigen schriftlichen Zustimmung des Rechteinhabers.
++
++DIE SOFTWARE WIRD OHNE JEGLICHE GEWÄHRLEISTUNG BEREITGESTELLT, WEDER
++AUSDRÜCKLICH NOCH STILLSCHWEIGEND, EINSCHLIESSLICH, ABER NICHT BESCHRÄNKT AUF
++DIE GEWÄHRLEISTUNG DER MARKTGÄNGIGKEIT, DER EIGNUNG FÜR EINEN BESTIMMTEN
++ZWECK UND DER NICHTVERLETZUNG VON RECHTEN DRITTER. IN KEINEM FALL HAFTET DER
++URHEBER FÜR ANSPRÜCHE, SCHÄDEN ODER SONSTIGE VERPFLICHTUNGEN, DIE SICH AUS
++ODER IM ZUSAMMENHANG MIT DER SOFTWARE ODER DEREN NUTZUNG ERGEBEN.
+diff --git a/README.md b/README.md
+index ff1af6d..73aa261 100644
+--- a/README.md
++++ b/README.md
+@@ -1,158 +1,91 @@
+-# MultiTenant Platform — Roadmap bis Go-Live (v2, nach echter Code-Analyse)
+-
+-**Korrektur zur v1-Roadmap:** Die erste Version basierte auf einer gecachten/veralteten GitHub-Ansicht und ging fälschlich von einem leeren Repo aus. Diese Version basiert auf dem tatsächlichen Code (`git log`, `codeload.github.com`-Tarball, Datei-für-Datei gelesen).
+-
+-## Ist-Zustand korrigiert
+-Deutlich weiter als gedacht: Provisioning Agent hat eine **vollständige Deployment Engine** (Blue-Green-Deploy, Rollback, Webhook-Signaturverifikation, DNS-Polling für Custom Domains, AES-256-GCM-Verschlüsselung). Dashboard hat einen **funktionierenden Table/SQL-Editor**. Was fehlt, ist gezielter als "alles fehlt":
+-
+-| Bereich | Backend-Code | Dashboard-UI | Produktionsreif? |
+-|---|---|---|---|
+-| Tenant-Provisioning | ✅ | ✅ | ⚠️ — SMTP/Resend noch offen (siehe Kritischer Pfad) |
+-| Deployment Engine | ✅ vollständig | ✅ | ✅ — noch kein echter Repo-Deploy getestet (nur `repoProvider: manual` im Smoke-Test) |
+-| Table/SQL-Editor | ✅ | ✅ | ✅ fertig |
+-| Custom Domains | ✅ inkl. DNS-Polling | ✅ | ✅ fertig |
+-| GitHub-Integration | ✅ | ✅ | ✅ fertig |
+-| Monitoring-Integration | ✅ (Uptime Kuma) | – | ✅ fertig, End-to-End verifiziert |
+-| Backup-Verschlüsselung | ✅ | ✅ | ✅ fertig |
+-| Security-Hardening (Rate-Limit, Header, Audit-Log) | ✅ | ✅ | ✅ fertig |
+-| Secret-Rotation | ✅ (JWT, MinIO) | ✅ | ✅ fertig |
+-
+----
+-
+-## Phase 0 — Blocker fixen (0.5–1 Tag) ⚠️ **zuerst**
+-- [X] `kunden`-Tabelle um `minio_access_key`, `minio_secret_key_encrypted`, `resend_api_key_encrypted`, `auth_public_enabled`, `postgrest_public_enabled` erweitern
+-- [X] `POST /tenants` in `index.ts` erweitert: pro-Tenant MinIO-Access-Key + IAM-Policy
+-- [X] Fehlende Tabellen als versioniertes SQL-Migrationsfile (`core-postgres/init-scripts/02_admin_schema.sql`)
+-- [X] `.gitignore` um `deployments/builds/*` und `deployments/apps/*` ergänzt
+-
+-**Exit-Kriterium erreicht.**
+-
+----
+-
+-## Phase 1 — Provisioning Agent: Rest-Lücken schließen (2–3 Tage)
+-- [X] `templates/tenant-compose.yml` auf `pgbouncer:5432` umgestellt + `IGNORE_STARTUP_PARAMETERS: search_path`
+-- [X] `GOTRUE_SITE_URL`/`API_EXTERNAL_URL` auf echte Domain (`PLATFORM_DOMAIN` Env-Var, Schema `<slug>.up2-web.com` statt `app.<slug>.vps.meine-domain.com` — Wildcard-Cert-Kosten bei Cloudflare vermieden)
+-- [ ] `GOTRUE_MAILER_AUTOCONFIRM: "true"` durch echte Resend-SMTP-Konfiguration ersetzen — **zurückgestellt**
+-- [X] `mem_limit`/`cpus`/Healthchecks für `api`/`auth`-Container im Template (Tarif-Werte vorerst als Platzhalter in `.env`/`.env.example`, echte Kalkulierung für 8GB-VPS statt geplanter 16GB noch offen)
+-- [X] `DELETE /tenants/:slug` implementiert (Container stoppen, DB droppen, MinIO Bucket+User+Policy löschen, Verzeichnis löschen, `kunden`-Zeile löschen)
+-- [ ] `POST /rotate-secret` — **verschoben nach Phase 7 (Security-Hardening)**, kein MVP-Feature
+-- [X] `GET /stats` implementiert (Docker-Stats + DB-Connection-Counts)
+-- [X] Docker-Socket-Proxy (Tecnativa `v0.4.2`) statt direktem Socket-Mount
+-- [ ] Container-Hardening (`read_only`, `cap_drop: ALL`, `no-new-privileges`, `pids_limit`) für alle generierten Compose-Templates
+-
+-**Offen:** SMTP-Wiring, Resource-Tier-Werte für 8GB neu kalkulieren, Container-Hardening.
+-
+----
+-
+-## Phase 2 — Dashboard-UI für das, was der Agent schon kann (3–4 Tage)
+-- [X] `/dashboard/database`: "Tenant erstellen"-Button + Formular (`POST /tenants` über `/api/provision-tenant`) + "Löschen"-Aktion
+-- [X] `/dashboard/hosting`: Projekt-Liste, "New Project"-Wizard (ohne GitHub-Repo-Picker erstmal), Deployment-Historie, Rollback-Button, Live-Build-Logs via Polling
+-- [X] Env-Var-Editor pro Projekt
+-- [X] Domain-UI
+-
+----
+-
+-## Phase 3 — GitHub-Integration (1–2 Tage)
+-- [X] GitHub OAuth App anlegen
+-- [X] `github_connections`-Tabelle nutzen
+-- [X] Connect-Flow + Repo-Picker im Wizard
+-- [X] Automatische Webhook-Registrierung bei Projekt-Erstellung
+-
+----
+-
+-## Phase 4 — Monitoring-Integration (1 Tag) ✅ **End-to-End verifiziert**
+-- [X] Uptime-Kuma-Anbindung via `socket.io-client` (kein offizielles REST-API vorhanden,
+-      Kuma selbst nutzt intern nur Socket.IO — `lib/monitoring.ts`, gepinnt gegen v2.4.0)
+-- [X] Automatische Monitor-Registrierung bei `POST /projects` (Preview-Hostname), `kuma_monitor_id`
+-      in `projects` (Migration `07_monitoring.sql`) — best effort, blockiert Projekt-Anlage nicht
+-- [X] Monitore entfernen bei `DELETE /tenants/:slug` (für alle Projekte des Tenants)
+-- **Offen:** Monitor-Update bei Custom-Domain-Wechsel (aktuell nur Preview-Hostname überwacht)
+-
+-**Beim Rollout gefundene und gefixte Bugs (nicht in der Erstversion enthalten):**
+-1. `transports: ['websocket']` im `socket.io()`-Call erzwang reines WebSocket und übersprang
+-   den nötigen Engine.IO-Polling-Handshake → `"websocket error"`. Fix: Transport-Option entfernt,
+-   Standard (Polling → Upgrade) nutzen.
+-2. Kuma 2.4.0 hat eine `NOT NULL`-Spalte `monitor.conditions` (bedingte Monitor-Logik-Feature),
+-   die im `add`-Payload fehlte → `SQLITE_CONSTRAINT`-Fehler beim Monitor-Anlegen. Fix: `conditions: []`
+-   im Payload ergänzt.
+-3. **Rein betrieblich, kein Code-Bug:** Uptime Kuma muss einmalig über den Setup-Wizard initialisiert
+-   werden (Datenbank-Wahl **SQLite** empfohlen — `mem_limit: 128m` im Compose-File ist für Embedded
+-   MariaDB knapp bemessen), Admin-Zugangsdaten müssen exakt `UPTIME_KUMA_USERNAME`/`UPTIME_KUMA_PASSWORD`
+-   aus der `.env` entsprechen. Der DNS-Eintrag für `status-vps.<domain>` muss ein normaler
+-   **A-Record** sein (nicht der Cloudflare-Tunnel-Typ, den z.B. das Dashboard nutzt) — Kuma läuft
+-   über Traefik/Let's-Encrypt, nicht über den Tunnel.
+-
+----
+-
+-## Phase 5 — Backup, Verschlüsselung, Restore-Test (2 Tage)
+-- [X] Prüfen ob `backup-script.sh` als Cron läuft
+-- [X] Backup-Script + Cron-Eintrag ins Repo
+-- [X] Verschlüsselung der Dumps vor `rclone`-Upload (`age`/`gpg`)
+-- [X] Einmaliger Restore-Test
+-- [X] Trockenlauf von `09_disaster_recovery_runbook.md`
+-
+----
+-
+-## Phase 6 — Security-Hardening Rest (1–2 Tage) ✅
+-- [X] Rate-Limiting auf Dashboard-/Agent-API (`express-rate-limit`, in-memory — reicht für
+-      Single-VPS; global großzügig, `/webhooks` eigenes Limit, sensible Ops strenger)
+-- [X] CSP, HSTS, Security-Header im Dashboard (`next.config.mjs` § `headers()`)
+-- [X] `audit_logs`-Tabelle + Logging (Migration `06_audit_logs.sql`, `lib/audit.ts`,
+-      Dashboard-Ansicht unter `/dashboard/audit`) — namensbasierte Secret-Redaction in `meta`
+-- [X] Secret-Scanner für Build-Logs — bereits vorhandenes `maskSecrets()` bleibt einzige
+-      Quelle für Freitext-Logs, Audit-Log nutzt eigenen (namensbasierten) Redactor für JSON
+-- **Bekannte Lücke:** CSP nutzt `'unsafe-inline'` für Scripts (wegen Theme-Init-Snippet in
+-  `layout.tsx`) — für Single-Admin-Setup vertretbar, bei Bedarf später auf Nonce umstellen.
+-
+----
+-
+-## Phase 7 — Security Rotation & Go-Live (0.5–1 Tag) ✅ **End-to-End verifiziert**
+-- [X] `POST /tenants/:slug/rotate-secret` — JWT-Secret (Container-Neustart inklusive) und
+-      MinIO-Secret-Key (Redeploy betroffener Projekte nötig, Hinweis kommt in der Response)
+-- [X] Smoke-Test End-to-End (`scripts/smoke-test.sh`) — Tenant anlegen → Container-Check →
+-      Stats → Audit-Log → Monitoring (falls konfiguriert) → Secret-Rotation → Backup-Trigger
+-      → Tenant-Löschung (immer, auch bei Fehlschlag, via `trap`)
+-- [X] Keine Secrets im Klartext — verifiziert: `maskSecrets()` in Build-Logs, Audit-Log-Redactor,
+-      `webhookSecret` nur einmalig bei Erstellung im Klartext zurückgegeben (Bestandscode)
+-- **Manuell, bewusst nicht automatisiert:** `resend_api_key` (global, nicht pro Tenant) und
+-  `PROVISIONING_AGENT_SECRET` (muss Dashboard + Agent gleichzeitig treffen, sonst Selbst-Aussperrung)
+-
+-### Secret-Rotation-Matrix — Umsetzungsstand
+-| Secret | Rotation | Status |
+-|---|---|---|
+-| `gotrue_jwt_secret` | `POST /tenants/:slug/rotate-secret {"secret":"jwt"}` | ✅ automatisiert |
+-| `minio_secret_key` | `POST /tenants/:slug/rotate-secret {"secret":"minio"}` | ✅ automatisiert (Redeploy der Projekte danach nötig) |
+-| `resend_api_key` | `.env` ändern → alle Tenants: `auth`-Container neu starten | ⚠️ manuell |
+-| `project_env_vars` | `PUT /projects/:id/env` (Bestandscode) → Redeploy | ✅ bereits vorhanden |
+-| `PROVISIONING_AGENT_SECRET` | Dashboard + Agent gleichzeitig auf neuen Shared-Secret | ⚠️ manuell, absichtlich |
+-
+----
+-
+-## Zeitschätzung gesamt
+-
+-| Phase | Aufwand |
++# MultiTenant Platform
++
++Selbstgehostete Alternative zu Supabase/Vercel für mehrere Kunden (Tenants) auf einer
++einzigen VPS — inklusive eigenem Verwaltungs-Dashboard, automatisiertem Deployment
++(GitHub → laufender Container) und Backup-System.
++
++> **Status:** Portfolio-/Showcase-Projekt. Zeigt den vollständigen Aufbau einer
++> Multi-Tenant-Infrastruktur inkl. Provisioning, Deployment-Pipeline, Monitoring und
++> Security-Hardening. Kein aktiv betreuter Community-Support, keine offene
++> Contribution-Pipeline — siehe [CONTRIBUTING.md](./CONTRIBUTING.md) und
++> [LICENSE](./LICENSE).
++
++## Was das Projekt macht
++
++Jeder Tenant (Kunde) bekommt automatisiert:
++
++- eine eigene PostgreSQL-Datenbank (über zentralen PgBouncer-Pool)
++- eigene PostgREST- und GoTrue-Instanz (Auth), analog zu Supabase
++- eigenen MinIO-Bucket mit eigenen IAM-Credentials (S3-kompatibler Storage)
++- eine eigene Deployment-Pipeline: GitHub-Repo verbinden → Push löst automatisch
++  einen Build (Nixpacks) und Blue-Green-Deploy auf einer eigenen Subdomain aus,
++  inkl. Rollback-Funktion
++- automatisches TLS über Traefik + Let's Encrypt (DNS-01 via Cloudflare)
++- Uptime-Monitoring (Uptime Kuma) und verschlüsselte, automatisierte Backups
++  (age-Verschlüsselung → Object Storage via rclone)
++
++Verwaltet wird alles über ein zentrales Next.js-Dashboard mit Tenant-Verwaltung,
++Table-/SQL-Editor, Deployment-Historie mit Live-Logs, Domain- und
++Environment-Variable-Verwaltung sowie Audit-Log.
++
++## Tech-Stack
++
++| Bereich | Technologie |
+ |---|---|
+-| 0 Blocker fixen | ✅ erledigt |
+-| 1 Agent-Lücken | ⚠️ größtenteils erledigt, SMTP + Hardening offen |
+-| 2 Dashboard-UI | ✅ erledigt |
+-| 3 GitHub-Integration | ✅ erledigt |
+-| 4 Monitoring | ✅ erledigt |
+-| 5 Backup/Restore | ✅ erledigt |
+-| 6 Security-Rest | ✅ erledigt |
+-| 7 Security Rotation/Go-Live | ✅ erledigt |
+-
+-## Kritischer Pfad
+-Phasen 0–7 sind im Code umgesetzt und (Stand: erfolgreicher Lauf von `scripts/smoke-test.sh`
+-gegen die echte VPS-Umgebung, alle 10 Checks inkl. Monitoring grün) End-to-End verifiziert.
+-
+-**Einziger bekannter Blocker vor Live-Schaltung mit echten Kundendaten:**
+-- `RESEND_API_KEY`-Wiring in `provisioning-agent/src/index.ts` (Zeile mit
+-  `.replace(/\$\{RESEND_API_KEY\}/g, '')`) — das Tenant-Compose-Template ist bereits auf echtes
+-  Resend-SMTP vorbereitet (`GOTRUE_MAILER_AUTOCONFIRM: "false"`), bekommt aber aktuell einen leeren
+-  String statt des echten Keys. Neue Tenant-Signups mit E-Mail-Bestätigung würden damit hängen bleiben.
+-  **Noch nicht gefixt.**
+-
+-**Empfohlener nächster Schritt nach dem RESEND_API_KEY-Fix:** ein echter End-to-End-Deploy mit
+-einem realen GitHub-Repo (`POST /projects` → Webhook-Push → Nixpacks-Build → Blue-Green-Swap →
+-Live-Domain → Rollback) — der Smoke-Test deckt bisher nur `repoProvider: "manual"` ohne echten
+-Build-Durchlauf ab.
++| Dashboard | Next.js 15 (App Router), React 19, TypeScript, NextAuth v5 |
++| Provisioning Agent | Node.js/TypeScript, Express, direkte Docker-API-Steuerung |
++| Datenbank | PostgreSQL (zentral) + PgBouncer, pro Tenant eigene DB |
++| Auth (pro Tenant) | GoTrue |
++| REST-API (pro Tenant) | PostgREST |
++| Storage | MinIO (S3-kompatibel), pro Tenant eigener Bucket + IAM-Key |
++| Reverse Proxy / TLS | Traefik, Let's Encrypt via Cloudflare DNS-01 |
++| Deployment-Builds | Nixpacks (Buildpack-artiges Build-System) |
++| Monitoring | Uptime Kuma |
++| Backups | `age`-Verschlüsselung + `rclone` (Object Storage, z. B. Hetzner Storage Box) |
++| Tunnel | Cloudflare Tunnel (Admin-Zugriff ohne offenen Port) |
++
++## Architektur
++
++Siehe [ARCHITECTURE.md](./ARCHITECTURE.md) für eine Übersicht der Module und
++wie die Services zusammenspielen.
++
++## Lokal/auf eigenem Server ausprobieren
++
++Für eine vollständige, reproduzierbare Einrichtung von 0 auf einem frischen
++Ubuntu/Debian-Server siehe [SETUP.md](./SETUP.md). Kurzfassung:
++
++```bash
++git clone <this-repo> /opt/multitenant-platform
++cd /opt/multitenant-platform
++cp .env.example .env
++nano .env                 # echte Werte eintragen
++sudo ./bootstrap.sh
++```
++
++**Wichtig:** `bootstrap.sh` verlangt bewusst, dass vorher eine ausgefüllte `.env`
++existiert — es gibt keine funktionierenden Default-Secrets. Details zu jeder
++Variable stehen kommentiert direkt in [`.env.example`](./.env.example).
++
++## Sicherheitsdesign (kurz)
++
++- Kein direkter Docker-Socket-Zugriff für den Provisioning Agent — läuft über einen
++  eingeschränkten `docker-socket-proxy` (nur benötigte API-Gruppen freigeschaltet).
++- Alle Secrets (JWT, MinIO-Keys, Webhook-Secrets) werden mit AES-256-GCM
++  verschlüsselt in der Datenbank abgelegt, nie im Klartext.
++- GitHub-Webhooks werden per HMAC-SHA256-Signatur gegen den rohen Request-Body
++  verifiziert.
++- Rate-Limiting auf drei Stufen (global, Webhooks, sensible Operationen).
++- Der SQL-Editor im Dashboard erlaubt bewusst freie Queries (wie Supabase Studio) —
++  das ist als Single-Admin-Werkzeug hinter Auth + Cloudflare Zero Trust gedacht,
++  **nicht** für Multi-User-Zugriff mit unterschiedlichen Rechten. Wer das
++  produktiv mit mehreren Admin-Usern einsetzt, sollte das vor Nutzung anpassen.
++
++Ein öffentlich einsehbares Repo ersetzt keinen unabhängigen Security-Audit —
++siehe die Hinweise in [CONTRIBUTING.md](./CONTRIBUTING.md) zu bekannten offenen
++Punkten.
++
++## Lizenz
++
++Alle Rechte vorbehalten — siehe [LICENSE](./LICENSE). Der Code ist zu
++Demonstrationszwecken öffentlich einsehbar, aber nicht zur Wiederverwendung,
++Modifikation oder Weiterverbreitung freigegeben.
+diff --git a/SETUP.md b/SETUP.md
+new file mode 100644
+index 0000000..51ed567
+--- /dev/null
++++ b/SETUP.md
+@@ -0,0 +1,150 @@
++# Setup — von 0 auf lauffähig
++
++> **Hinweis zu diesem Dokument:** Der Code und `bootstrap.sh` verweisen an
++> mehreren Stellen auf nummerierte Referenzdokumente (`01_architecture_blueprint.md`,
++> `02_vps_bootstrap_guide.md`, `04_backup_system.md`, `09_disaster_recovery_runbook.md`,
++> `10_env_reference.md`, `11_web_ui_specification.md`). Diese Dateien existieren im
++> aktuellen Repo-Stand nicht (wahrscheinlich lokale Notizen, nie committet). Dieses
++> SETUP.md fasst das zusammen, was aus Code, `.env.example` und `bootstrap.sh`
++> tatsächlich rekonstruierbar ist. Falls du (Repo-Owner) die Originaldateien noch
++> hast: ergänzen und diesen Hinweis entfernen.
++
++## Voraussetzungen
++
++- Frischer Ubuntu- oder Debian-Server (root/sudo-Zugriff), öffentlich erreichbar
++  über eine eigene Domain
++- Domain mit DNS bei Cloudflare (für DNS-01-Zertifikate und Cloudflare Tunnel)
++- GitHub-Account (für die Deployment-Pipeline, optional aber empfohlen)
++- Node.js 20.x lokal, falls du Dashboard/Agent außerhalb von Docker entwickeln willst
++  (für den reinen Betrieb reicht Docker auf dem Server)
++
++## Schritt 1 — Repo klonen
++
++```bash
++git clone <this-repo-url> /opt/multitenant-platform
++cd /opt/multitenant-platform
++```
++
++## Schritt 2 — `.env` anlegen
++
++```bash
++cp .env.example .env
++nano .env
++```
++
++Trage **alle** `CHANGE_ME`-Werte ein. Secrets generierst du am besten mit:
++
++```bash
++openssl rand -hex 32
++```
++
++Details zu jeder Variable stehen als Kommentar direkt in `.env.example` —
++insbesondere:
++
++- `ENCRYPTION_MASTER_KEY`: verschlüsselt alle sensiblen Werte (Env-Vars der
++  Kundenprojekte, MinIO-Secrets) in der DB. **Bei Verlust dieses Keys sind alle
++  verschlüsselten Werte in der Datenbank unbrauchbar** — sicher aufbewahren
++  (Passwort-Manager, nicht nur auf dem Server selbst).
++- `PLATFORM_DOMAIN`: deine Basis-Domain. Alle Tenant-Subdomains
++  (`<slug>.<PLATFORM_DOMAIN>`) und der Webhook-Endpunkt
++  (`webhooks.<PLATFORM_DOMAIN>`) hängen davon ab. Für DNS: ein Wildcard-A-Record
++  (`*.PLATFORM_DOMAIN` → Server-IP) einmalig anlegen.
++- `GITHUB_PAT`: Fine-grained Personal Access Token mit Scope „Webhooks: Read & write“,
++  nur für Repos, die du selbst verbinden willst. Ohne Token: Webhooks müssen
++  manuell in GitHub eingetragen werden (die URL zeigt das Dashboard bei
++  Projekt-Erstellung an).
++- `HETZNER_SBX_USER` / `HETZNER_SBX_PASS`: nur relevant, falls du Backups auf eine
++  Hetzner Storage Box legst. Für andere Object-Storage-Anbieter `rclone config`
++  entsprechend anpassen (siehe Schritt 6).
++
++## Schritt 3 — Bootstrap ausführen
++
++```bash
++sudo ./bootstrap.sh
++```
++
++Das Skript ist idempotent (mehrfach ausführbar) und macht:
++
++1. System-Pakete installieren, Firewall (UFW: nur 22/80/443 offen) konfigurieren
++2. Docker Engine installieren
++3. Verzeichnisstruktur + Docker-Netzwerk (`traefik-net`) anlegen
++4. `.env` prüfen (bricht ab, falls sie fehlt)
++5. Core-Infrastruktur starten: Traefik, PostgreSQL+PgBouncer, MinIO, Uptime Kuma,
++   Cloudflare Tunnel
++6. Provisioning Agent bauen & starten
++7. Dashboard bauen & starten
++
++## Schritt 4 — Cloudflare Tunnel verbinden
++
++Das Dashboard und Uptime Kuma sind absichtlich **nicht** über offene Ports
++erreichbar. Im Cloudflare Zero Trust Dashboard:
++
++1. Tunnel anlegen, Token in `CLOUDFLARE_TUNNEL_TOKEN` (`.env`) eintragen
++2. Ingress-Regeln ergänzen:
++   - `admin.<PLATFORM_DOMAIN>` → `http://admin-dashboard:3000`
++   - `status-vps.<PLATFORM_DOMAIN>` → läuft über Traefik/Let's Encrypt (normaler
++     A-Record, **nicht** über den Tunnel — siehe Hinweis in Uptime-Kuma-Setup unten)
++
++## Schritt 5 — Admin-Zugang für das Dashboard anlegen
++
++Das Dashboard nutzt Credentials-Auth (kein OAuth), Passwort-Hash liegt in der `.env`:
++
++```bash
++node -e "console.log(require('bcryptjs').hashSync('DEIN_PASSWORT', 12))"
++```
++
++Ergebnis in `ADMIN_PASSWORD_HASH` eintragen, `ADMIN_EMAIL` entsprechend setzen,
++Container neu starten. Login unter `https://admin.<PLATFORM_DOMAIN>`.
++
++## Schritt 6 — Backups einrichten
++
++```bash
++rclone config    # Remote für deinen Object-Storage-Anbieter anlegen
++```
++
++Danach `backups/backup-script.sh` als Cron einrichten (empfohlen: täglich).
++Verschlüsselung läuft über `age` — den Public Key in `BACKUP_AGE_PUBLIC_KEY`
++eintragen, den privaten Identity-File **niemals** ins Repo committen (ist über
++`.gitignore` bereits ausgeschlossen: `backups/age-identity.txt`).
++
++Restore einmal testen:
++
++```bash
++./backups/restore-test-script.sh
++```
++
++## Schritt 7 — Uptime Kuma initialisieren
++
++Uptime Kuma muss beim ersten Aufruf einmalig über den eigenen Setup-Wizard
++initialisiert werden:
++
++- Datenbank-Wahl: **SQLite empfohlen** (der `mem_limit: 128m` im Compose-File ist
++  für die eingebettete MariaDB-Variante zu knapp bemessen)
++- Admin-Zugangsdaten müssen exakt `UPTIME_KUMA_USERNAME` / `UPTIME_KUMA_PASSWORD`
++  aus der `.env` entsprechen, sonst kann der Provisioning Agent keine Monitore
++  automatisch anlegen
++
++## Schritt 8 — Health-Check
++
++```bash
++docker exec provisioning-agent wget -qO- \
++  --header="X-Agent-Secret: $PROVISIONING_AGENT_SECRET" \
++  http://localhost:3001/health
++```
++
++Danach testweise einen Smoke-Test fahren:
++
++```bash
++./scripts/smoke-test.sh
++```
++
++## Bekannte offene Punkte (siehe auch README „Sicherheitsdesign")
++
++- SMTP für GoTrue (Tenant-Auth-Mails) ist aktuell nicht verdrahtet
++  (`GOTRUE_MAILER_AUTOCONFIRM: true`) — für echten Betrieb mit E-Mail-Bestätigung
++  muss das auf einen echten SMTP-Provider (z. B. Resend) umgestellt werden.
++- Resource-Tier-Werte (`STARTER_*`, `BUSINESS_*`, `PREMIUM_*` in `.env.example`)
++  sind Platzhalter für eine 16GB-VPS-Planung, nicht final für 8GB kalkuliert.
++- Container-Hardening (`read_only`, `cap_drop: ALL`, `no-new-privileges`,
++  `pids_limit`) ist für die generierten Tenant-Compose-Templates noch nicht
++  vollständig durchgezogen.
+diff --git a/dashboard/README.md b/dashboard/README.md
+deleted file mode 100644
+index 543016d..0000000
+--- a/dashboard/README.md
++++ /dev/null
+@@ -1,60 +0,0 @@
+-# Dashboard — Datenbank-Modul (v1)
+-
+-Erste lauffähige Stufe der Web-UI aus `11_web_ui_specification.md`, Phase 1
+-(Tenant-Übersicht) + Datenbank-Kernstück: **Table Editor** + **SQL Editor**,
+-gegen deine bereits laufenden Tenant-DBs (siehe `01_architecture_blueprint.md`).
+-
+-## Was funktioniert
+-
+-- Login (NextAuth Credentials, gleiche Env-Vars wie in `10_env_reference.md` § 2 vorgesehen)
+-- `/dashboard/database` — Liste aller Tenants aus `admin_dashboard.kunden`
+-- `/dashboard/database/[slug]` — Tabellenliste der jeweiligen Tenant-DB
+-- `/dashboard/database/[slug]/[table]` — Table Editor: Zeilen browsen (paginiert),
+-  Inline-Edit per Doppelklick, neue Zeile anlegen, Zeile löschen
+-- `/dashboard/sql/[slug]` — SQL Editor mit freier Query-Ausführung (⌘/Strg+Enter)
+-
+-**Verbindung:** Läuft als `postgres`-Superuser direkt gegen `pgbouncer:5432/<db_name>`
+-(nicht über den eingeschränkten `authenticator`-Role) — analog zu Supabase Studio,
+-das auch mit vollen Rechten auf die DB zugreift.
+-
+-## Was noch fehlt (nächste Phasen)
+-
+-- Auth-User-Verwaltung (GoTrue-Admin-API)
+-- Storage-Browser (MinIO/S3-API)
+-- Schema-Editor (Tabellen/Spalten per UI anlegen, nicht nur Daten)
+-- Git-Connect / Hosting-Flow (Phase 2/3 aus der Web-UI-Spec)
+-
+-## Setup auf dem VPS
+-
+-1. Ordner ins Repo/VPS unter `/opt/multitenant-platform/dashboard/` legen.
+-2. Neue Env-Vars zur zentralen `.env` hinzufügen (zusätzlich zu den
+-   bestehenden aus `10_env_reference.md`):
+-   ```bash
+-   # Admin-Login-Passwort-Hash generieren:
+-   node -e "console.log(require('bcryptjs').hashSync('DEIN_PASSWORT', 12))"
+-   ```
+-   Ergebnis in `ADMIN_PASSWORD_HASH` eintragen. `NEXTAUTH_SECRET` per
+-   `openssl rand -hex 32` erzeugen (wird hier als `AUTH_SECRET` an NextAuth
+-   v5 durchgereicht).
+-3. `NEXTAUTH_URL=https://admin.vps.meine-domain.com` (wie in `10_env_reference.md`).
+-4. Build & Start:
+-   ```bash
+-   cd /opt/multitenant-platform/dashboard
+-   set -a && source /opt/multitenant-platform/.env && set +a
+-   docker compose up -d --build
+-   ```
+-5. Cloudflare Tunnel Ingress-Rule ergänzen: `admin.vps.meine-domain.com` →
+-   `http://admin-dashboard:3000` (siehe `02_vps_bootstrap_guide.md` § 5.5) —
+-   Container läuft im `traefik-net`, kein öffentlicher Port.
+-6. Login unter `https://admin.vps.meine-domain.com` mit `ADMIN_EMAIL` +
+-   dem Klartext-Passwort, dessen Hash du in Schritt 2 erzeugt hast.
+-
+-## Lokale Entwicklung
+-
+-```bash
+-npm install
+-cp .env.example .env.local   # falls vorhanden, sonst manuell Env-Vars setzen
+-npm run dev
+-```
+-Für lokale DB-Verbindung brauchst du entweder einen SSH-Tunnel zum VPS
+-(`ssh -L 5432:localhost:5432 vps`) oder eine lokale Kopie der Core-Postgres-Instanz.
+diff --git a/dashboard/docker-compose.yml b/dashboard/docker-compose.yml
+index c6863e9..bf9f6f1 100644
+--- a/dashboard/docker-compose.yml
++++ b/dashboard/docker-compose.yml
+@@ -21,9 +21,9 @@ services:
+     networks:
+       - traefik-net
+     restart: always
+-    # KEINE Traefik-Labels -> nur über Cloudflare Tunnel erreichbar (siehe
+-    # 02_vps_bootstrap_guide.md § 5.5). cloudflared muss admin.vps.meine-domain.com
+-    # auf http://admin-dashboard:3000 routen (Ingress-Rule im Zero-Trust-Dashboard).
++    # KEINE Traefik-Labels -> nur über Cloudflare Tunnel erreichbar (siehe SETUP.md,
++    # Schritt 4). cloudflared muss admin.<PLATFORM_DOMAIN> auf
++    # http://admin-dashboard:3000 routen (Ingress-Rule im Zero-Trust-Dashboard).
+ 
+ networks:
+   traefik-net:
+diff --git a/dashboard/package-lock.json b/dashboard/package-lock.json
+index 19c8c5d..cf0b99d 100644
+--- a/dashboard/package-lock.json
++++ b/dashboard/package-lock.json
+@@ -9,8 +9,8 @@
+       "version": "0.1.0",
+       "dependencies": {
+         "bcryptjs": "2.4.3",
+-        "next": "15.3.9",
+-        "next-auth": "5.0.0-beta.25",
++        "next": "^15.5.22",
++        "next-auth": "^5.0.0-beta.32",
+         "pg": "8.13.1",
+         "pg-format": "1.0.4",
+         "react": "19.0.0",
+@@ -26,23 +26,21 @@
+       }
+     },
+     "node_modules/@auth/core": {
+-      "version": "0.37.2",
+-      "resolved": "https://registry.npmjs.org/@auth/core/-/core-0.37.2.tgz",
+-      "integrity": "sha512-kUvzyvkcd6h1vpeMAojK2y7+PAV5H+0Cc9+ZlKYDFhDY31AlvsB+GW5vNO4qE3Y07KeQgvNO9U0QUx/fN62kBw==",
++      "version": "0.41.3",
++      "resolved": "https://registry.npmjs.org/@auth/core/-/core-0.41.3.tgz",
++      "integrity": "sha512-sJ3JMHHkXMD3aOjopv7mOBTO1Ocw4b0fAEXJBz6k7YHLpYQI6C40jCUPc5fNvUKxXRXNE1/sRISA15UrwWJBTw==",
+       "license": "ISC",
+       "dependencies": {
+         "@panva/hkdf": "^1.2.1",
+-        "@types/cookie": "0.6.0",
+-        "cookie": "0.7.1",
+-        "jose": "^5.9.3",
+-        "oauth4webapi": "^3.0.0",
+-        "preact": "10.11.3",
+-        "preact-render-to-string": "5.2.3"
++        "jose": "^6.0.6",
++        "oauth4webapi": "^3.3.0",
++        "preact": "10.24.3",
++        "preact-render-to-string": "6.5.11"
+       },
+       "peerDependencies": {
+         "@simplewebauthn/browser": "^9.0.1",
+         "@simplewebauthn/server": "^9.0.2",
+-        "nodemailer": "^6.8.0"
++        "nodemailer": "^7.0.7 || ^8.0.5"
+       },
+       "peerDependenciesMeta": {
+         "@simplewebauthn/browser": {
+@@ -533,15 +531,15 @@
+       }
+     },
+     "node_modules/@next/env": {
+-      "version": "15.3.9",
+-      "resolved": "https://registry.npmjs.org/@next/env/-/env-15.3.9.tgz",
+-      "integrity": "sha512-I7wMCjlHc85EvAebNYJCRBZ+shdrGhcIXBviWmDzGYXwTQ+WrYpfg1LBOnTK1Bn3b+ud5apesNObXKEGqi/C3g==",
++      "version": "15.5.22",
++      "resolved": "https://registry.npmjs.org/@next/env/-/env-15.5.22.tgz",
++      "integrity": "sha512-O5BlKb3KtsHkvO0gjjV66PuJnAgCtIEIzwkt50HRAHsQkU1t77eksIXSZV84/WMtZJjWrnDUPKHVRi0D62nSAA==",
+       "license": "MIT"
+     },
+     "node_modules/@next/swc-darwin-arm64": {
+-      "version": "15.3.5",
+-      "resolved": "https://registry.npmjs.org/@next/swc-darwin-arm64/-/swc-darwin-arm64-15.3.5.tgz",
+-      "integrity": "sha512-lM/8tilIsqBq+2nq9kbTW19vfwFve0NR7MxfkuSUbRSgXlMQoJYg+31+++XwKVSXk4uT23G2eF/7BRIKdn8t8w==",
++      "version": "15.5.22",
++      "resolved": "https://registry.npmjs.org/@next/swc-darwin-arm64/-/swc-darwin-arm64-15.5.22.tgz",
++      "integrity": "sha512-/VISwtffSg8+fVvBbXdglsvruCsdbBC4dG25iU6xascKVqfQKsj/OtjGnOEkIS7pX5GB9e9/r5QprpicsGL3gw==",
+       "cpu": [
+         "arm64"
+       ],
+@@ -555,9 +553,9 @@
+       }
+     },
+     "node_modules/@next/swc-darwin-x64": {
+-      "version": "15.3.5",
+-      "resolved": "https://registry.npmjs.org/@next/swc-darwin-x64/-/swc-darwin-x64-15.3.5.tgz",
+-      "integrity": "sha512-WhwegPQJ5IfoUNZUVsI9TRAlKpjGVK0tpJTL6KeiC4cux9774NYE9Wu/iCfIkL/5J8rPAkqZpG7n+EfiAfidXA==",
++      "version": "15.5.22",
++      "resolved": "https://registry.npmjs.org/@next/swc-darwin-x64/-/swc-darwin-x64-15.5.22.tgz",
++      "integrity": "sha512-NiA9ve8hbiuhG/Q17a2mZDRVxMTtg3rTOgjLnDaLlE+AEPAQlkkuKrfePEbeOrgYmX0U2KGX4EVEn09hXU5GlQ==",
+       "cpu": [
+         "x64"
+       ],
+@@ -571,9 +569,9 @@
+       }
+     },
+     "node_modules/@next/swc-linux-arm64-gnu": {
+-      "version": "15.3.5",
+-      "resolved": "https://registry.npmjs.org/@next/swc-linux-arm64-gnu/-/swc-linux-arm64-gnu-15.3.5.tgz",
+-      "integrity": "sha512-LVD6uMOZ7XePg3KWYdGuzuvVboxujGjbcuP2jsPAN3MnLdLoZUXKRc6ixxfs03RH7qBdEHCZjyLP/jBdCJVRJQ==",
++      "version": "15.5.22",
++      "resolved": "https://registry.npmjs.org/@next/swc-linux-arm64-gnu/-/swc-linux-arm64-gnu-15.5.22.tgz",
++      "integrity": "sha512-vAPa9vltW+UW/KWtjXeSUFgV3wb1x9d/BeyC6WFI6eBpL0D2f70oGwtOp6193mNW3qusrpgBzMQferPf+Zh8Dw==",
+       "cpu": [
+         "arm64"
+       ],
+@@ -587,9 +585,9 @@
+       }
+     },
+     "node_modules/@next/swc-linux-arm64-musl": {
+-      "version": "15.3.5",
+-      "resolved": "https://registry.npmjs.org/@next/swc-linux-arm64-musl/-/swc-linux-arm64-musl-15.3.5.tgz",
+-      "integrity": "sha512-k8aVScYZ++BnS2P69ClK7v4nOu702jcF9AIHKu6llhHEtBSmM2zkPGl9yoqbSU/657IIIb0QHpdxEr0iW9z53A==",
++      "version": "15.5.22",
++      "resolved": "https://registry.npmjs.org/@next/swc-linux-arm64-musl/-/swc-linux-arm64-musl-15.5.22.tgz",
++      "integrity": "sha512-iknK80pWlNDnkdSr13bd8mMuG3Z2oTxODwsZHvuMY7caMk77+rBLdHVWsy8v2EVa3ZojJ/+wJX5fnq8va6Gv8A==",
+       "cpu": [
+         "arm64"
+       ],
+@@ -603,9 +601,9 @@
+       }
+     },
+     "node_modules/@next/swc-linux-x64-gnu": {
+-      "version": "15.3.5",
+-      "resolved": "https://registry.npmjs.org/@next/swc-linux-x64-gnu/-/swc-linux-x64-gnu-15.3.5.tgz",
+-      "integrity": "sha512-2xYU0DI9DGN/bAHzVwADid22ba5d/xrbrQlr2U+/Q5WkFUzeL0TDR963BdrtLS/4bMmKZGptLeg6282H/S2i8A==",
++      "version": "15.5.22",
++      "resolved": "https://registry.npmjs.org/@next/swc-linux-x64-gnu/-/swc-linux-x64-gnu-15.5.22.tgz",
++      "integrity": "sha512-penuEdkwU2OOAiS+n4LE8T/VIoCfAI01QcLZTJ2xc3+l4Q22L/DzURocmI2LU1b+8BMQoLAP1Sze3uYAZT05Bg==",
+       "cpu": [
+         "x64"
+       ],
+@@ -619,9 +617,9 @@
+       }
+     },
+     "node_modules/@next/swc-linux-x64-musl": {
+-      "version": "15.3.5",
+-      "resolved": "https://registry.npmjs.org/@next/swc-linux-x64-musl/-/swc-linux-x64-musl-15.3.5.tgz",
+-      "integrity": "sha512-TRYIqAGf1KCbuAB0gjhdn5Ytd8fV+wJSM2Nh2is/xEqR8PZHxfQuaiNhoF50XfY90sNpaRMaGhF6E+qjV1b9Tg==",
++      "version": "15.5.22",
++      "resolved": "https://registry.npmjs.org/@next/swc-linux-x64-musl/-/swc-linux-x64-musl-15.5.22.tgz",
++      "integrity": "sha512-ZM0BKJm3FZ+guG6WT6PcyOLtp6paZ5tngcJC/uUKvLW4Y0TQnnVi1+UGdo8Q6Yxp5gaS82pmC1rD/oFlhkWB3g==",
+       "cpu": [
+         "x64"
+       ],
+@@ -635,9 +633,9 @@
+       }
+     },
+     "node_modules/@next/swc-win32-arm64-msvc": {
+-      "version": "15.3.5",
+-      "resolved": "https://registry.npmjs.org/@next/swc-win32-arm64-msvc/-/swc-win32-arm64-msvc-15.3.5.tgz",
+-      "integrity": "sha512-h04/7iMEUSMY6fDGCvdanKqlO1qYvzNxntZlCzfE8i5P0uqzVQWQquU1TIhlz0VqGQGXLrFDuTJVONpqGqjGKQ==",
++      "version": "15.5.22",
++      "resolved": "https://registry.npmjs.org/@next/swc-win32-arm64-msvc/-/swc-win32-arm64-msvc-15.5.22.tgz",
++      "integrity": "sha512-rY/YaumrZaS0//94BnHLF5VSRp0GFUO4GvXNuoCBb0cGSci96yO+p1JaNL2aq9YZAYv9cuZRziV02x5IQH/wjg==",
+       "cpu": [
+         "arm64"
+       ],
+@@ -651,9 +649,9 @@
+       }
+     },
+     "node_modules/@next/swc-win32-x64-msvc": {
+-      "version": "15.3.5",
+-      "resolved": "https://registry.npmjs.org/@next/swc-win32-x64-msvc/-/swc-win32-x64-msvc-15.3.5.tgz",
+-      "integrity": "sha512-5fhH6fccXxnX2KhllnGhkYMndhOiLOLEiVGYjP2nizqeGWkN10sA9taATlXwake2E2XMvYZjjz0Uj7T0y+z1yw==",
++      "version": "15.5.22",
++      "resolved": "https://registry.npmjs.org/@next/swc-win32-x64-msvc/-/swc-win32-x64-msvc-15.5.22.tgz",
++      "integrity": "sha512-s5IA4cyrbR2XK/5NWcu5dp8CfPBiKME+UhvNperia7uQybEgg5+LIhGMiY37WQE4rcI4owsDcU4IVUjLoTuDkA==",
+       "cpu": [
+         "x64"
+       ],
+@@ -675,12 +673,6 @@
+         "url": "https://github.com/sponsors/panva"
+       }
+     },
+-    "node_modules/@swc/counter": {
+-      "version": "0.1.3",
+-      "resolved": "https://registry.npmjs.org/@swc/counter/-/counter-0.1.3.tgz",
+-      "integrity": "sha512-e2BR4lsJkkRlKZ/qCHPw9ZaSxc0MVUd7gtbtaB7aMvHeJVYe8sOB8DBZkP2DtISHGSku9sCK6T6cnY0CtXrOCQ==",
+-      "license": "Apache-2.0"
+-    },
+     "node_modules/@swc/helpers": {
+       "version": "0.5.15",
+       "resolved": "https://registry.npmjs.org/@swc/helpers/-/helpers-0.5.15.tgz",
+@@ -697,12 +689,6 @@
+       "dev": true,
+       "license": "MIT"
+     },
+-    "node_modules/@types/cookie": {
+-      "version": "0.6.0",
+-      "resolved": "https://registry.npmjs.org/@types/cookie/-/cookie-0.6.0.tgz",
+-      "integrity": "sha512-4Kh9a6B2bQciAhf7FSuMRRkUWecJgJu9nPnx3yzpsfXX/c50REIqpHY4C82bXP90qrLtXtkDxTZosYO3UpOwlA==",
+-      "license": "MIT"
+-    },
+     "node_modules/@types/node": {
+       "version": "20.14.10",
+       "resolved": "https://registry.npmjs.org/@types/node/-/node-20.14.10.tgz",
+@@ -751,17 +737,6 @@
+       "integrity": "sha512-V/Hy/X9Vt7f3BbPJEi8BdVFMByHi+jNXrYkW3huaybV/kQ0KJg0Y6PkEMbn+zeT+i+SiKZ/HMqJGIIt4LZDqNQ==",
+       "license": "MIT"
+     },
+-    "node_modules/busboy": {
+-      "version": "1.6.0",
+-      "resolved": "https://registry.npmjs.org/busboy/-/busboy-1.6.0.tgz",
+-      "integrity": "sha512-8SFQbg/0hQ9xy3UNTB0YEnsNBbWfhf7RtnzpL7TkBiTBRfrQ9Fxcnz7VJsleJpyp6rVLvXiuORqjlHi5q+PYuA==",
+-      "dependencies": {
+-        "streamsearch": "^1.1.0"
+-      },
+-      "engines": {
+-        "node": ">=10.16.0"
+-      }
+-    },
+     "node_modules/caniuse-lite": {
+       "version": "1.0.30001806",
+       "resolved": "https://registry.npmjs.org/caniuse-lite/-/caniuse-lite-1.0.30001806.tgz",
+@@ -788,15 +763,6 @@
+       "integrity": "sha512-IV3Ou0jSMzZrd3pZ48nLkT9DA7Ag1pnPzaiQhpW7c3RbcqqzvzzVu+L8gfqMp/8IM2MQtSiqaCxrrcfu8I8rMA==",
+       "license": "MIT"
+     },
+-    "node_modules/cookie": {
+-      "version": "0.7.1",
+-      "resolved": "https://registry.npmjs.org/cookie/-/cookie-0.7.1.tgz",
+-      "integrity": "sha512-6DnInpx7SJ2AK3+CTUE/ZM0vWTUboZCegxhC2xiIydHR9jNuTAASBrfEpHhiGOZw/nX51bHt6YQl8jsGo4y/0w==",
+-      "license": "MIT",
+-      "engines": {
+-        "node": ">= 0.6"
+-      }
+-    },
+     "node_modules/csstype": {
+       "version": "3.2.3",
+       "resolved": "https://registry.npmjs.org/csstype/-/csstype-3.2.3.tgz",
+@@ -815,9 +781,9 @@
+       }
+     },
+     "node_modules/jose": {
+-      "version": "5.10.0",
+-      "resolved": "https://registry.npmjs.org/jose/-/jose-5.10.0.tgz",
+-      "integrity": "sha512-s+3Al/p9g32Iq+oqXxkW//7jk2Vig6FF1CFqzVXoTUXt2qz89YWbL+OwS17NFYEvxC35n0FKeGO2LGYSxeM2Gg==",
++      "version": "6.2.7",
++      "resolved": "https://registry.npmjs.org/jose/-/jose-6.2.7.tgz",
++      "integrity": "sha512-hq1OB1bALKfydZNoViyg6hPVGV4i93ny9Op+n4zP5RSf7SCZEXa/TsG2O3IEr7+WlHRTPnpqDmHfMH6qXAD60w==",
+       "license": "MIT",
+       "funding": {
+         "url": "https://github.com/sponsors/panva"
+@@ -842,15 +808,13 @@
+       }
+     },
+     "node_modules/next": {
+-      "version": "15.3.9",
+-      "resolved": "https://registry.npmjs.org/next/-/next-15.3.9.tgz",
+-      "integrity": "sha512-bat50ogkh2esjfkbqmVocL5QunR9RGCSO2oQKFjKeDcEylIgw3JY6CMfGnzoVfXJ9SDLHI546sHmsk90D2ivwQ==",
++      "version": "15.5.22",
++      "resolved": "https://registry.npmjs.org/next/-/next-15.5.22.tgz",
++      "integrity": "sha512-mrtal1sRxO4YrlDS98sDuIvGZivKbFix8w7oAL9ZynfOgc3cADQOQgvwtMooc18Qr8bKzvQAcHwHZ0mbJ7zcfQ==",
+       "license": "MIT",
+       "dependencies": {
+-        "@next/env": "15.3.9",
+-        "@swc/counter": "0.1.3",
++        "@next/env": "15.5.22",
+         "@swc/helpers": "0.5.15",
+-        "busboy": "1.6.0",
+         "caniuse-lite": "^1.0.30001579",
+         "postcss": "8.4.31",
+         "styled-jsx": "5.1.6"
+@@ -862,19 +826,19 @@
+         "node": "^18.18.0 || ^19.8.0 || >= 20.0.0"
+       },
+       "optionalDependencies": {
+-        "@next/swc-darwin-arm64": "15.3.5",
+-        "@next/swc-darwin-x64": "15.3.5",
+-        "@next/swc-linux-arm64-gnu": "15.3.5",
+-        "@next/swc-linux-arm64-musl": "15.3.5",
+-        "@next/swc-linux-x64-gnu": "15.3.5",
+-        "@next/swc-linux-x64-musl": "15.3.5",
+-        "@next/swc-win32-arm64-msvc": "15.3.5",
+-        "@next/swc-win32-x64-msvc": "15.3.5",
+-        "sharp": "^0.34.1"
++        "@next/swc-darwin-arm64": "15.5.22",
++        "@next/swc-darwin-x64": "15.5.22",
++        "@next/swc-linux-arm64-gnu": "15.5.22",
++        "@next/swc-linux-arm64-musl": "15.5.22",
++        "@next/swc-linux-x64-gnu": "15.5.22",
++        "@next/swc-linux-x64-musl": "15.5.22",
++        "@next/swc-win32-arm64-msvc": "15.5.22",
++        "@next/swc-win32-x64-msvc": "15.5.22",
++        "sharp": "^0.34.3"
+       },
+       "peerDependencies": {
+         "@opentelemetry/api": "^1.1.0",
+-        "@playwright/test": "^1.41.2",
++        "@playwright/test": "^1.51.1",
+         "babel-plugin-react-compiler": "*",
+         "react": "^18.2.0 || 19.0.0-rc-de68d2f4-20241204 || ^19.0.0",
+         "react-dom": "^18.2.0 || 19.0.0-rc-de68d2f4-20241204 || ^19.0.0",
+@@ -896,19 +860,19 @@
+       }
+     },
+     "node_modules/next-auth": {
+-      "version": "5.0.0-beta.25",
+-      "resolved": "https://registry.npmjs.org/next-auth/-/next-auth-5.0.0-beta.25.tgz",
+-      "integrity": "sha512-2dJJw1sHQl2qxCrRk+KTQbeH+izFbGFPuJj5eGgBZFYyiYYtvlrBeUw1E/OJJxTRjuxbSYGnCTkUIRsIIW0bog==",
++      "version": "5.0.0-beta.32",
++      "resolved": "https://registry.npmjs.org/next-auth/-/next-auth-5.0.0-beta.32.tgz",
++      "integrity": "sha512-CGlChIEWZ6LltNVxrE5yiySMID+Idpmry47JYA5lLwgD8Sx02a8M65VL0TWVz9nbnOioS/tCW/rP/0+mE7Qp4Q==",
+       "license": "ISC",
+       "dependencies": {
+-        "@auth/core": "0.37.2"
++        "@auth/core": "0.41.3"
+       },
+       "peerDependencies": {
+         "@simplewebauthn/browser": "^9.0.1",
+         "@simplewebauthn/server": "^9.0.2",
+-        "next": "^14.0.0-0 || ^15.0.0-0",
+-        "nodemailer": "^6.6.5",
+-        "react": "^18.2.0 || ^19.0.0-0"
++        "next": "^14.0.0-0 || ^15.0.0 || ^16.0.0",
++        "nodemailer": "^7.0.7 || ^8.0.5",
++        "react": "^18.2.0 || ^19.0.0"
+       },
+       "peerDependenciesMeta": {
+         "@simplewebauthn/browser": {
+@@ -1186,9 +1150,9 @@
+       "license": "MIT"
+     },
+     "node_modules/preact": {
+-      "version": "10.11.3",
+-      "resolved": "https://registry.npmjs.org/preact/-/preact-10.11.3.tgz",
+-      "integrity": "sha512-eY93IVpod/zG3uMF22Unl8h9KkrcKIRs2EGar8hwLZZDU1lkjph303V9HZBwufh2s736U6VXuhD109LYqPoffg==",
++      "version": "10.24.3",
++      "resolved": "https://registry.npmjs.org/preact/-/preact-10.24.3.tgz",
++      "integrity": "sha512-Z2dPnBnMUfyQfSQ+GBdsGa16hz35YmLmtTLhM169uW944hYL6xzTYkJjC07j+Wosz733pMWx0fgON3JNw1jJQA==",
+       "license": "MIT",
+       "funding": {
+         "type": "opencollective",
+@@ -1196,23 +1160,14 @@
+       }
+     },
+     "node_modules/preact-render-to-string": {
+-      "version": "5.2.3",
+-      "resolved": "https://registry.npmjs.org/preact-render-to-string/-/preact-render-to-string-5.2.3.tgz",
+-      "integrity": "sha512-aPDxUn5o3GhWdtJtW0svRC2SS/l8D9MAgo2+AWml+BhDImb27ALf04Q2d+AHqUUOc6RdSXFIBVa2gxzgMKgtZA==",
++      "version": "6.5.11",
++      "resolved": "https://registry.npmjs.org/preact-render-to-string/-/preact-render-to-string-6.5.11.tgz",
++      "integrity": "sha512-ubnauqoGczeGISiOh6RjX0/cdaF8v/oDXIjO85XALCQjwQP+SB4RDXXtvZ6yTYSjG+PC1QRP2AhPgCEsM2EvUw==",
+       "license": "MIT",
+-      "dependencies": {
+-        "pretty-format": "^3.8.0"
+-      },
+       "peerDependencies": {
+         "preact": ">=10"
+       }
+     },
+-    "node_modules/pretty-format": {
+-      "version": "3.8.0",
+-      "resolved": "https://registry.npmjs.org/pretty-format/-/pretty-format-3.8.0.tgz",
+-      "integrity": "sha512-WuxUnVtlWL1OfZFQFuqvnvs6MiAGk9UNsBostyBOB0Is9wb5uRESevA6rnl/rkksXaGX3GzZhPup5d6Vp1nFew==",
+-      "license": "MIT"
+-    },
+     "node_modules/react": {
+       "version": "19.0.0",
+       "resolved": "https://registry.npmjs.org/react/-/react-19.0.0.tgz",
+@@ -1307,14 +1262,6 @@
+         "node": ">=0.10.0"
+       }
+     },
+-    "node_modules/streamsearch": {
+-      "version": "1.1.0",
+-      "resolved": "https://registry.npmjs.org/streamsearch/-/streamsearch-1.1.0.tgz",
+-      "integrity": "sha512-Mcc5wHehp9aXz1ax6bZUyY5afg9u2rv5cqQI3mRrYkGC8rW2hM02jWuwjtL++LS5qinSyhj2QfLyNsuc+VsExg==",
+-      "engines": {
+-        "node": ">=10.0.0"
+-      }
+-    },
+     "node_modules/styled-jsx": {
+       "version": "5.1.6",
+       "resolved": "https://registry.npmjs.org/styled-jsx/-/styled-jsx-5.1.6.tgz",
+diff --git a/dashboard/package.json b/dashboard/package.json
+index 75ba478..49cae8f 100644
+--- a/dashboard/package.json
++++ b/dashboard/package.json
+@@ -10,20 +10,20 @@
+     "lint": "next lint"
+   },
+   "dependencies": {
+-    "next": "15.3.9",
+-    "react": "19.0.0",
+-    "react-dom": "19.0.0",
++    "bcryptjs": "2.4.3",
++    "next": "^15.5.22",
++    "next-auth": "^5.0.0-beta.32",
+     "pg": "8.13.1",
+     "pg-format": "1.0.4",
+-    "next-auth": "5.0.0-beta.25",
+-    "bcryptjs": "2.4.3"
++    "react": "19.0.0",
++    "react-dom": "19.0.0"
+   },
+   "devDependencies": {
+-    "typescript": "5.6.3",
+     "@types/bcryptjs": "2.4.6",
+     "@types/node": "20.14.10",
++    "@types/pg": "8.11.10",
+     "@types/react": "19.0.1",
+     "@types/react-dom": "19.0.1",
+-    "@types/pg": "8.11.10"
++    "typescript": "5.6.3"
+   }
+ }
+diff --git a/monitoring/uptime-kuma/docker-compose.yml b/monitoring/uptime-kuma/docker-compose.yml
+index a7ee413..be0676c 100644
+--- a/monitoring/uptime-kuma/docker-compose.yml
++++ b/monitoring/uptime-kuma/docker-compose.yml
+@@ -16,7 +16,7 @@ services:
+       start_period: 30s
+     labels:
+       - "traefik.enable=true"
+-      - "traefik.http.routers.uptime.rule=Host(`status-vps.up2-web.com`)"
++      - "traefik.http.routers.uptime.rule=Host(`status-vps.${PLATFORM_DOMAIN:-example.com}`)"
+       - "traefik.http.routers.uptime.entrypoints=websecure"
+       - "traefik.http.routers.uptime.tls.certresolver=myresolver"
+       - "traefik.http.services.uptime.loadbalancer.server.port=3001"
+diff --git a/provisioning-agent/docker-compose.yml b/provisioning-agent/docker-compose.yml
+index 32a0186..4a63dbe 100644
+--- a/provisioning-agent/docker-compose.yml
++++ b/provisioning-agent/docker-compose.yml
+@@ -77,7 +77,7 @@ services:
+       - "traefik.enable=true"
+       # NUR /webhooks/* öffentlich — alle anderen Pfade brauchen weiterhin X-Agent-Secret
+       # und sind über diesen Router technisch zwar erreichbar, aber ohne Secret 401.
+-      - "traefik.http.routers.agent-webhooks.rule=Host(`webhooks.${PLATFORM_DOMAIN:-up2-web.com}`) && PathPrefix(`/webhooks`)"
++      - "traefik.http.routers.agent-webhooks.rule=Host(`webhooks.${PLATFORM_DOMAIN:-example.com}`) && PathPrefix(`/webhooks`)"
+       - "traefik.http.routers.agent-webhooks.entrypoints=websecure"
+       - "traefik.http.routers.agent-webhooks.tls.certresolver=myresolver"
+       - "traefik.http.services.agent-webhooks.loadbalancer.server.port=3001"
+diff --git a/provisioning-agent/src/routes/projects.ts b/provisioning-agent/src/routes/projects.ts
+index 3b4c8a1..47e41f1 100644
+--- a/provisioning-agent/src/routes/projects.ts
++++ b/provisioning-agent/src/routes/projects.ts
+@@ -7,8 +7,8 @@ import { logAudit } from '../lib/audit';
+ 
+ const PGBOUNCER_HOST = process.env.PGBOUNCER_HOST || 'pgbouncer';
+ const MASTER_DB_PASSWORD = process.env.MASTER_DB_PASSWORD!;
+-const PREVIEW_DOMAIN_SUFFIX = process.env.PLATFORM_DOMAIN || 'up2-web.com';
+-const WEBHOOK_PUBLIC_URL = process.env.WEBHOOK_PUBLIC_URL || 'https://webhooks.up2-web.com';
++const PREVIEW_DOMAIN_SUFFIX = process.env.PLATFORM_DOMAIN || 'example.com';
++const WEBHOOK_PUBLIC_URL = process.env.WEBHOOK_PUBLIC_URL || 'https://webhooks.example.com';
+ const GITHUB_PAT = process.env.GITHUB_PAT; // Fine-grained PAT, Scope: Webhooks (write) — Solo-Admin-Setup, kein OAuth-Flow (Phase 3 YAGNI für 1 User).
+ 
+ function adminClient(): PGClient {

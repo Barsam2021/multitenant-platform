@@ -21,9 +21,9 @@ services:
     networks:
       - traefik-net
     restart: always
-    # KEINE Traefik-Labels -> nur über Cloudflare Tunnel erreichbar (siehe
-    # 02_vps_bootstrap_guide.md § 5.5). cloudflared muss admin.vps.meine-domain.com
-    # auf http://admin-dashboard:3000 routen (Ingress-Rule im Zero-Trust-Dashboard).
+    # KEINE Traefik-Labels -> nur über Cloudflare Tunnel erreichbar (siehe SETUP.md,
+    # Schritt 4). cloudflared muss admin.<PLATFORM_DOMAIN> auf
+    # http://admin-dashboard:3000 routen (Ingress-Rule im Zero-Trust-Dashboard).
 
 networks:
   traefik-net:

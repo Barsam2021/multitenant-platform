@@ -77,7 +77,7 @@ services:
       - "traefik.enable=true"
       # NUR /webhooks/* öffentlich — alle anderen Pfade brauchen weiterhin X-Agent-Secret
       # und sind über diesen Router technisch zwar erreichbar, aber ohne Secret 401.
-      - "traefik.http.routers.agent-webhooks.rule=Host(`webhooks.${PLATFORM_DOMAIN:-up2-web.com}`) && PathPrefix(`/webhooks`)"
+      - "traefik.http.routers.agent-webhooks.rule=Host(`webhooks.${PLATFORM_DOMAIN:-example.com}`) && PathPrefix(`/webhooks`)"
       - "traefik.http.routers.agent-webhooks.entrypoints=websecure"
       - "traefik.http.routers.agent-webhooks.tls.certresolver=myresolver"
       - "traefik.http.services.agent-webhooks.loadbalancer.server.port=3001"

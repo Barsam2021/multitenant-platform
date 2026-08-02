@@ -7,8 +7,8 @@ import { logAudit } from '../lib/audit';
 
 const PGBOUNCER_HOST = process.env.PGBOUNCER_HOST || 'pgbouncer';
 const MASTER_DB_PASSWORD = process.env.MASTER_DB_PASSWORD!;
-const PREVIEW_DOMAIN_SUFFIX = process.env.PLATFORM_DOMAIN || 'up2-web.com';
-const WEBHOOK_PUBLIC_URL = process.env.WEBHOOK_PUBLIC_URL || 'https://webhooks.up2-web.com';
+const PREVIEW_DOMAIN_SUFFIX = process.env.PLATFORM_DOMAIN || 'example.com';
+const WEBHOOK_PUBLIC_URL = process.env.WEBHOOK_PUBLIC_URL || 'https://webhooks.example.com';
 const GITHUB_PAT = process.env.GITHUB_PAT; // Fine-grained PAT, Scope: Webhooks (write) — Solo-Admin-Setup, kein OAuth-Flow (Phase 3 YAGNI für 1 User).
 
 function adminClient(): PGClient {
