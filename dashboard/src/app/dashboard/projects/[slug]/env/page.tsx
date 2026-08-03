@@ -30,6 +30,9 @@ export default function EnvVarsPage({
   const [status, setStatus] = useState<string | null>(null);
   const [apiKeys, setApiKeys] = useState<ApiKeys | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
+  const [bulkText, setBulkText] = useState("");
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkStatus, setBulkStatus] = useState<string | null>(null);
 
   const loadVars = useCallback((projectId: string) => {
     fetch(`/api/projects/${projectId}/env`)
@@ -58,6 +61,40 @@ export default function EnvVarsPage({
       setCopied(label);
       setTimeout(() => setCopied(null), 1500);
     });
+  }
+
+  async function handleBulkImport() {
+    if (!project || !bulkText.trim()) return;
+    setBulkStatus("Importiere…");
+    try {
+      const res = await fetch(`/api/projects/${project.id}/env/bulk`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ envText: bulkText }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setBulkStatus(data.error || "Fehler beim Import");
+        return;
+      }
+      setBulkStatus(
+        `${data.imported} Variable${data.imported === 1 ? "" : "n"} importiert.` +
+          (data.skipped?.length ? ` ${data.skipped.length} übersprungen (ungültiges Format).` : "")
+      );
+      setBulkText("");
+      loadVars(project.id);
+    } catch {
+      setBulkStatus("Verbindung zum Provisioning Agent fehlgeschlagen");
+    }
+  }
+
+  function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setBulkText(String(reader.result || ""));
+    reader.readAsText(file);
+    e.target.value = "";
   }
 
   async function handleSet(e: React.FormEvent) {
@@ -173,6 +210,50 @@ export default function EnvVarsPage({
             </button>
           </div>
         ))}
+      </div>
+
+      <div
+        style={{
+          border: "1px solid var(--border)",
+          borderRadius: 8,
+          padding: 16,
+          marginBottom: 20,
+          background: "var(--panel)",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <h3 style={{ margin: 0, fontSize: 14 }}>.env importieren</h3>
+          <button className="btn" onClick={() => setBulkOpen((v) => !v)}>
+            {bulkOpen ? "Zuklappen" : "Öffnen"}
+          </button>
+        </div>
+        {bulkOpen && (
+          <div style={{ marginTop: 10 }}>
+            <textarea
+              value={bulkText}
+              onChange={(e) => setBulkText(e.target.value)}
+              placeholder={"KEY=value\nANOTHER_KEY=value2"}
+              rows={8}
+              style={{
+                width: "100%",
+                fontFamily: "var(--font-mono)",
+                fontSize: 12,
+                boxSizing: "border-box",
+                resize: "vertical",
+              }}
+            />
+            <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center" }}>
+              <input type="file" accept=".env,text/plain" onChange={handleFileUpload} />
+              <button className="btn btn-primary" onClick={handleBulkImport} disabled={!bulkText.trim()}>
+                Importieren
+              </button>
+            </div>
+            {bulkStatus && <div style={{ fontSize: 12, marginTop: 6, color: "var(--text-dim)" }}>{bulkStatus}</div>}
+            <div style={{ fontSize: 11, marginTop: 6, color: "var(--text-faint)" }}>
+              Bestehende Keys mit gleichem Namen werden überschrieben. Kommentare (#) und Leerzeilen werden ignoriert.
+            </div>
+          </div>
+        )}
       </div>
 
       <form onSubmit={handleSet} style={{ display: "flex", gap: 8 }}>

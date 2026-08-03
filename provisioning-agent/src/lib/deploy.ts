@@ -95,15 +95,16 @@ export async function runDeployment(
     buildLog += `Checked out ${resolvedSha} for ${project.slug}\n`;
     await db.query('UPDATE deployments SET commit_sha = $1 WHERE id = $2', [resolvedSha, deploymentId]);
 
-    // 2. Nixpacks-Build
-    const imageTag = `app-${project.slug}:${resolvedSha.slice(0, 12)}`;
-    const buildResult = await nixpacksBuild(buildPath, imageTag, project.build_command || undefined);
-    buildLog += buildResult.log;
-    await updateDeployment(db, deploymentId, { build_log: buildLog, image_tag: imageTag });
-
-    // 3. Env-Vars sammeln (Tenant-Secrets + manuelle project_env_vars, Auto-Injection)
+    // 2. Env-Vars sammeln (Tenant-Secrets + manuelle project_env_vars, Auto-Injection) —
+    //    VOR dem Build, damit sie auch nixpacksBuild zur Verfügung stehen (siehe dort).
     const envVars = await buildEnvVars(project.tenant_slug, project.id);
     const envArgs = Object.entries(envVars).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
+
+    // 3. Nixpacks-Build
+    const imageTag = `app-${project.slug}:${resolvedSha.slice(0, 12)}`;
+    const buildResult = await nixpacksBuild(buildPath, imageTag, project.build_command || undefined, envVars);
+    buildLog += buildResult.log;
+    await updateDeployment(db, deploymentId, { build_log: buildLog, image_tag: imageTag });
 
     // 4. Neuen Container starten (interner Name, noch ohne öffentliche Traefik-Labels)
     const limits = TARIFF_LIMITS[tariff] || TARIFF_LIMITS.starter;

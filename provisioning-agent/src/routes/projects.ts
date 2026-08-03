@@ -170,6 +170,51 @@ projectsRouter.put('/projects/:id/env', async (req, res) => {
   }
 });
 
+// PUT /projects/:id/env/bulk — .env-Datei-Inhalt auf einen Schlag importieren.
+// Erwartet rohen .env-Text (KEY=VALUE pro Zeile), parst serverseitig — Frontend schickt
+// einfach den kompletten Datei-Inhalt, kein Client-seitiges Parsing nötig.
+projectsRouter.put('/projects/:id/env/bulk', async (req, res) => {
+  const { id } = req.params;
+  const { envText } = req.body;
+  if (typeof envText !== 'string') return res.status(400).json({ error: 'envText required' });
+
+  const parsed: Record<string, string> = {};
+  const errors: string[] = [];
+  for (const rawLine of envText.split('\n')) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq === -1) { errors.push(`Übersprungen (kein "="): ${line.slice(0, 40)}`); continue; }
+    const key = line.slice(0, eq).trim();
+    let value = line.slice(eq + 1).trim();
+    // Umschließende Anführungszeichen entfernen — üblich in .env-Dateien.
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    if (!/^[A-Z0-9_]+$/.test(key)) { errors.push(`Übersprungen (ungültiger Key): ${key}`); continue; }
+    parsed[key] = value;
+  }
+
+  const db = adminClient();
+  await db.connect();
+  try {
+    for (const [key, value] of Object.entries(parsed)) {
+      const encrypted = encrypt(value);
+      await db.query(
+        `INSERT INTO project_env_vars (project_id, key, value_encrypted) VALUES ($1, $2, $3)
+         ON CONFLICT (project_id, key) DO UPDATE SET value_encrypted = EXCLUDED.value_encrypted`,
+        [id, key, encrypted]
+      );
+    }
+    await logAudit('project.env.bulk_import', id, { count: Object.keys(parsed).length, keys: Object.keys(parsed) });
+    res.json({ status: 'ok', imported: Object.keys(parsed).length, skipped: errors });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    await db.end();
+  }
+});
+
 // GET /projects/:id/env — gesetzte Keys auflisten (Werte bleiben verborgen)
 projectsRouter.get('/projects/:id/env', async (req, res) => {
   const db = adminClient();

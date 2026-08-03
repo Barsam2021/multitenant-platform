@@ -27,7 +27,8 @@ const DEFAULT_NODE_VERSION_MAJOR = (process.env.PLATFORM_DEFAULT_NODE_VERSION ||
 export async function nixpacksBuild(
   buildPath: string,
   imageTag: string,
-  buildCommand?: string
+  buildCommand?: string,
+  envVars?: Record<string, string>
 ): Promise<{ imageTag: string; log: string }> {
   // Nur schreiben, wenn das Repo keine eigene nixpacks.toml mitbringt — Repo-eigene
   // Config hat immer Vorrang, wir liefern nur einen sinnvollen Plattform-Default.
@@ -44,6 +45,17 @@ export async function nixpacksBuild(
   '--docker-output',
   'type=docker',
   ];
+
+  // Env-Vars (Tenant-Secrets + project_env_vars) auch dem BUILD-Schritt verfügbar
+  // machen, nicht nur dem späteren `docker run` — Next.js liest z.B. beim `next build`
+  // (Page-Data-Collection, NEXT_PUBLIC_*-Inlining) bereits Env-Vars, siehe RESEND_API_KEY-
+  // Fehler bei up2-website (Modul-Level `new Resend(...)` wirft schon beim Build, nicht
+  // erst beim Container-Start). Landet dadurch als ENV im fertigen Image — bewusster
+  // Trade-off, für Next.js/Vite-artige Frameworks nötig (Werte teils schon zur Build-Zeit
+  // in den JS-Bundle inlined).
+  for (const [key, value] of Object.entries(envVars || {})) {
+    args.push('--env', `${key}=${value}`);
+  }
 
   if (buildCommand) {
     // Nixpacks erlaubt Override einzelner Build-Phasen über --build-cmd.
