@@ -61,7 +61,7 @@ deploymentsRouter.get('/deployments/:projectId', async (req, res) => {
   try {
     const { rows } = await db.query(
       `SELECT id, commit_sha, status, container_name, image_tag, triggered_by, created_at, finished_at,
-              LEFT(build_log, 8000) AS build_log
+              build_log
        FROM deployments WHERE project_id = $1 ORDER BY created_at DESC LIMIT 20`,
       [req.params.projectId]
     );

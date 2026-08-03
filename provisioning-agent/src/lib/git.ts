@@ -5,6 +5,25 @@ import { existsSync } from 'fs';
 const execFileP = promisify(execFile);
 
 const BUILDS_ROOT = '/opt/multitenant-platform/deployments/builds';
+const GITHUB_PAT = process.env.GITHUB_PAT;
+const ASKPASS_SCRIPT = '/app/scripts/git-askpass.sh';
+
+/**
+ * Env für git-Aufrufe gegen private GitHub-Repos: PAT wird NIE in die Repo-URL oder
+ * argv geschrieben (execFile hängt bei Fehlschlägen die vollen Argumente an
+ * error.message — landet sonst im Klartext in der Dashboard-Fehleranzeige, siehe
+ * routes/deployments.ts). Stattdessen über GIT_ASKPASS + Umgebungsvariable, die nur
+ * dem Kindprozess sichtbar ist.
+ */
+function gitEnv(repoUrl: string): NodeJS.ProcessEnv {
+  if (!GITHUB_PAT || !/^https:\/\/github\.com\//.test(repoUrl)) return process.env;
+  return {
+    ...process.env,
+    GIT_ASKPASS: ASKPASS_SCRIPT,
+    GIT_ASKPASS_TOKEN: GITHUB_PAT,
+    GIT_TERMINAL_PROMPT: '0',
+  };
+}
 
 /**
  * Klont (oder pullt, falls bereits vorhanden) ein Repo für ein Projekt und checkt
@@ -23,12 +42,18 @@ export async function checkoutRepo(
   }
 
   const repoDir = `${BUILDS_ROOT}/${projectSlug}/repo`;
+  const env = gitEnv(repoUrl);
 
-  if (!existsSync(repoDir)) {
+  // .git prüfen statt nur den Ordner — ein Leftover von einem fehlgeschlagenen
+  // Clone-Versuch (z.B. Auth-Fehler vor diesem Fix) legt zwar den Ordner an,
+  // aber ohne funktionierendes Repo drin. 'fetch' darauf schlägt dann mit
+  // irreführenden Fehlern fehl statt mit "not a git repository".
+  if (!existsSync(`${repoDir}/.git`)) {
+    await execFileP('rm', ['-rf', repoDir]);
     await execFileP('mkdir', ['-p', repoDir]);
-    await execFileP('git', ['clone', '--no-single-branch', repoUrl, repoDir]);
+    await execFileP('git', ['clone', '--no-single-branch', repoUrl, repoDir], { env });
   } else {
-    await execFileP('git', ['-C', repoDir, 'fetch', '--all', '--prune']);
+    await execFileP('git', ['-C', repoDir, 'fetch', '--all', '--prune'], { env });
   }
 
   // ref kann Branch oder SHA sein — 'git checkout' handhabt beides.

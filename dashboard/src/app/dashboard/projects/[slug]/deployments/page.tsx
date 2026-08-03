@@ -95,6 +95,16 @@ export default function DeploymentsPage({
     });
   }
 
+  function downloadLog(d: Deployment) {
+    const blob = new Blob([d.build_log], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `deploy-${d.id.slice(0, 8)}-${d.status}.log`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   async function handleDeploy() {
     if (!project) return;
     setDeploying(true);
@@ -187,9 +197,14 @@ export default function DeploymentsPage({
               </div>
               <div style={{ display: "flex", gap: 8 }}>
                 {d.build_log && (
-                  <button className="btn" onClick={() => toggleLogs(d.id)}>
-                    {logsOpen ? "Logs verbergen" : "Logs anzeigen"}
-                  </button>
+                  <>
+                    <button className="btn" onClick={() => toggleLogs(d.id)}>
+                      {logsOpen ? "Logs verbergen" : "Logs anzeigen"}
+                    </button>
+                    <button className="btn" onClick={() => downloadLog(d)}>
+                      Herunterladen
+                    </button>
+                  </>
                 )}
                 {d.status === "deployed" && d.id !== latest?.id && (
                   <button className="btn" onClick={() => handleRollback(d.id)}>
@@ -202,7 +217,7 @@ export default function DeploymentsPage({
               <pre
                 style={{
                   marginTop: 8,
-                  maxHeight: 300,
+                  maxHeight: 600,
                   overflowY: "auto",
                   fontFamily: "var(--font-mono)",
                   fontSize: 12,

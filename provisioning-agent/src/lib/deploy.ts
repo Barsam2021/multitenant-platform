@@ -5,6 +5,7 @@ import { checkoutRepo } from './git';
 import { nixpacksBuild } from './nixpacks';
 import { buildEnvVars } from './secrets';
 import { maskSecrets } from './crypto';
+import { detectBuildErrorHint } from './buildErrorHints';
 
 const execFileP = promisify(execFile);
 
@@ -124,6 +125,13 @@ export async function runDeployment(
     const healthy = await pollHealthcheck(newContainerName, 3000, 60_000);
     if (!healthy) {
       buildLog += `Healthcheck FAILED for ${newContainerName} — rolling back, old container bleibt aktiv.\n`;
+      // Logs VOR dem Löschen sichern — sonst ist der Container weg, bevor man
+      // nachschauen kann, warum er nicht healthy wurde (Crash beim Start, fehlende
+      // Env-Vars etc.).
+      const candidateLogs = await execFileP('docker', ['logs', '--tail', '100', newContainerName]).catch((e: any) => ({
+        stdout: '', stderr: e.stderr || e.message,
+      }));
+      buildLog += `--- Container-Logs (letzte 100 Zeilen) ---\n${candidateLogs.stdout}\n${candidateLogs.stderr}\n`;
       await execFileP('docker', ['rm', '-f', newContainerName]).catch(() => {});
       await updateDeployment(db, deploymentId, { status: 'failed', build_log: maskSecrets(buildLog), finished_at: true });
       return;
@@ -164,6 +172,10 @@ export async function runDeployment(
     if (!finalHealthy) {
       // Rollback: finalen Container entfernen, alten wiederherstellen
       buildLog += `Final container failed post-swap healthcheck — rolling back to previous container.\n`;
+      const finalLogs = await execFileP('docker', ['logs', '--tail', '100', publicName]).catch((e: any) => ({
+        stdout: '', stderr: e.stderr || e.message,
+      }));
+      buildLog += `--- Container-Logs (letzte 100 Zeilen) ---\n${finalLogs.stdout}\n${finalLogs.stderr}\n`;
       await execFileP('docker', ['rm', '-f', publicName]).catch(() => {});
       if (hadPrevious) {
         await execFileP('docker', ['rename', oldBackupName, publicName]);
@@ -185,6 +197,8 @@ export async function runDeployment(
     await updateDeployment(db, deploymentId, { status: 'deployed', build_log: maskSecrets(buildLog), container_name: publicName, finished_at: true });
   } catch (err: any) {
     buildLog += `\nError: ${err.buildLog || err.message}`;
+    const hint = detectBuildErrorHint(buildLog);
+    if (hint) buildLog = `⚠️ ${hint}\n${'─'.repeat(60)}\n${buildLog}`;
     await updateDeployment(db, deploymentId, { status: 'failed', build_log: maskSecrets(buildLog), finished_at: true }).catch(() => {});
   } finally {
     await db.end();
