@@ -19,7 +19,7 @@ export default function ProjectLayout({ children }: { children: React.ReactNode 
 
   return (
     <div className="content">
-      <div style={{ display: "flex", gap: 4, marginBottom: 18, borderBottom: "1px solid var(--border)" }}>
+      <div className="project-tabs">
         {TABS.map((t) => {
           const href = `${base}${t.href}`;
           const active = pathname === href;
@@ -27,12 +27,10 @@ export default function ProjectLayout({ children }: { children: React.ReactNode 
             <Link
               key={t.href}
               href={href}
+              className="project-tab"
               style={{
-                padding: "8px 14px",
-                fontSize: 13,
                 color: active ? "var(--text)" : "var(--text-dim)",
                 borderBottom: active ? "2px solid var(--accent)" : "2px solid transparent",
-                marginBottom: -1,
               }}
             >
               {t.label}

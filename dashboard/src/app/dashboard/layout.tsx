@@ -15,6 +15,11 @@ export default async function DashboardLayout({
 
   return (
     <div className="shell">
+      <input type="checkbox" id="nav-toggle" className="nav-toggle" />
+      <label htmlFor="nav-toggle" className="hamburger-btn" aria-label="Menü öffnen">
+        ☰
+      </label>
+      <label htmlFor="nav-toggle" className="nav-overlay" aria-hidden="true"></label>
       <aside className="sidebar">
         <div className="sidebar-brand">
           UP2 <span>Console</span>

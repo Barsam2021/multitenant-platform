@@ -1,0 +1,53 @@
+diff --git a/dashboard/src/app/dashboard/projects/[slug]/deployments/page.tsx b/dashboard/src/app/dashboard/projects/[slug]/deployments/page.tsx
+index 02d89a0..e19c590 100644
+--- a/dashboard/src/app/dashboard/projects/[slug]/deployments/page.tsx
++++ b/dashboard/src/app/dashboard/projects/[slug]/deployments/page.tsx
+@@ -177,8 +177,8 @@ export default function DeploymentsPage({
+               background: "var(--panel)",
+             }}
+           >
+-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
++            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
++              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", minWidth: 0 }}>
+                 <span
+                   style={{
+                     display: "inline-block",
+@@ -195,7 +195,7 @@ export default function DeploymentsPage({
+                   {duration(d.created_at, d.finished_at)}
+                 </span>
+               </div>
+-              <div style={{ display: "flex", gap: 8 }}>
++              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                 {d.build_log && (
+                   <>
+                     <button className="btn" onClick={() => toggleLogs(d.id)}>
+diff --git a/dashboard/src/app/globals.css b/dashboard/src/app/globals.css
+index c4c299a..f9f98a9 100644
+--- a/dashboard/src/app/globals.css
++++ b/dashboard/src/app/globals.css
+@@ -406,6 +406,23 @@ table.data-table td.editing input {
+   html,
+   body {
+     font-size: 15px;
++    overflow-x: hidden;
++    max-width: 100vw;
++  }
++
++  .shell {
++    overflow-x: hidden;
++    max-width: 100vw;
++  }
++
++  .main {
++    overflow-x: hidden;
++    max-width: 100vw;
++  }
++
++  .content {
++    overflow-x: hidden;
++    max-width: 100vw;
+   }
+ 
+   /* Shell: sidebar becomes an off-canvas drawer, main takes full width */
+

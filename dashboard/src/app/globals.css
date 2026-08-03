@@ -128,6 +128,18 @@ select:focus {
   height: 100vh;
 }
 
+.nav-toggle {
+  display: none;
+}
+
+.hamburger-btn {
+  display: none;
+}
+
+.nav-overlay {
+  display: none;
+}
+
 .sidebar {
   background: var(--panel);
   border-right: 1px solid var(--border);
@@ -362,4 +374,148 @@ table.data-table td.editing input {
   width: 100%;
   margin-top: 20px;
   justify-content: center;
+}
+
+/* --- Project sub-nav (Übersicht/Tabellen/SQL/...) --- */
+.project-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+
+.project-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.project-tab {
+  padding: 8px 14px;
+  font-size: 13px;
+  margin-bottom: -1px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+/* =====================================================
+   MOBILE / TABLET — <= 768px
+   ===================================================== */
+@media (max-width: 768px) {
+  html,
+  body {
+    font-size: 15px;
+  }
+
+  /* Shell: sidebar becomes an off-canvas drawer, main takes full width */
+  .shell {
+    display: block;
+    height: auto;
+    min-height: 100vh;
+  }
+
+  .hamburger-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: fixed;
+    top: 10px;
+    left: 12px;
+    width: 40px;
+    height: 40px;
+    border-radius: 8px;
+    background: var(--panel-raised);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 18px;
+    z-index: 70;
+  }
+
+  .nav-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 55;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+  }
+
+  .nav-toggle:checked ~ .nav-overlay {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 250px;
+    max-width: 80vw;
+    z-index: 60;
+    transform: translateX(-100%);
+    transition: transform 0.22s ease;
+    box-shadow: 4px 0 18px rgba(0, 0, 0, 0.45);
+  }
+
+  .nav-toggle:checked ~ .sidebar {
+    transform: translateX(0);
+  }
+
+  .main {
+    padding-top: 56px;
+    min-height: 100vh;
+  }
+
+  .topbar {
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 12px 14px 12px 60px;
+  }
+
+  .content {
+    padding: 14px;
+  }
+
+  .card-grid {
+    grid-template-columns: 1fr;
+  }
+
+  table.data-table {
+    font-size: 12px;
+  }
+
+  table.data-table th,
+  table.data-table td {
+    padding: 6px 8px;
+  }
+
+  .login-wrap {
+    padding: 16px;
+  }
+
+  .login-card {
+    width: 100%;
+    max-width: 340px;
+    padding: 22px;
+  }
+
+  .sql-editor {
+    font-size: 14px;
+    min-height: 140px;
+  }
+}
+
+/* Extra-small phones */
+@media (max-width: 380px) {
+  .content {
+    padding: 10px;
+  }
+
+  .card {
+    padding: 12px;
+  }
 }
