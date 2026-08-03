@@ -16,6 +16,14 @@ services:
       - --certificatesresolvers.myresolver.acme.dnschallenge.provider=cloudflare
       - --certificatesresolvers.myresolver.acme.dnschallenge.resolvers=1.1.1.1:53,8.8.8.8:53
       - --certificatesresolvers.myresolver.acme.caserver=${ACME_CASERVER:-https://acme-v02.api.letsencrypt.org/directory}
+      # Zweiter Resolver, ausschließlich für Custom-Domains von Kunden (kind='custom' in der
+      # domains-Tabelle) via HTTP-01 — funktioniert für Domains außerhalb des eigenen
+      # Cloudflare-Accounts, im Gegensatz zu myresolver (DNS-01). Preview-Domains bleiben
+      # bewusst auf myresolver (siehe provisioning-agent/src/lib/deploy.ts, dort NICHTS ändern).
+      - --certificatesresolvers.httpresolver.acme.email=${ACME_EMAIL}
+      - --certificatesresolvers.httpresolver.acme.storage=/letsencrypt/acme-http.json
+      - --certificatesresolvers.httpresolver.acme.httpchallenge=true
+      - --certificatesresolvers.httpresolver.acme.httpchallenge.entrypoint=web
     environment:
       CF_DNS_API_TOKEN: ${CF_DNS_API_TOKEN}
     ports:

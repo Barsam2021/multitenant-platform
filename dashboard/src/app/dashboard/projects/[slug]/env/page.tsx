@@ -11,6 +11,12 @@ interface EnvVar {
   key: string;
 }
 
+interface ApiKeys {
+  postgrestUrl: string;
+  anonKey: string;
+  serviceRoleKey: string;
+}
+
 export default function EnvVarsPage({
   params,
 }: {
@@ -22,6 +28,8 @@ export default function EnvVarsPage({
   const [envKey, setEnvKey] = useState("");
   const [envValue, setEnvValue] = useState("");
   const [status, setStatus] = useState<string | null>(null);
+  const [apiKeys, setApiKeys] = useState<ApiKeys | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
 
   const loadVars = useCallback((projectId: string) => {
     fetch(`/api/projects/${projectId}/env`)
@@ -38,7 +46,19 @@ export default function EnvVarsPage({
         setProject(p || null);
         if (p) loadVars(p.id);
       });
+
+    fetch(`/api/tenants/${slug}/api-keys`)
+      .then((r) => r.json())
+      .then((d) => d && d.anonKey && setApiKeys(d))
+      .catch(() => {});
   }, [slug, loadVars]);
+
+  function copyToClipboard(label: string, value: string) {
+    navigator.clipboard.writeText(value).then(() => {
+      setCopied(label);
+      setTimeout(() => setCopied(null), 1500);
+    });
+  }
 
   async function handleSet(e: React.FormEvent) {
     e.preventDefault();
@@ -81,6 +101,52 @@ export default function EnvVarsPage({
 
   return (
     <div>
+      {apiKeys && (
+        <div
+          style={{
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            padding: 16,
+            marginBottom: 24,
+            background: "var(--panel)",
+          }}
+        >
+          <h2 style={{ marginTop: 0, fontSize: 16 }}>Project API Keys</h2>
+          {[
+            { label: "POSTGREST_URL", value: apiKeys.postgrestUrl },
+            { label: "SUPABASE_ANON_KEY", value: apiKeys.anonKey },
+            { label: "SUPABASE_SERVICE_ROLE_KEY", value: apiKeys.serviceRoleKey },
+          ].map((row) => (
+            <div
+              key={row.label}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+                padding: "10px 12px",
+                marginBottom: 6,
+                fontFamily: "var(--font-mono)",
+                fontSize: 12,
+                gap: 8,
+              }}
+            >
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {row.label} = {row.value}
+              </span>
+              <button className="btn" onClick={() => copyToClipboard(row.label, row.value)}>
+                {copied === row.label ? "Kopiert!" : "Copy"}
+              </button>
+            </div>
+          ))}
+          <div style={{ fontSize: 12, marginTop: 10, color: "var(--text-dim)" }}>
+            ⚠️ Service Role Key umgeht sämtliche RLS-Policies — niemals im Frontend-Code der
+            Kunden-App verwenden.
+          </div>
+        </div>
+      )}
+
       <h2 style={{ marginTop: 0, fontSize: 16 }}>Environment Variables</h2>
 
       <div style={{ marginBottom: 20 }}>
@@ -116,7 +182,8 @@ export default function EnvVarsPage({
       </form>
       {status && <div style={{ fontSize: 12, marginTop: 6, color: "var(--text-dim)" }}>{status}</div>}
       <div style={{ fontSize: 12, marginTop: 16, color: "var(--text-faint)" }}>
-        Automatisch injiziert (nicht hier gesetzt): MINIO_*, S3_BUCKET_NAME, GOTRUE_URL, JWT_SECRET.
+        Automatisch injiziert (nicht hier gesetzt): MINIO_*, S3_BUCKET_NAME, GOTRUE_URL, JWT_SECRET,
+        POSTGREST_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY.
       </div>
     </div>
   );

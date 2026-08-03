@@ -45,6 +45,19 @@ export default function DomainsPage({
       });
   }, [slug, loadDomains]);
 
+  useEffect(() => {
+    if (!project) return;
+    const interval = setInterval(() => {
+      setDomains((current) => {
+        if (current.some((d) => !d.dns_verified || !d.tls_issued)) {
+          loadDomains(project.id);
+        }
+        return current;
+      });
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [project, loadDomains]);
+
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault();
     if (!project) return;
@@ -56,7 +69,19 @@ export default function DomainsPage({
         body: JSON.stringify({ projectId: project.id, hostname: host }),
       });
       const data = await res.json();
-      setStatus(res.ok ? data.instructions || "DNS-Polling gestartet." : data.error || "Fehler");
+      if (res.ok) {
+        if (data.godaddy?.ok) {
+          setStatus("Automatisch bei GoDaddy gesetzt, DNS-Propagierung läuft…");
+        } else if (data.godaddy?.attempted && !data.godaddy.ok) {
+          setStatus(
+            `Domain nicht im verbundenen GoDaddy-Account gefunden — bitte manuell setzen: ${data.instructions}`
+          );
+        } else {
+          setStatus(data.instructions || "DNS-Polling gestartet.");
+        }
+      } else {
+        setStatus(data.error || "Fehler");
+      }
       if (res.ok) {
         setHost("");
         loadDomains(project.id);

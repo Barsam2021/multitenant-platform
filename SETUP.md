@@ -53,9 +53,9 @@ insbesondere:
   nur für Repos, die du selbst verbinden willst. Ohne Token: Webhooks müssen
   manuell in GitHub eingetragen werden (die URL zeigt das Dashboard bei
   Projekt-Erstellung an).
-- `HETZNER_SBX_USER` / `HETZNER_SBX_PASS`: nur relevant, falls du Backups auf eine
-  Hetzner Storage Box legst. Für andere Object-Storage-Anbieter `rclone config`
-  entsprechend anpassen (siehe Schritt 6).
+- `BACKUP_AGE_PUBLIC_KEY` / `BACKUP_AGE_IDENTITY_FILE`, `RCLONE_CONFIG`,
+  `RCLONE_REMOTE_PATH`: fürs Backup-System (Schritt 6) — Storage-Anbieter frei
+  wählbar über `rclone config` (Backblaze B2, S3, Hetzner Storage Box, SFTP, ...).
 
 ## Schritt 3 — Bootstrap ausführen
 

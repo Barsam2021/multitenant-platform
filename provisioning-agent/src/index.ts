@@ -7,6 +7,7 @@ import { promisify } from 'util';
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import crypto from 'crypto';
 import { projectsRouter } from './routes/projects';
+import { tenantsRouter } from './routes/tenants';
 import { deploymentsRouter } from './routes/deployments';
 import { domainsRouter } from './routes/domains';
 import { webhooksRouter } from './routes/webhooks';
@@ -15,6 +16,7 @@ import { backupsRouter } from './routes/backups';
 import { secretsRouter } from './routes/secrets';
 import { auditRouter } from './routes/audit';
 import { encrypt } from './lib/crypto';
+import { signTenantJwt } from './lib/jwt';
 import { logAudit } from './lib/audit';
 import { deleteMonitor, isMonitoringConfigured } from './lib/monitoring';
 
@@ -69,6 +71,8 @@ app.post('/tenants', sensitiveOpLimiter, async (req, res) => {
 
   const dbName = `kunde_${tenantSlug}`;
   const jwtSecret = crypto.randomBytes(32).toString('hex');
+  const anonJwt = signTenantJwt(jwtSecret, 'anon');
+  const serviceRoleJwt = signTenantJwt(jwtSecret, 'service_role');
   const authenticatorPw = crypto.randomBytes(16).toString('hex');
   const authenticatorRole = `authenticator_${tenantSlug}`;
 
@@ -156,8 +160,8 @@ app.post('/tenants', sensitiveOpLimiter, async (req, res) => {
     });
     await admin.connect();
     await admin.query(
-      'INSERT INTO kunden (slug, db_name, tariff, gotrue_jwt_secret, authenticator_password, minio_access_key, minio_secret_key_encrypted) VALUES ($1, $2, $3, $4, $5, $6, $7)',
-      [tenantSlug, dbName, tenantTariff, jwtSecret, authenticatorPw, minioAccessKey, encrypt(minioSecretKey)]
+      'INSERT INTO kunden (slug, db_name, tariff, gotrue_jwt_secret, authenticator_password, minio_access_key, minio_secret_key_encrypted, anon_jwt, service_role_jwt) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
+      [tenantSlug, dbName, tenantTariff, jwtSecret, authenticatorPw, minioAccessKey, encrypt(minioSecretKey), anonJwt, serviceRoleJwt]
     );
     await admin.end();
 
@@ -257,6 +261,7 @@ app.delete('/tenants/:slug', sensitiveOpLimiter, async (req, res) => {
 });
 
 app.use(projectsRouter);
+app.use(tenantsRouter);
 app.use(deploymentsRouter);
 app.use(domainsRouter);
 app.use(githubRouter);

@@ -35,7 +35,7 @@ export async function writeCustomDomainRouter(
         - websecure
       service: ${serviceName}
       tls:
-        certResolver: myresolver
+        certResolver: httpresolver
   services:
     ${serviceName}:
       loadBalancer:

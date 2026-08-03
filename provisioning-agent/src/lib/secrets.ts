@@ -14,6 +14,8 @@ export interface TenantSecrets {
   gotrueJwtSecret: string;
   minioAccessKey: string;
   minioSecretKey: string;
+  anonJwt: string;
+  serviceRoleJwt: string;
 }
 
 /**
@@ -25,7 +27,7 @@ export async function getTenantSecrets(tenantSlug: string): Promise<TenantSecret
   await db.connect();
   try {
     const { rows } = await db.query(
-      `SELECT gotrue_jwt_secret, minio_access_key, minio_secret_key_encrypted
+      `SELECT gotrue_jwt_secret, minio_access_key, minio_secret_key_encrypted, anon_jwt, service_role_jwt
        FROM kunden WHERE slug = $1`,
       [tenantSlug]
     );
@@ -35,6 +37,8 @@ export async function getTenantSecrets(tenantSlug: string): Promise<TenantSecret
       gotrueJwtSecret: row.gotrue_jwt_secret,
       minioAccessKey: row.minio_access_key,
       minioSecretKey: row.minio_secret_key_encrypted ? decrypt(row.minio_secret_key_encrypted) : '',
+      anonJwt: row.anon_jwt || '',
+      serviceRoleJwt: row.service_role_jwt || '',
     };
   } finally {
     await db.end();
@@ -80,6 +84,10 @@ export async function buildEnvVars(
     S3_BUCKET_NAME: `kunde-${tenantSlug}-storage`,
     GOTRUE_URL: `http://auth-${tenantSlug}:9999`,
     JWT_SECRET: tenant.gotrueJwtSecret,
+    POSTGREST_URL: `http://api-${tenantSlug}:3000`,
+    SUPABASE_URL: `http://api-${tenantSlug}:3000`, // Alias, falls Kunden-App Supabase-SDK nutzt
+    SUPABASE_ANON_KEY: tenant.anonJwt,
+    SUPABASE_SERVICE_ROLE_KEY: tenant.serviceRoleJwt,
     ...projectVars,
   };
 }

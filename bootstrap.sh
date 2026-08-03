@@ -57,22 +57,20 @@ echo "==> [7/9] Core-Infrastruktur starten (Traefik, Postgres+PgBouncer, MinIO, 
 for svc in traefik core-postgres minio monitoring/uptime-kuma cloudflared; do
   if [ -f "$ROOT/$svc/docker-compose.yml" ]; then
     echo "  -> $svc"
-    (cd "$ROOT/$svc" && docker compose up -d)
+    (cd "$ROOT/$svc" && docker compose --env-file "$ROOT/.env" up -d)
   else
     echo "  -> $svc: docker-compose.yml fehlt, übersprungen"
   fi
 done
 
-echo "==> [8/9] Provisioning Agent (Symlink auf zentrale .env sicherstellen)"
-ln -sf "$ROOT/.env" "$ROOT/provisioning-agent/.env"
+echo "==> [8/9] Provisioning Agent"
 if [ -f "$ROOT/provisioning-agent/docker-compose.yml" ]; then
-  (cd "$ROOT/provisioning-agent" && docker compose up -d --build)
+  (cd "$ROOT/provisioning-agent" && docker compose --env-file "$ROOT/.env" up -d --build)
 fi
 
 echo "==> [9/9] Dashboard"
-ln -sf "$ROOT/.env" "$ROOT/dashboard/.env" 2>/dev/null || true
 if [ -f "$ROOT/dashboard/docker-compose.yml" ]; then
-  (cd "$ROOT/dashboard" && docker compose up -d --build)
+  (cd "$ROOT/dashboard" && docker compose --env-file "$ROOT/.env" up -d --build)
 fi
 
 echo ""
@@ -83,6 +81,6 @@ echo ""
 echo "Falls noch nicht geschehen:"
 echo "  - Cloudflare Tunnel Ingress-Rules für admin.<domain> / status.<domain> einrichten"
 echo "  - 01_roles.sql prüfen (core-postgres/init-scripts/)"
-echo "  - Rclone-Remote für Hetzner Storage Box konfigurieren (rclone config)"
+echo "  - Rclone-Remote für dein Backup-Storage konfigurieren (rclone config)"
 echo "  - Backup-Cron einrichten (siehe 04_backup_system.md § 5)"
 echo "=================================================================="
