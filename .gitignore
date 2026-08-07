@@ -16,3 +16,10 @@ traefik/letsencrypt/*
 !traefik/letsencrypt/.gitkeep
 backups/age-identity.txt
 backups/rclone.conf
+_backup-*/
+_archive-patches/
+_schema-live-*.sql
+diagnose-*.log
+.env.bak-*
+*.bak-*
+*.bak2

@@ -9,7 +9,7 @@ import crypto from 'crypto';
 import { projectsRouter } from './routes/projects';
 import { tenantsRouter } from './routes/tenants';
 import { deploymentsRouter } from './routes/deployments';
-import { domainsRouter } from './routes/domains';
+import { domainsRouter, resumePendingDomainChecks, healMissingRouters } from './routes/domains';
 import { webhooksRouter } from './routes/webhooks';
 import { githubRouter } from './routes/github';
 import { backupsRouter } from './routes/backups';
@@ -19,6 +19,7 @@ import { encrypt } from './lib/crypto';
 import { signTenantJwt } from './lib/jwt';
 import { logAudit } from './lib/audit';
 import { deleteMonitor, isMonitoringConfigured } from './lib/monitoring';
+import { removeAllRoutersForProject } from './lib/traefikDynamic';
 
 const execFileP = promisify(execFile);
 const app = express();
@@ -208,6 +209,25 @@ app.delete('/tenants/:slug', sensitiveOpLimiter, async (req, res) => {
       }
     }
 
+    // P1-1j: Traefik-Router entfernen, bevor die Container verschwinden. Ohne das
+    // bleiben Router-Dateien zurueck, die auf nicht mehr existierende Container zeigen.
+    try {
+      const routerDb = new Client({
+        connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
+      });
+      await routerDb.connect();
+      const { rows: slugRows } = await routerDb.query(
+        'SELECT slug FROM projects WHERE tenant_slug = $1', [slug]
+      );
+      await routerDb.end();
+      for (const p of slugRows) {
+        const n = await removeAllRoutersForProject(p.slug);
+        if (n > 0) console.log(`Traefik-Router entfernt fuer ${p.slug}: ${n} Datei(en)`);
+      }
+    } catch (e: any) {
+      console.error('Traefik-Router-Cleanup fehlgeschlagen (weiter):', e.message);
+    }
+
     try {
       await execFileP('docker', ['compose', '-f', `${tenantDir}/docker-compose.yml`, 'down']);
     } catch (e: any) {
@@ -293,4 +313,12 @@ app.get('/stats', async (_req, res) => {
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
-app.listen(3001, () => console.log('Provisioning Agent (mit Deployment Engine) listening on :3001'));
+app.listen(3001, () => {
+  console.log('Provisioning Agent (mit Deployment Engine) listening on :3001');
+  // P1-1c: offene Domain-Verifikationen nach einem Neustart wieder aufnehmen.
+  // Erst fehlende Router reparieren, dann offene Verifikationen fortsetzen.
+  healMissingRouters()
+    .catch((err) => console.error('healMissingRouters fehlgeschlagen:', err.message))
+    .then(() => resumePendingDomainChecks())
+    .catch((err) => console.error('resumePendingDomainChecks fehlgeschlagen:', err.message));
+});

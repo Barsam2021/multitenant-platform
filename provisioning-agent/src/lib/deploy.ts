@@ -33,6 +33,10 @@ export interface Project {
   build_command: string | null;
   active_container: string | null;
   preview_hostname: string;
+  // P1-3: frueher ueberall hart 3000 — Apps auf 4173/8000/8080 konnten nie
+  // deployen und der Healthcheck lief kommentarlos ins Leere.
+  app_port: number | null;
+  health_path: string | null;
 }
 
 async function updateDeployment(
@@ -57,11 +61,16 @@ async function updateDeployment(
  * Provisioning-Agent-Containers (der selbst auf traefik-net hängt) — kein curl/wget
  * im Zielcontainer nötig, kein Shell-Exec, reines Node `fetch`.
  */
-async function pollHealthcheck(containerName: string, port: number, timeoutMs = 60_000): Promise<boolean> {
+async function pollHealthcheck(
+  containerName: string,
+  port: number,
+  timeoutMs = 60_000,
+  path = '/'
+): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(`http://${containerName}:${port}/`, { signal: AbortSignal.timeout(3000) });
+      const res = await fetch(`http://${containerName}:${port}${path}`, { signal: AbortSignal.timeout(3000) });
       if (res.status < 500) return true;
     } catch {
       // Container noch nicht bereit — weiter pollen.
@@ -86,6 +95,8 @@ export async function runDeployment(
   const db = adminClient();
   await db.connect();
   let buildLog = '';
+  const appPort = project.app_port || 3000;
+  const healthPath = project.health_path || '/';
 
   try {
     await updateDeployment(db, deploymentId, { status: 'building' });
@@ -123,9 +134,10 @@ export async function runDeployment(
     await updateDeployment(db, deploymentId, { status: 'healthchecking', build_log: maskSecrets(buildLog), container_name: newContainerName });
 
     // 5. Healthcheck gegen den neuen Container (intern, noch kein Traffic)
-    const healthy = await pollHealthcheck(newContainerName, 3000, 60_000);
+    const healthy = await pollHealthcheck(newContainerName, appPort, 60_000, healthPath);
     if (!healthy) {
-      buildLog += `Healthcheck FAILED for ${newContainerName} — rolling back, old container bleibt aktiv.\n`;
+      buildLog += `Healthcheck FAILED for ${newContainerName} auf Port ${appPort}${healthPath} — rolling back, old container bleibt aktiv.\n`;
+      buildLog += `Hinweis: Antwortet die App auf einem anderen Port? Port und Healthcheck-Pfad sind pro Projekt einstellbar.\n`;
       // Logs VOR dem Löschen sichern — sonst ist der Container weg, bevor man
       // nachschauen kann, warum er nicht healthy wurde (Crash beim Start, fehlende
       // Env-Vars etc.).
@@ -164,12 +176,12 @@ export async function runDeployment(
       '--label', `traefik.http.routers.${project.slug}-app.rule=Host(\`${project.preview_hostname}\`)`,
       '--label', `traefik.http.routers.${project.slug}-app.entrypoints=websecure`,
       '--label', `traefik.http.routers.${project.slug}-app.tls.certresolver=myresolver`,
-      '--label', `traefik.http.services.${project.slug}-app.loadbalancer.server.port=3000`,
+      '--label', `traefik.http.services.${project.slug}-app.loadbalancer.server.port=${appPort}`,
       ...envArgs,
       imageTag,
     ]);
 
-    const finalHealthy = await pollHealthcheck(publicName, 3000, 30_000);
+    const finalHealthy = await pollHealthcheck(publicName, appPort, 30_000, healthPath);
     if (!finalHealthy) {
       // Rollback: finalen Container entfernen, alten wiederherstellen
       buildLog += `Final container failed post-swap healthcheck — rolling back to previous container.\n`;
@@ -223,6 +235,7 @@ export async function rollbackToDeployment(project: Project, targetDeploymentId:
     const envVars = await buildEnvVars(project.tenant_slug, project.id);
     const envArgs = Object.entries(envVars).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
     const publicName = `app-${project.slug}`;
+    const appPort = project.app_port || 3000;
 
     await execFileP('docker', ['rm', '-f', publicName]).catch(() => {});
     await execFileP('docker', [
@@ -235,7 +248,7 @@ export async function rollbackToDeployment(project: Project, targetDeploymentId:
       '--label', `traefik.http.routers.${project.slug}-app.rule=Host(\`${project.preview_hostname}\`)`,
       '--label', `traefik.http.routers.${project.slug}-app.entrypoints=websecure`,
       '--label', `traefik.http.routers.${project.slug}-app.tls.certresolver=myresolver`,
-      '--label', `traefik.http.services.${project.slug}-app.loadbalancer.server.port=3000`,
+      '--label', `traefik.http.services.${project.slug}-app.loadbalancer.server.port=${appPort}`,
       ...envArgs,
       target.image_tag,
     ]);

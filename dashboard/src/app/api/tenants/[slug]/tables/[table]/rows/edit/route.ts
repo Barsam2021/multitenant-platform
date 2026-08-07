@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { auth } from "@/auth";
 import { getTenantBySlug } from "@/lib/adminDb";
 import { updateRow, deleteRow } from "@/lib/tenantDb";
 
@@ -8,6 +9,9 @@ export async function PATCH(
   req: Request,
   { params }: { params: Promise<{ slug: string; table: string }> }
 ) {
+  const session = await auth();
+  if (!session) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+
   const { slug, table } = await params;
   if (!TABLE_NAME_RE.test(table)) {
     return NextResponse.json({ error: "invalid table name" }, { status: 400 });
@@ -35,6 +39,9 @@ export async function DELETE(
   req: Request,
   { params }: { params: Promise<{ slug: string; table: string }> }
 ) {
+  const session = await auth();
+  if (!session) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+
   const { slug, table } = await params;
   if (!TABLE_NAME_RE.test(table)) {
     return NextResponse.json({ error: "invalid table name" }, { status: 400 });

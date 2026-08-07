@@ -1,3 +1,5 @@
+\connect admin_dashboard
+
 -- Phase 0/1 (Admin-Workflow): Speichert die fertig signierten Supabase-kompatiblen
 -- API-Keys pro Tenant, damit sie im Dashboard direkt angezeigt werden können,
 -- ohne bei jedem Seitenaufruf neu signieren zu müssen.

@@ -1,3 +1,5 @@
+\connect admin_dashboard
+
 -- Automatische Preview-Domain pro Projekt: <slug>-<random>.<PREVIEW_DOMAIN_SUFFIX>
 -- statt app.<slug>.vps.meine-domain.com — flacher, ein Wildcard-Level, kein
 -- zusätzlicher Zertifikats-Overhead (Let's Encrypt/Cloudflare-Certs sind ohnehin

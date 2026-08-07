@@ -1,3 +1,5 @@
+\connect admin_dashboard
+
 -- Phase 0: fehlende kunden-Spalten + Tabellen (projects, domains, deployments, project_env_vars, github_connections)
 -- Idempotent, gegen admin_dashboard-DB auszuführen.
 

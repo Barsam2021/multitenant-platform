@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { auth } from "@/auth";
 import { getTenantBySlug } from "@/lib/adminDb";
 import { listTables } from "@/lib/tenantDb";
 
@@ -6,6 +7,9 @@ export async function GET(
   _req: Request,
   { params }: { params: Promise<{ slug: string }> }
 ) {
+  const session = await auth();
+  if (!session) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+
   const { slug } = await params;
   const tenant = await getTenantBySlug(slug);
   if (!tenant) {

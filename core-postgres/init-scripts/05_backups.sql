@@ -1,3 +1,5 @@
+\connect admin_dashboard
+
 -- Phase 5: Backup-Metadaten-Tabelle. Idempotent, gegen admin_dashboard-DB auszuführen.
 CREATE TABLE IF NOT EXISTS backups (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

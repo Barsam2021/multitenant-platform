@@ -1,3 +1,5 @@
+\connect admin_dashboard
+
 -- Phase 6: Audit-Log-Tabelle. Idempotent, gegen admin_dashboard-DB auszuführen.
 -- Single-Admin-Setup -> 'actor' ist aktuell immer 'admin', Spalte existiert trotzdem
 -- schon jetzt für den Fall mehrerer Admin-Accounts später.

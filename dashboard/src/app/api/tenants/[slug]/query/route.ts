@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { auth } from "@/auth";
 import { getTenantBySlug } from "@/lib/adminDb";
 import { runSql } from "@/lib/tenantDb";
 
@@ -6,6 +7,11 @@ export async function POST(
   req: Request,
   { params }: { params: Promise<{ slug: string }> }
 ) {
+  // KRITISCH: dieser Endpunkt fuehrt beliebiges SQL als postgres-Superuser aus.
+  // Er darf sich niemals allein auf middleware.ts verlassen.
+  const session = await auth();
+  if (!session) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+
   const { slug } = await params;
   const tenant = await getTenantBySlug(slug);
   if (!tenant) {

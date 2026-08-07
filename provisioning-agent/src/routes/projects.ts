@@ -69,7 +69,7 @@ export const projectsRouter = Router();
 // POST /projects — neues Deployment-Projekt für einen bestehenden Tenant anlegen,
 // inkl. automatischer Preview-Domain + automatischer GitHub-Webhook-Registrierung.
 projectsRouter.post('/projects', async (req, res) => {
-  const { tenantSlug, slug, repoUrl, repoProvider, defaultBranch, buildCommand } = req.body;
+  const { tenantSlug, slug, repoUrl, repoProvider, defaultBranch, buildCommand, appPort, healthPath } = req.body;
 
   if (!slug || !/^[a-z0-9-]+$/.test(slug)) return res.status(400).json({ error: 'invalid project slug' });
   if (!tenantSlug || !/^[a-z0-9-]+$/.test(tenantSlug)) return res.status(400).json({ error: 'invalid tenant slug' });
@@ -81,13 +81,18 @@ projectsRouter.post('/projects', async (req, res) => {
   await db.connect();
   try {
     const { rows } = await db.query(
-      `INSERT INTO projects (tenant_slug, slug, repo_url, repo_provider, default_branch, build_command, webhook_secret, preview_hostname)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, slug, tenant_slug, repo_url, default_branch, active_container, preview_hostname, created_at`,
-      [tenantSlug, slug, repoUrl, repoProvider || 'github', defaultBranch || 'main', buildCommand || null, webhookSecret, previewHostname]
+      `INSERT INTO projects (tenant_slug, slug, repo_url, repo_provider, default_branch, build_command, webhook_secret, preview_hostname, app_port, health_path)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id, slug, tenant_slug, repo_url, default_branch, active_container, preview_hostname, app_port, health_path, created_at`,
+      [tenantSlug, slug, repoUrl, repoProvider || 'github', defaultBranch || 'main', buildCommand || null, webhookSecret, previewHostname,
+       Number(appPort) > 0 ? Number(appPort) : 3000, typeof healthPath === 'string' && healthPath.startsWith('/') ? healthPath : '/']
     );
     await db.query(
-      `INSERT INTO domains (project_id, hostname, kind, dns_verified, tls_issued)
-       VALUES ($1, $2, 'subdomain', true, true)`,
+      // P1-1i: frueher wurden dns_verified/tls_issued hier blind auf true gesetzt —
+      // die UI zeigte "DNS OK / TLS OK" fuer etwas, das nie geprueft wurde. Der
+      // Wildcard-A-Record existiert zwar, das Zertifikat stellt Traefik aber erst
+      // beim ersten Request aus. Status startet daher ehrlich als tls_pending.
+      `INSERT INTO domains (project_id, hostname, kind, dns_verified, tls_issued, status)
+       VALUES ($1, $2, 'subdomain', true, false, 'tls_pending')`,
       [rows[0].id, previewHostname]
     );
 
@@ -133,7 +138,8 @@ projectsRouter.get('/projects', async (_req, res) => {
   try {
     const { rows } = await db.query(
       `SELECT p.id, p.tenant_slug, p.slug, p.repo_url, p.default_branch, p.active_container,
-              p.preview_hostname, p.created_at, k.tariff
+              p.preview_hostname, p.created_at, k.tariff,
+              COALESCE(p.app_port, 3000) AS app_port, COALESCE(p.health_path, '/') AS health_path
        FROM projects p JOIN kunden k ON k.slug = p.tenant_slug
        ORDER BY p.created_at DESC`
     );

@@ -1,3 +1,5 @@
+\connect admin_dashboard
+
 -- Fix: Schema/Code-Mismatch aus 02_admin_schema.sql.
 -- Code (projects.ts, deployments.ts, deploy.ts, webhooks.ts) nutzt tenant_slug,
 -- active_container, webhook_secret, container_name, image_tag, finished_at —
