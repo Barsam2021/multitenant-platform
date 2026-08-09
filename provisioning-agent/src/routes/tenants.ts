@@ -1,8 +1,12 @@
 import { Router } from 'express';
 import { Client as PGClient } from 'pg';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { logAudit } from '../lib/audit';
-import { writeTenantServiceRouter, removeTenantServiceRouter } from '../lib/traefikDynamic';
+import { writeTenantServiceRouter, removeTenantServiceRouter, removeAllRoutersForProject } from '../lib/traefikDynamic';
+import { syncProjectRouters } from './domains';
 
+const execFileP = promisify(execFile);
 const PGBOUNCER_HOST = process.env.PGBOUNCER_HOST || 'pgbouncer';
 const MASTER_DB_PASSWORD = process.env.MASTER_DB_PASSWORD!;
 const PLATFORM_DOMAIN = process.env.PLATFORM_DOMAIN || 'example.com';
@@ -93,6 +97,141 @@ tenantsRouter.post('/tenants/:slug/public-access', async (req, res) => {
     await logAudit('tenant.public-access.set', slug, { service, enabled });
 
     res.json({ status: 'ok', service, enabled, url });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    await db.end();
+  }
+});
+
+// GET /tenants/:slug — Stammdaten fuer die Bearbeiten-Ansicht (P2-6).
+tenantsRouter.get('/tenants/:slug', async (req, res) => {
+  const { slug } = req.params;
+  if (!slug || !/^[a-z0-9-]+$/.test(slug)) return res.status(400).json({ error: 'invalid slug' });
+
+  const db = adminClient();
+  await db.connect();
+  try {
+    const { rows } = await db.query(
+      `SELECT id, slug, db_name, tariff, display_name, contact_email, notes, status, created_at
+       FROM kunden WHERE slug = $1`,
+      [slug]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'tenant not found' });
+    res.json(rows[0]);
+  } finally {
+    await db.end();
+  }
+});
+
+// PATCH /tenants/:slug  { displayName?, contactEmail?, notes?, tariff? } — reine
+// Stammdaten-Aenderung ohne Seiteneffekte auf Container/Traefik (P2-6). Fuer den
+// Status-Wechsel (aktiv/gesperrt) siehe POST /tenants/:slug/status, der hat welche.
+tenantsRouter.patch('/tenants/:slug', async (req, res) => {
+  const { slug } = req.params;
+  if (!slug || !/^[a-z0-9-]+$/.test(slug)) return res.status(400).json({ error: 'invalid slug' });
+
+  const { displayName, contactEmail, notes, tariff } = req.body;
+  const sets: string[] = [];
+  const vals: any[] = [];
+  let i = 1;
+  if (displayName !== undefined) { sets.push(`display_name = $${i++}`); vals.push(String(displayName).trim() || slug); }
+  if (contactEmail !== undefined) { sets.push(`contact_email = $${i++}`); vals.push(contactEmail ? String(contactEmail).trim() : null); }
+  if (notes !== undefined) { sets.push(`notes = $${i++}`); vals.push(notes ? String(notes).trim() : null); }
+  if (tariff !== undefined) {
+    if (!['starter', 'business', 'premium'].includes(tariff)) {
+      return res.status(400).json({ error: 'invalid tariff' });
+    }
+    sets.push(`tariff = $${i++}`);
+    vals.push(tariff);
+  }
+  if (sets.length === 0) return res.status(400).json({ error: 'nothing to update' });
+  vals.push(slug);
+
+  const db = adminClient();
+  await db.connect();
+  try {
+    const { rows } = await db.query(
+      `UPDATE kunden SET ${sets.join(', ')} WHERE slug = $${i} RETURNING id, slug, display_name, contact_email, notes, tariff, status`,
+      vals
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'tenant not found' });
+    await logAudit('tenant.update', slug, { fields: Object.keys(req.body) });
+    res.json(rows[0]);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    await db.end();
+  }
+});
+
+// POST /tenants/:slug/status  { status: 'active' | 'suspended' }
+// P2-6: der Standardfall bei Zahlungsverzug - Container stoppen, Traefik-Router
+// entfernen, DB UND alle Secrets bleiben unangetastet. Vorher gab es nur
+// "laufen lassen oder komplett loeschen" (DELETE /tenants/:slug, unwiderruflich).
+tenantsRouter.post('/tenants/:slug/status', async (req, res) => {
+  const { slug } = req.params;
+  const { status } = req.body;
+  if (!slug || !/^[a-z0-9-]+$/.test(slug)) return res.status(400).json({ error: 'invalid slug' });
+  if (!['active', 'suspended'].includes(status)) {
+    return res.status(400).json({ error: "status must be 'active' or 'suspended'" });
+  }
+
+  const tenantDir = `/opt/multitenant-platform/kunden-instances/${slug}`;
+  const db = adminClient();
+  await db.connect();
+  const warnings: string[] = [];
+  try {
+    const { rows: tenantRows } = await db.query('SELECT slug, status FROM kunden WHERE slug = $1', [slug]);
+    if (tenantRows.length === 0) return res.status(404).json({ error: 'tenant not found' });
+    if (tenantRows[0].status === status) {
+      return res.json({ status, unchanged: true });
+    }
+
+    const { rows: projects } = await db.query(
+      'SELECT id, slug AS project_slug, active_container FROM projects WHERE tenant_slug = $1',
+      [slug]
+    );
+
+    if (status === 'suspended') {
+      // Tenant-Instanz (auth/api) stoppen - 'stop' statt 'down', damit 'start'
+      // beim Reaktivieren reicht und keine Container-IDs/Volumes neu entstehen.
+      await execFileP('docker', ['compose', '-f', `${tenantDir}/docker-compose.yml`, 'stop']).catch((e: any) =>
+        warnings.push(`Tenant-Container stoppen fehlgeschlagen: ${e.message}`)
+      );
+      for (const p of projects) {
+        if (p.active_container) {
+          await execFileP('docker', ['stop', p.active_container]).catch((e: any) =>
+            warnings.push(`Container ${p.active_container} stoppen fehlgeschlagen: ${e.message}`)
+          );
+        }
+        await removeAllRoutersForProject(p.project_slug).catch((e: any) =>
+          warnings.push(`Router fuer ${p.project_slug} entfernen fehlgeschlagen: ${e.message}`)
+        );
+      }
+    } else {
+      // Reaktivieren: erst Container wieder hochfahren, dann Router neu schreiben -
+      // syncProjectRouters braucht den aktuellen Domain-Stand aus der DB, nicht
+      // den Container-Status, daher Reihenfolge hier unkritisch, aber Container
+      // zuerst ist die intuitivere Lesart im Log.
+      await execFileP('docker', ['compose', '-f', `${tenantDir}/docker-compose.yml`, 'start']).catch((e: any) =>
+        warnings.push(`Tenant-Container starten fehlgeschlagen: ${e.message}`)
+      );
+      for (const p of projects) {
+        if (p.active_container) {
+          await execFileP('docker', ['start', p.active_container]).catch((e: any) =>
+            warnings.push(`Container ${p.active_container} starten fehlgeschlagen: ${e.message}`)
+          );
+        }
+        await syncProjectRouters(db, p.id).catch((e: any) =>
+          warnings.push(`Router fuer ${p.project_slug} wiederherstellen fehlgeschlagen: ${e.message}`)
+        );
+      }
+    }
+
+    await db.query('UPDATE kunden SET status = $1 WHERE slug = $2', [status, slug]);
+    await logAudit('tenant.status.set', slug, { status, warnings: warnings.length > 0 ? warnings : undefined });
+    res.json({ status, warnings: warnings.length > 0 ? warnings : undefined });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   } finally {

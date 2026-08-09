@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
-import { EmptyState } from "@/components/StatusBadge";
+import { EmptyState, StatusBadge } from "@/components/StatusBadge";
 import { useToast } from "@/components/Toast";
 
 interface Tenant {
@@ -11,6 +11,10 @@ interface Tenant {
   slug: string;
   db_name: string;
   tariff: string;
+  display_name: string | null;
+  contact_email: string | null;
+  status: string;
+  notes: string | null;
   created_at: string;
 }
 
@@ -27,12 +31,17 @@ export default function ProjectsPage() {
   const [error, setError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [slug, setSlug] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [contactEmail, setContactEmail] = useState("");
   const [tariff, setTariff] = useState("starter");
   const [creating, setCreating] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [deletingSlug, setDeletingSlug] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<Tenant | null>(null);
+  const [statusTarget, setStatusTarget] = useState<{ tenant: Tenant; next: string } | null>(null);
+  const [statusBusy, setStatusBusy] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
   const toast = useToast();
 
   function load() {
@@ -51,6 +60,17 @@ export default function ProjectsPage() {
     load();
   }, []);
 
+  const filteredTenants = useMemo(() => {
+    if (!tenants) return null;
+    const q = search.trim().toLowerCase();
+    if (!q) return tenants;
+    // P2-6: Suche ueber Name UND Slug - bei fuenfzig Kunden ist der Slug allein
+    // nicht mehr die zuverlaessigste Art, jemanden wiederzufinden.
+    return tenants.filter(
+      (t) => t.slug.toLowerCase().includes(q) || (t.display_name || "").toLowerCase().includes(q)
+    );
+  }, [tenants, search]);
+
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     if (!/^[a-z0-9-]+$/.test(slug)) {
@@ -63,7 +83,12 @@ export default function ProjectsPage() {
       const res = await fetch("/api/provision-tenant", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tenantSlug: slug, tenantName: slug, tariff }),
+        body: JSON.stringify({
+          tenantSlug: slug,
+          tariff,
+          displayName: displayName.trim() || undefined,
+          contactEmail: contactEmail.trim() || undefined,
+        }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -71,6 +96,8 @@ export default function ProjectsPage() {
         return;
       }
       setSlug("");
+      setDisplayName("");
+      setContactEmail("");
       setShowForm(false);
       load();
     } catch {
@@ -101,6 +128,32 @@ export default function ProjectsPage() {
     }
   }
 
+  async function handleStatusChange(t: Tenant, next: string) {
+    setStatusBusy(t.slug);
+    try {
+      const res = await fetch(`/api/tenants/${t.slug}/status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: next }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || "Status-Änderung fehlgeschlagen");
+        return;
+      }
+      if (data.warnings?.length) {
+        toast.error(`Mit Warnungen: ${data.warnings.join("; ")}`);
+      } else {
+        toast.success(next === "suspended" ? `"${t.slug}" gesperrt.` : `"${t.slug}" reaktiviert.`);
+      }
+      load();
+    } catch {
+      toast.error("Verbindung zum Provisioning Agent fehlgeschlagen");
+    } finally {
+      setStatusBusy(null);
+    }
+  }
+
   return (
     <div className="content">
       <div className="topbar" style={{ padding: 0, border: "none", marginBottom: 18 }}>
@@ -122,6 +175,7 @@ export default function ProjectsPage() {
             border: "1px solid var(--border)",
             borderRadius: 8,
             background: "var(--panel)",
+            flexWrap: "wrap",
           }}
         >
           <input
@@ -129,6 +183,17 @@ export default function ProjectsPage() {
             value={slug}
             onChange={(e) => setSlug(e.target.value.toLowerCase())}
             required
+          />
+          <input
+            placeholder="Anzeigename (optional, sonst Slug)"
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+          />
+          <input
+            type="email"
+            placeholder="Kontakt-E-Mail (optional)"
+            value={contactEmail}
+            onChange={(e) => setContactEmail(e.target.value)}
           />
           <select value={tariff} onChange={(e) => setTariff(e.target.value)}>
             <option value="starter">Starter</option>
@@ -140,6 +205,15 @@ export default function ProjectsPage() {
           </button>
           {formError && <span style={{ color: "var(--danger)" }}>{formError}</span>}
         </form>
+      )}
+
+      {tenants && tenants.length > 0 && (
+        <input
+          placeholder="Suche nach Name oder Slug…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          style={{ marginBottom: 14, maxWidth: 320 }}
+        />
       )}
 
       {error && <div className="error-box">{error}</div>}
@@ -156,20 +230,34 @@ export default function ProjectsPage() {
           }
         />
       )}
+      {filteredTenants && tenants && tenants.length > 0 && filteredTenants.length === 0 && (
+        <div className="empty-state">Keine Treffer für &quot;{search}&quot;.</div>
+      )}
 
       <div className="card-grid">
-        {tenants?.map((t) => {
+        {filteredTenants?.map((t) => {
           const project = projects.find((p) => p.tenant_slug === t.slug);
+          const suspended = t.status === "suspended";
           return (
-            <div key={t.id} className="card" style={{ position: "relative" }}>
+            <div key={t.id} className="card" style={{ position: "relative", opacity: suspended ? 0.7 : 1 }}>
               <Link href={`/dashboard/projects/${t.slug}`}>
-                <div className="card-title">{t.slug}</div>
+                <div className="card-title">{t.display_name || t.slug}</div>
+                {t.display_name && t.display_name !== t.slug && (
+                  <div style={{ fontSize: 11, color: "var(--text-faint)" }}>{t.slug}</div>
+                )}
                 <div className="card-sub">
                   {project ? project.repo_url || "Repo nicht gesetzt" : "Kein Projekt verbunden"}
                 </div>
-                <div style={{ marginTop: 10, display: "flex", gap: 6, alignItems: "center" }}>
+                {t.contact_email && (
+                  <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 2 }}>{t.contact_email}</div>
+                )}
+                <div style={{ marginTop: 10, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                   <span className="pk-badge">{t.tariff}</span>
-                  {project?.active_container && (
+                  <StatusBadge
+                    label={suspended ? "gesperrt" : "aktiv"}
+                    color={suspended ? "warn" : "success"}
+                  />
+                  {project?.active_container && !suspended && (
                     <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
                       <span
                         style={{
@@ -185,17 +273,30 @@ export default function ProjectsPage() {
                   )}
                 </div>
               </Link>
-              <button
-                className="btn"
-                style={{ position: "absolute", top: 10, right: 10, color: "var(--danger)" }}
-                onClick={(e) => {
-                  e.preventDefault();
-                  setConfirmTarget(t);
-                }}
-                disabled={deletingSlug === t.slug}
-              >
-                {deletingSlug === t.slug ? "…" : "Löschen"}
-              </button>
+              <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 6 }}>
+                <button
+                  className="btn"
+                  style={{ fontSize: 12 }}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setStatusTarget({ tenant: t, next: suspended ? "active" : "suspended" });
+                  }}
+                  disabled={statusBusy === t.slug}
+                >
+                  {statusBusy === t.slug ? "…" : suspended ? "Reaktivieren" : "Sperren"}
+                </button>
+                <button
+                  className="btn"
+                  style={{ color: "var(--danger)" }}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setConfirmTarget(t);
+                  }}
+                  disabled={deletingSlug === t.slug}
+                >
+                  {deletingSlug === t.slug ? "…" : "Löschen"}
+                </button>
+              </div>
             </div>
           );
         })}
@@ -217,6 +318,19 @@ export default function ProjectsPage() {
           "Traefik-Router aller verbundenen Domains",
           "Projekt- und Deployment-Einträge",
         ]}
+      />
+
+      <ConfirmDialog
+        open={!!statusTarget}
+        onClose={() => setStatusTarget(null)}
+        onConfirm={() => statusTarget && handleStatusChange(statusTarget.tenant, statusTarget.next)}
+        title={statusTarget?.next === "suspended" ? "Kunde sperren" : "Kunde reaktivieren"}
+        description={
+          statusTarget?.next === "suspended"
+            ? "Container werden gestoppt und die Traefik-Router entfernt. Datenbank, Secrets und alle Einstellungen bleiben erhalten — jederzeit reaktivierbar."
+            : "Container werden wieder gestartet und die Domains erneut geroutet."
+        }
+        confirmLabel={statusTarget?.next === "suspended" ? "Sperren" : "Reaktivieren"}
       />
     </div>
   );

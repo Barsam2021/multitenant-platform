@@ -174,7 +174,7 @@ async function cleanupTenantResources(slug: string): Promise<{ warnings: string[
 }
 
 app.post('/tenants', sensitiveOpLimiter, async (req, res) => {
-  const { tenantSlug, tariff } = req.body;
+  const { tenantSlug, tariff, displayName, contactEmail, notes } = req.body;
   const tenantTariff = ['starter','business','premium'].includes(tariff) ? tariff : 'starter';
 
   if (!tenantSlug || !/^[a-z0-9-]+$/.test(tenantSlug)) {
@@ -309,8 +309,15 @@ app.post('/tenants', sensitiveOpLimiter, async (req, res) => {
     });
     await admin.connect();
     await admin.query(
-      'INSERT INTO kunden (slug, db_name, tariff, gotrue_jwt_secret, authenticator_password, minio_access_key, minio_secret_key_encrypted, anon_jwt, service_role_jwt) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)',
-      [tenantSlug, dbName, tenantTariff, jwtSecret, authenticatorPw, minioAccessKey, encrypt(minioSecretKey), anonJwt, serviceRoleJwt]
+      'INSERT INTO kunden (slug, db_name, tariff, gotrue_jwt_secret, authenticator_password, minio_access_key, minio_secret_key_encrypted, anon_jwt, service_role_jwt, display_name, contact_email, notes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)',
+      [
+        tenantSlug, dbName, tenantTariff, jwtSecret, authenticatorPw, minioAccessKey, encrypt(minioSecretKey), anonJwt, serviceRoleJwt,
+        // P2-6: display_name faellt auf den Slug zurueck statt leer zu bleiben -
+        // die Projektliste braucht immer einen anzeigbaren Namen.
+        (typeof displayName === 'string' && displayName.trim()) || tenantSlug,
+        typeof contactEmail === 'string' ? contactEmail.trim() || null : null,
+        typeof notes === 'string' ? notes.trim() || null : null,
+      ]
     );
     await admin.end();
 

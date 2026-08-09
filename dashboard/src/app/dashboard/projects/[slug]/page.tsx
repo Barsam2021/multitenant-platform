@@ -8,6 +8,10 @@ interface Tenant {
   slug: string;
   db_name: string;
   tariff: string;
+  display_name: string | null;
+  contact_email: string | null;
+  notes: string | null;
+  status: string;
 }
 
 interface Project {
@@ -51,6 +55,9 @@ export default function ProjectOverviewPage({
   const [rotating, setRotating] = useState<"jwt" | "minio" | null>(null);
   const [rotateNote, setRotateNote] = useState<string | null>(null);
   const [rotateTarget, setRotateTarget] = useState<"jwt" | "minio" | null>(null);
+  const [editingCustomer, setEditingCustomer] = useState(false);
+  const [customerForm, setCustomerForm] = useState({ displayName: "", contactEmail: "", notes: "" });
+  const [savingCustomer, setSavingCustomer] = useState(false);
   const toast = useToast();
 
   useEffect(() => {
@@ -59,7 +66,14 @@ export default function ProjectOverviewPage({
       .then((d) => {
         const t = d.tenants?.find((x: Tenant) => x.slug === slug);
         if (!t) setError("Projekt nicht gefunden");
-        else setTenant(t);
+        else {
+          setTenant(t);
+          setCustomerForm({
+            displayName: t.display_name || "",
+            contactEmail: t.contact_email || "",
+            notes: t.notes || "",
+          });
+        }
       });
     fetch("/api/projects")
       .then((r) => r.json())
@@ -166,15 +180,110 @@ export default function ProjectOverviewPage({
     }
   }
 
+  async function handleSaveCustomer() {
+    setSavingCustomer(true);
+    try {
+      const res = await fetch(`/api/tenants/${slug}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          displayName: customerForm.displayName,
+          contactEmail: customerForm.contactEmail,
+          notes: customerForm.notes,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || "Speichern fehlgeschlagen");
+        return;
+      }
+      setTenant((prev) => (prev ? { ...prev, display_name: data.display_name, contact_email: data.contact_email, notes: data.notes } : prev));
+      toast.success("Kundendaten gespeichert.");
+      setEditingCustomer(false);
+    } catch {
+      toast.error("Verbindung zum Provisioning Agent fehlgeschlagen");
+    } finally {
+      setSavingCustomer(false);
+    }
+  }
+
   if (loading) return <div className="empty-state">Lade…</div>;
   if (error) return <div className="error-box">{error}</div>;
 
   return (
     <div>
-      <h2 style={{ marginTop: 0, fontSize: 16 }}>{slug}</h2>
+      <h2 style={{ marginTop: 0, fontSize: 16 }}>{tenant?.display_name || slug}</h2>
       {tenant && (
         <div style={{ fontSize: 13, color: "var(--text-dim)", marginBottom: 12 }}>
-          {tenant.db_name} · Tarif {tenant.tariff}
+          {slug} · {tenant.db_name} · Tarif {tenant.tariff}
+          {tenant.status === "suspended" && (
+            <span style={{ color: "#e0a340", marginLeft: 8 }}>gesperrt</span>
+          )}
+        </div>
+      )}
+
+      {tenant && (
+        <div
+          style={{
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            padding: 14,
+            marginBottom: 20,
+            background: "var(--panel)",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>Kundendaten</span>
+            {!editingCustomer && (
+              <button className="btn" onClick={() => setEditingCustomer(true)}>
+                Bearbeiten
+              </button>
+            )}
+          </div>
+
+          {editingCustomer ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 10 }}>
+              <div>
+                <label style={{ fontSize: 11, color: "var(--text-dim)" }}>Anzeigename</label>
+                <input
+                  value={customerForm.displayName}
+                  onChange={(e) => setCustomerForm((f) => ({ ...f, displayName: e.target.value }))}
+                  style={{ width: "100%" }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: 11, color: "var(--text-dim)" }}>Kontakt-E-Mail</label>
+                <input
+                  type="email"
+                  value={customerForm.contactEmail}
+                  onChange={(e) => setCustomerForm((f) => ({ ...f, contactEmail: e.target.value }))}
+                  style={{ width: "100%" }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: 11, color: "var(--text-dim)" }}>Notiz</label>
+                <textarea
+                  rows={3}
+                  value={customerForm.notes}
+                  onChange={(e) => setCustomerForm((f) => ({ ...f, notes: e.target.value }))}
+                  style={{ width: "100%" }}
+                />
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="btn btn-primary" onClick={handleSaveCustomer} disabled={savingCustomer}>
+                  {savingCustomer ? "Speichere…" : "Speichern"}
+                </button>
+                <button className="btn" onClick={() => setEditingCustomer(false)} disabled={savingCustomer}>
+                  Abbrechen
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div style={{ marginTop: 8, fontSize: 13, color: "var(--text-dim)", display: "flex", flexDirection: "column", gap: 4 }}>
+              <span>{tenant.contact_email || "Keine Kontakt-E-Mail hinterlegt."}</span>
+              {tenant.notes && <span style={{ whiteSpace: "pre-wrap" }}>{tenant.notes}</span>}
+            </div>
+          )}
         </div>
       )}
 

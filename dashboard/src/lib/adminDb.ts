@@ -20,13 +20,17 @@ export interface Tenant {
   slug: string;
   db_name: string;
   tariff: string;
+  display_name: string | null;
+  contact_email: string | null;
+  status: string;
+  notes: string | null;
   created_at: string;
 }
 
 export async function listTenants(): Promise<Tenant[]> {
   const pool = getAdminPool();
   const { rows } = await pool.query<Tenant>(
-    "SELECT id, slug, db_name, tariff, created_at FROM kunden ORDER BY created_at DESC"
+    "SELECT id, slug, db_name, tariff, display_name, contact_email, status, notes, created_at FROM kunden ORDER BY created_at DESC"
   );
   return rows;
 }
@@ -34,7 +38,7 @@ export async function listTenants(): Promise<Tenant[]> {
 export async function getTenantBySlug(slug: string): Promise<Tenant | null> {
   const pool = getAdminPool();
   const { rows } = await pool.query<Tenant>(
-    "SELECT id, slug, db_name, tariff, created_at FROM kunden WHERE slug = $1",
+    "SELECT id, slug, db_name, tariff, display_name, contact_email, status, notes, created_at FROM kunden WHERE slug = $1",
     [slug]
   );
   return rows[0] ?? null;
