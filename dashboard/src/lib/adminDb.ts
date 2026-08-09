@@ -1,14 +1,14 @@
 import { Pool } from "pg";
 
-// Verbindung zur admin_dashboard-DB. Läuft über pgbouncer, wie in
-// 10_env_reference.md § 2 (DATABASE_URL) vorgesehen.
+// Verbindung zur admin_dashboard-DB. Läuft über pgbouncer, siehe .env.example
+// (DATABASE_URL) und SETUP.md Schritt 2.
 let adminPool: Pool | null = null;
 
 function getAdminPool(): Pool {
   if (!adminPool) {
     const connectionString = process.env.DATABASE_URL;
     if (!connectionString) {
-      throw new Error("DATABASE_URL fehlt (siehe 10_env_reference.md § 2)");
+      throw new Error("DATABASE_URL fehlt (siehe .env.example und SETUP.md Schritt 2)");
     }
     adminPool = new Pool({ connectionString, max: 5 });
   }

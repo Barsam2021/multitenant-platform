@@ -20,7 +20,7 @@ export interface TenantSecrets {
 
 /**
  * Holt die pro-Kunde-Secrets aus admin_dashboard.kunden (entschlüsselt) für die
- * Auto-Env-Injection in den Kunden-App-Container (siehe 05_deployment_engine_specification.md § 4.1).
+ * Auto-Env-Injection in den Kunden-App-Container (siehe lib/deploy.ts runDeployment() Schritt 2).
  */
 export async function getTenantSecrets(tenantSlug: string): Promise<TenantSecrets> {
   const db = adminClient();

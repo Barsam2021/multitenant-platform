@@ -84,7 +84,7 @@ export async function checkoutRepo(
 
 /**
  * Verifiziert eine GitHub-Webhook-Signatur (X-Hub-Signature-256, HMAC-SHA256).
- * Timing-safe Vergleich, siehe 05_deployment_engine_specification.md § 6.
+ * Timing-safe Vergleich, verhindert Timing-Angriffe auf die Signaturpruefung.
  */
 export function verifyGithubSignature(rawBody: Buffer, signatureHeader: string | undefined, secret: string): boolean {
   if (!signatureHeader || !signatureHeader.startsWith('sha256=')) return false;

@@ -1,13 +1,14 @@
 # Setup — von 0 auf lauffähig
 
-> **Hinweis zu diesem Dokument:** Der Code und `bootstrap.sh` verweisen an
-> mehreren Stellen auf nummerierte Referenzdokumente (`01_architecture_blueprint.md`,
-> `02_vps_bootstrap_guide.md`, `04_backup_system.md`, `09_disaster_recovery_runbook.md`,
-> `10_env_reference.md`, `11_web_ui_specification.md`). Diese Dateien existieren im
-> aktuellen Repo-Stand nicht (wahrscheinlich lokale Notizen, nie committet). Dieses
-> SETUP.md fasst das zusammen, was aus Code, `.env.example` und `bootstrap.sh`
-> tatsächlich rekonstruierbar ist. Falls du (Repo-Owner) die Originaldateien noch
-> hast: ergänzen und diesen Hinweis entfernen.
+> **Hinweis zu diesem Dokument:** Frühere Versionen von Code und `bootstrap.sh`
+> verwiesen an mehreren Stellen auf nummerierte Referenzdokumente
+> (`01_architecture_blueprint.md`, `02_vps_bootstrap_guide.md`,
+> `04_backup_system.md`, `09_disaster_recovery_runbook.md`, `10_env_reference.md`,
+> `11_web_ui_specification.md`). Diese Dateien existieren im Repo nicht
+> (wahrscheinlich lokale Notizen, nie committet) — die Verweise im Code wurden
+> entfernt und zeigen jetzt auf tatsächlich vorhandene Stellen (`.env.example`,
+> dieses SETUP.md, Code-Kommentare). Dieses SETUP.md fasst das zusammen, was aus
+> Code, `.env.example` und `bootstrap.sh` tatsächlich rekonstruierbar ist.
 
 ## Voraussetzungen
 
@@ -76,14 +77,17 @@ Das Skript ist idempotent (mehrfach ausführbar) und macht:
 
 ## Schritt 4 — Cloudflare Tunnel verbinden
 
-Das Dashboard und Uptime Kuma sind absichtlich **nicht** über offene Ports
-erreichbar. Im Cloudflare Zero Trust Dashboard:
+Das Dashboard ist absichtlich **nicht** über offene Ports erreichbar — nur über
+den Cloudflare Tunnel mit Zero-Trust-Auth davor. Uptime Kuma dagegen läuft ganz
+normal über Traefik/Let's Encrypt auf einem offenen Port (443), mit eigenem
+Login davor (Schritt 7): im Cloudflare Zero Trust Dashboard:
 
 1. Tunnel anlegen, Token in `CLOUDFLARE_TUNNEL_TOKEN` (`.env`) eintragen
-2. Ingress-Regeln ergänzen:
+2. Ingress-Regel für das Dashboard ergänzen:
    - `admin.<PLATFORM_DOMAIN>` → `http://admin-dashboard:3000`
-   - `status-vps.<PLATFORM_DOMAIN>` → läuft über Traefik/Let's Encrypt (normaler
-     A-Record, **nicht** über den Tunnel — siehe Hinweis in Uptime-Kuma-Setup unten)
+3. Für `status-vps.<PLATFORM_DOMAIN>` (Uptime Kuma) ist **keine** Tunnel-Regel
+   nötig — ein normaler A-Record auf die Server-IP reicht, Traefik übernimmt
+   TLS und Routing selbst (siehe `monitoring/uptime-kuma/docker-compose.yml`).
 
 ## Schritt 5 — Admin-Zugang für das Dashboard anlegen
 
@@ -140,9 +144,15 @@ Danach testweise einen Smoke-Test fahren:
 
 ## Bekannte offene Punkte (siehe auch README „Sicherheitsdesign")
 
-- SMTP für GoTrue (Tenant-Auth-Mails) ist aktuell nicht verdrahtet
-  (`GOTRUE_MAILER_AUTOCONFIRM: true`) — für echten Betrieb mit E-Mail-Bestätigung
-  muss das auf einen echten SMTP-Provider (z. B. Resend) umgestellt werden.
+- SMTP für GoTrue (Tenant-Auth-Mails) läuft über `RESEND_API_KEY` in der `.env`
+  (`GOTRUE_MAILER_AUTOCONFIRM: "false"` im Tenant-Compose-Template — Registrierung
+  verlangt also eine Bestätigungsmail). Ist `RESEND_API_KEY` nicht gesetzt, wird
+  die Mail nie zugestellt und kein Tenant-User kann sich bestätigen — der Agent
+  loggt dafür eine Warnung beim Tenant-Anlegen, ändert das Verhalten aber nicht
+  automatisch. Für Betrieb ohne SMTP-Anbindung `RESEND_API_KEY` einfach nicht
+  setzen und stattdessen manuell in `kunden-instances/<slug>/docker-compose.yml`
+  `GOTRUE_MAILER_AUTOCONFIRM` auf `"true"` setzen, bevor der `auth`-Container
+  gestartet wird.
 - Resource-Tier-Werte (`STARTER_*`, `BUSINESS_*`, `PREMIUM_*` in `.env.example`)
   sind Platzhalter für eine 16GB-VPS-Planung, nicht final für 8GB kalkuliert.
 - Container-Hardening (`read_only`, `cap_drop: ALL`, `no-new-privileges`,

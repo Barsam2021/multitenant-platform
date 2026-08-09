@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 
-// ENCRYPTION_MASTER_KEY: 256-bit (32 byte) key, hex-encoded, aus .env (siehe 10_env_reference.md § 5.2)
+// ENCRYPTION_MASTER_KEY: 256-bit (32 byte) key, hex-encoded, aus .env (siehe .env.example)
 // NIEMALS in der DB speichern, NIEMALS loggen.
 const MASTER_KEY_HEX = process.env.ENCRYPTION_MASTER_KEY;
 

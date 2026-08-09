@@ -119,7 +119,7 @@ async function pollHealthcheck(
 }
 
 /**
- * Voller Deploy-Flow für ein Projekt, entspricht 05_deployment_engine_specification.md § 4.
+ * Voller Deploy-Flow für ein Projekt (Checkout → Build → Blue-Green-Swap, siehe Kommentare unten).
  * Läuft asynchron im Hintergrund; der aufrufende Endpoint gibt sofort die deploymentId zurück
  * und der Status wird über GET /deployments/:projectId pollbar aktualisiert.
  */

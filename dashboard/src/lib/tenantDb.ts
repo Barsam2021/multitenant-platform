@@ -7,7 +7,7 @@ const PGBOUNCER_HOST = process.env.PGBOUNCER_HOST || "pgbouncer";
 // Ein Pool pro Tenant-DB, wiederverwendet über Requests hinweg (Next.js-Server-Prozess
 // lebt dauerhaft). Verbindet als 'postgres'-Superuser -> Table Editor braucht vollen
 // Zugriff (Schema lesen, DDL perspektivisch), anders als der eingeschränkte
-// 'authenticator'-Role, den PostgREST/GoTrue nutzen (siehe 10_env_reference.md § 4).
+// 'authenticator'-Role, den PostgREST/GoTrue nutzen (siehe .env.example § Secrets).
 const tenantPools = new Map<string, Pool>();
 
 function getTenantPool(dbName: string): Pool {
