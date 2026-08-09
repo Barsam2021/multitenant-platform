@@ -25,15 +25,30 @@ import { removeAllRoutersForProject } from './lib/traefikDynamic';
 const execFileP = promisify(execFile);
 const app = express();
 
-// Phase 6: Rate-Limiting. In-Memory reicht für Single-VPS-Setup (kein Redis nötig,
-// ein Prozess = ein Zähler-Store). Drei Stufen: global grosszügig, Webhooks eigenes
-// Limit (kommen von GitHub, nicht vom Admin), Tenant-/Secret-Operationen strenger,
-// weil sie teuer sind (DB-Erstellung, Container-Start, Secret-Rotation).
+// Phase 6 + P3-2: Rate-Limiting. In-Memory reicht für Single-VPS-Setup (kein Redis
+// nötig, ein Prozess = ein Zähler-Store). Drei Stufen: global grosszügig, Webhooks
+// eigenes Limit (kommen von GitHub, nicht vom Admin), Tenant-/Secret-Operationen
+// strenger, weil sie teuer sind (DB-Erstellung, Container-Start, Secret-Rotation).
+//
+// P3-2-Fixes:
+// - keyGenerator nutzt X-Actor (vom Dashboard gesetzt, siehe lib/agent.ts) statt
+//   der Request-IP. Alle Admin-Requests kamen bisher vom selben Container - eine
+//   IP, ein Zaehler fuer JEDE Admin-Aktivitaet gleichzeitig.
+// - globalLimiter ueberspringt GET-Requests komplett. Polling (Backups, Domains,
+//   Deployments) ist ausschliesslich GET und war der eigentliche Verbraucher des
+//   Budgets - ein offener Backups-Tab allein hat vorher 180 der 300 Requests pro
+//   15-Minuten-Fenster verbraucht. Schreibende Requests bleiben limitiert.
+function actorKey(req: express.Request): string {
+  return (req.headers['x-actor'] as string) || req.ip || 'unknown';
+}
+
 const globalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 300,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: actorKey,
+  skip: (req) => req.method === 'GET',
 });
 const webhookLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
@@ -46,6 +61,7 @@ const sensitiveOpLimiter = rateLimit({
   limit: 30,
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: actorKey,
 });
 
 const AGENT_SECRET = process.env.PROVISIONING_AGENT_SECRET!;

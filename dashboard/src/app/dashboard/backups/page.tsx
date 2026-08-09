@@ -64,9 +64,17 @@ export default function BackupsPage() {
 
   useEffect(() => {
     load();
-    const interval = setInterval(load, 5000);
+    // P3-2: vorher pollte diese Seite alle 5s IMMER, unabhaengig davon, ob
+    // ueberhaupt etwas lief - allein ein offen gelassener Backups-Tab hat so
+    // 180 der 300 Requests/15min des globalen Agent-Limits verbraucht. Jetzt
+    // nur solange ein Backup oder Restore-Test tatsaechlich laeuft, und auch
+    // dann nur bei sichtbarem Tab.
+    if (!backupRunning && !restoreTestRunning) return;
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") load();
+    }, 5000);
     return () => clearInterval(interval);
-  }, [load]);
+  }, [load, backupRunning, restoreTestRunning]);
 
   async function handleRunBackup() {
     setStarting(true);

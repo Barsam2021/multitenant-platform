@@ -71,7 +71,10 @@ export default function PlatformOverviewPage() {
 
   useEffect(() => {
     load();
-    const interval = setInterval(load, 30_000);
+    // P3-2: auch hier nur bei sichtbarem Tab weiterpollen.
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") load();
+    }, 30_000);
     return () => clearInterval(interval);
   }, []);
 

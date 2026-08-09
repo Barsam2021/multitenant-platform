@@ -67,7 +67,10 @@ function LogViewer({ slug, deployment }: { slug: string; deployment: Deployment 
   useEffect(() => {
     fetchDelta();
     if (!isActive) return;
-    const interval = setInterval(fetchDelta, 2000);
+    // P3-2: Tab im Hintergrund pollt nicht mehr mit.
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") fetchDelta();
+    }, 2000);
     return () => clearInterval(interval);
   }, [fetchDelta, isActive]);
 
@@ -116,7 +119,9 @@ export default function DeploymentsPage({
   useEffect(() => {
     if (!project) return;
     loadDeployments(project.id);
+    // P3-2: Tab im Hintergrund pollt nicht mehr mit.
     const interval = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
       setDeployments((current) => {
         if (current.some((d) => ACTIVE_STATES.includes(d.status))) {
           loadDeployments(project.id);
