@@ -138,7 +138,7 @@ projectsRouter.get('/projects', async (_req, res) => {
   try {
     const { rows } = await db.query(
       `SELECT p.id, p.tenant_slug, p.slug, p.repo_url, p.default_branch, p.active_container,
-              p.preview_hostname, p.created_at, k.tariff,
+              p.active_deployment_id, p.preview_hostname, p.created_at, k.tariff,
               COALESCE(p.app_port, 3000) AS app_port, COALESCE(p.health_path, '/') AS health_path
        FROM projects p JOIN kunden k ON k.slug = p.tenant_slug
        ORDER BY p.created_at DESC`

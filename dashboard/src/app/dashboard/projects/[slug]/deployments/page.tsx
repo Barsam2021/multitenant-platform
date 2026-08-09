@@ -1,26 +1,31 @@
 "use client";
 
-import { useEffect, useState, use, useCallback } from "react";
+import { useEffect, useState, use, useCallback, useRef } from "react";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { useToast } from "@/components/Toast";
 
 interface Deployment {
   id: string;
   commit_sha: string | null;
+  commit_message: string | null;
   status: string;
   container_name: string | null;
   image_tag: string | null;
   triggered_by: string;
   created_at: string;
   finished_at: string | null;
-  build_log: string;
 }
 
 interface Project {
   id: string;
   slug: string;
   tenant_slug: string;
+  repo_url: string | null;
+  active_deployment_id: string | null;
 }
 
 const ACTIVE_STATES = ["queued", "building", "healthchecking"];
+const CANCELLABLE_STATES = ["queued", "building", "healthchecking"];
 
 const STATUS_COLOR: Record<string, string> = {
   queued: "var(--text-dim)",
@@ -29,6 +34,7 @@ const STATUS_COLOR: Record<string, string> = {
   deployed: "#2da44e",
   failed: "var(--danger)",
   rolled_back: "var(--text-dim)",
+  cancelled: "var(--text-faint)",
 };
 
 function duration(start: string, end: string | null): string {
@@ -37,6 +43,58 @@ function duration(start: string, end: string | null): string {
   const secs = Math.max(0, Math.round((e - s) / 1000));
   if (secs < 60) return `${secs}s`;
   return `${Math.floor(secs / 60)}m ${secs % 60}s`;
+}
+
+// Nur fuer github.com-Repos - andere Provider (GitLab, Bitbucket, selbst-gehostet)
+// haben andere Commit-URL-Schemata, das lohnt sich hier nicht zu raten.
+function githubCommitUrl(repoUrl: string | null, sha: string | null): string | null {
+  if (!repoUrl || !sha) return null;
+  const m = repoUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/.]+)(\.git)?\/?$/);
+  if (!m) return null;
+  return `https://github.com/${m[1]}/${m[2]}/commit/${sha}`;
+}
+
+function LogViewer({ slug, deployment }: { slug: string; deployment: Deployment }) {
+  const [log, setLog] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const offsetRef = useRef(0);
+  const isActive = ACTIVE_STATES.includes(deployment.status);
+
+  const fetchDelta = useCallback(async () => {
+    const res = await fetch(`/api/deployments/single/${deployment.id}?logOffset=${offsetRef.current}`);
+    const data = await res.json();
+    if (data.error) return;
+    if (data.logDelta) {
+      setLog((prev) => prev + data.logDelta);
+    }
+    offsetRef.current = data.logTotalLength ?? offsetRef.current;
+    setLoaded(true);
+  }, [deployment.id]);
+
+  useEffect(() => {
+    fetchDelta();
+    if (!isActive) return;
+    const interval = setInterval(fetchDelta, 2000);
+    return () => clearInterval(interval);
+  }, [fetchDelta, isActive]);
+
+  return (
+    <pre
+      style={{
+        marginTop: 8,
+        maxHeight: 600,
+        overflowY: "auto",
+        fontFamily: "var(--font-mono)",
+        fontSize: 12,
+        background: "var(--bg)",
+        padding: 8,
+        borderRadius: 6,
+        whiteSpace: "pre-wrap",
+      }}
+    >
+      {loaded ? log || "(noch kein Log)" : "Lade…"}
+    </pre>
+  );
 }
 
 export default function DeploymentsPage({
@@ -50,6 +108,9 @@ export default function DeploymentsPage({
   const [error, setError] = useState<string | null>(null);
   const [deploying, setDeploying] = useState(false);
   const [openLogs, setOpenLogs] = useState<Set<string>>(new Set());
+  const [rollbackTarget, setRollbackTarget] = useState<string | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<string | null>(null);
+  const toast = useToast();
 
   useEffect(() => {
     fetch("/api/projects")
@@ -95,8 +156,10 @@ export default function DeploymentsPage({
     });
   }
 
-  function downloadLog(d: Deployment) {
-    const blob = new Blob([d.build_log], { type: "text/plain" });
+  async function downloadLog(d: Deployment) {
+    const res = await fetch(`/api/deployments/single/${d.id}`);
+    const data = await res.json();
+    const blob = new Blob([data.build_log || ""], { type: "text/plain" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -118,11 +181,13 @@ export default function DeploymentsPage({
       const data = await res.json();
       if (!res.ok) {
         setError(data.error || "Deploy fehlgeschlagen");
+        toast.error(data.error || "Deploy fehlgeschlagen");
         return;
       }
       loadDeployments(project.id);
     } catch {
       setError("Verbindung zum Provisioning Agent fehlgeschlagen");
+      toast.error("Verbindung zum Provisioning Agent fehlgeschlagen");
     } finally {
       setDeploying(false);
     }
@@ -130,7 +195,6 @@ export default function DeploymentsPage({
 
   async function handleRollback(deploymentId: string) {
     if (!project) return;
-    if (!confirm("Auf dieses Deployment zurückrollen?")) return;
     setError(null);
     try {
       const res = await fetch(`/api/deployments/${deploymentId}/rollback`, {
@@ -141,17 +205,34 @@ export default function DeploymentsPage({
       const data = await res.json();
       if (!res.ok) {
         setError(data.error || "Rollback fehlgeschlagen");
+        toast.error(data.error || "Rollback fehlgeschlagen");
         return;
       }
+      toast.success("Rollback gestartet.");
       loadDeployments(project.id);
     } catch {
       setError("Verbindung zum Provisioning Agent fehlgeschlagen");
+      toast.error("Verbindung zum Provisioning Agent fehlgeschlagen");
+    }
+  }
+
+  async function handleCancel(deploymentId: string) {
+    if (!project) return;
+    try {
+      const res = await fetch(`/api/deployments/${deploymentId}/cancel`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || "Abbruch fehlgeschlagen");
+        return;
+      }
+      toast.success(data.status === "cancel_requested" ? "Abbruch angefordert." : "Deployment abgebrochen.");
+      loadDeployments(project.id);
+    } catch {
+      toast.error("Verbindung zum Provisioning Agent fehlgeschlagen");
     }
   }
 
   if (!project) return <div className="empty-state">{error || "Lade…"}</div>;
-
-  const latest = deployments[0];
 
   return (
     <div>
@@ -166,6 +247,12 @@ export default function DeploymentsPage({
       {deployments.length === 0 && <div className="empty-state">Noch kein Deployment.</div>}
       {deployments.map((d) => {
         const logsOpen = openLogs.has(d.id);
+        const commitUrl = githubCommitUrl(project.repo_url, d.commit_sha);
+        // P2-4: nicht mehr "letztes in der Liste", sondern das tatsaechlich live
+        // geschaltete Deployment - bei einem fehlgeschlagenen letzten Deploy war
+        // der Rollback-Button vorher genau dann weg, wenn man ihn brauchte.
+        const canRollback = d.status === "deployed" && d.id !== project.active_deployment_id;
+        const canCancel = CANCELLABLE_STATES.includes(d.status);
         return (
           <div
             key={d.id}
@@ -177,8 +264,8 @@ export default function DeploymentsPage({
               background: "var(--panel)",
             }}
           >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                 <span
                   style={{
                     display: "inline-block",
@@ -189,50 +276,65 @@ export default function DeploymentsPage({
                   }}
                 />
                 <span className="pk-badge">{d.status}</span>
+                {d.id === project.active_deployment_id && (
+                  <span className="pk-badge" style={{ borderColor: "#2da44e", color: "#2da44e" }}>
+                    aktiv
+                  </span>
+                )}
                 <span style={{ color: "var(--text-dim)", fontSize: 12 }}>
-                  {d.commit_sha?.slice(0, 7) || "—"} · {d.triggered_by} ·{" "}
+                  {commitUrl ? (
+                    <a href={commitUrl} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
+                      {d.commit_sha?.slice(0, 7)}
+                    </a>
+                  ) : (
+                    d.commit_sha?.slice(0, 7) || "—"
+                  )}
+                  {d.commit_message && <> — {d.commit_message}</>} · {d.triggered_by} ·{" "}
                   {new Date(d.created_at).toLocaleString("de-DE")} ·{" "}
                   {duration(d.created_at, d.finished_at)}
                 </span>
               </div>
               <div style={{ display: "flex", gap: 8 }}>
-                {d.build_log && (
-                  <>
-                    <button className="btn" onClick={() => toggleLogs(d.id)}>
-                      {logsOpen ? "Logs verbergen" : "Logs anzeigen"}
-                    </button>
-                    <button className="btn" onClick={() => downloadLog(d)}>
-                      Herunterladen
-                    </button>
-                  </>
+                <button className="btn" onClick={() => toggleLogs(d.id)}>
+                  {logsOpen ? "Logs verbergen" : "Logs anzeigen"}
+                </button>
+                <button className="btn" onClick={() => downloadLog(d)}>
+                  Herunterladen
+                </button>
+                {canCancel && (
+                  <button className="btn btn-danger" onClick={() => setCancelTarget(d.id)}>
+                    Abbrechen
+                  </button>
                 )}
-                {d.status === "deployed" && d.id !== latest?.id && (
-                  <button className="btn" onClick={() => handleRollback(d.id)}>
+                {canRollback && (
+                  <button className="btn" onClick={() => setRollbackTarget(d.id)}>
                     Rollback hierauf
                   </button>
                 )}
               </div>
             </div>
-            {logsOpen && d.build_log && (
-              <pre
-                style={{
-                  marginTop: 8,
-                  maxHeight: 600,
-                  overflowY: "auto",
-                  fontFamily: "var(--font-mono)",
-                  fontSize: 12,
-                  background: "var(--bg)",
-                  padding: 8,
-                  borderRadius: 6,
-                  whiteSpace: "pre-wrap",
-                }}
-              >
-                {d.build_log}
-              </pre>
-            )}
+            {logsOpen && <LogViewer slug={slug} deployment={d} />}
           </div>
         );
       })}
+
+      <ConfirmDialog
+        open={!!rollbackTarget}
+        onClose={() => setRollbackTarget(null)}
+        onConfirm={() => rollbackTarget && handleRollback(rollbackTarget)}
+        title="Zurückrollen"
+        description="Der zuletzt aktive Container wird gegen dieses Deployment getauscht."
+        confirmLabel="Zurückrollen"
+      />
+
+      <ConfirmDialog
+        open={!!cancelTarget}
+        onClose={() => setCancelTarget(null)}
+        onConfirm={() => cancelTarget && handleCancel(cancelTarget)}
+        title="Deployment abbrechen"
+        description="Der laufende Build/Healthcheck wird gestoppt, ein evtl. gestarteter Kandidat-Container entfernt. Bereits live geschaltete Deployments lassen sich nicht mehr abbrechen."
+        confirmLabel="Abbrechen"
+      />
     </div>
   );
 }

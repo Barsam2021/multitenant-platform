@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { Client as PGClient } from 'pg';
-import { runDeployment, rollbackToDeployment, Project } from '../lib/deploy';
+import { runDeployment, rollbackToDeployment, cancelDeployment, Project } from '../lib/deploy';
 import { logAudit } from '../lib/audit';
 
 const PGBOUNCER_HOST = process.env.PGBOUNCER_HOST || 'pgbouncer';
@@ -54,18 +54,49 @@ deploymentsRouter.post('/deployments', async (req, res) => {
   }
 });
 
-// GET /deployments/:projectId — Deployment-Historie für Dashboard-Ansicht/Polling
+// GET /deployments/:projectId — Deployment-Historie für Dashboard-Ansicht/Polling.
+// P2-4: bewusst OHNE build_log - bei 32MB Logs war das alle 3s fuer bis zu 20
+// Zeilen gleichzeitig spuerbar. Das Log einer einzelnen (aufgeklappten) Zeile
+// kommt ueber GET /deployments/single/:id, optional inkrementell per logOffset.
 deploymentsRouter.get('/deployments/:projectId', async (req, res) => {
   const db = adminClient();
   await db.connect();
   try {
     const { rows } = await db.query(
-      `SELECT id, commit_sha, status, container_name, image_tag, triggered_by, created_at, finished_at,
-              build_log
+      `SELECT id, commit_sha, commit_message, status, container_name, image_tag, triggered_by, created_at, finished_at
        FROM deployments WHERE project_id = $1 ORDER BY created_at DESC LIMIT 20`,
       [req.params.projectId]
     );
     res.json(rows);
+  } finally {
+    await db.end();
+  }
+});
+
+// GET /deployments/single/:id?logOffset=N — Einzelnes Deployment inkl. Build-Log.
+// Mit logOffset: liefert nur das Delta ab dieser Zeichenposition (logDelta) plus
+// logTotalLength, statt bei jedem Poll den kompletten (potenziell sehr langen)
+// Log erneut zu uebertragen (P2-4).
+deploymentsRouter.get('/deployments/single/:id', async (req, res) => {
+  const db = adminClient();
+  await db.connect();
+  try {
+    const { rows } = await db.query(
+      `SELECT id, project_id, commit_sha, commit_message, status, container_name, image_tag,
+              triggered_by, created_at, finished_at, build_log
+       FROM deployments WHERE id = $1`,
+      [req.params.id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'deployment not found' });
+    const row = rows[0];
+    const fullLog: string = row.build_log || '';
+
+    if (req.query.logOffset !== undefined) {
+      const offset = Math.max(0, Math.min(fullLog.length, Number(req.query.logOffset) || 0));
+      const { build_log, ...rest } = row;
+      return res.json({ ...rest, logDelta: fullLog.slice(offset), logTotalLength: fullLog.length });
+    }
+    res.json(row);
   } finally {
     await db.end();
   }
@@ -89,6 +120,39 @@ deploymentsRouter.post('/deployments/:id/rollback', async (req, res) => {
     res.json({ status: 'ok' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  } finally {
+    await db.end();
+  }
+});
+
+// POST /deployments/:id/cancel — P2-4: laufenden Build/Healthcheck abbrechen,
+// solange noch nicht live geschaltet wurde (siehe deploy.ts pastPointOfNoReturn).
+deploymentsRouter.post('/deployments/:id/cancel', async (req, res) => {
+  const result = cancelDeployment(req.params.id);
+  if (result.ok) {
+    await logAudit('deployment.cancel', null, { deploymentId: req.params.id });
+    return res.json({ status: 'cancel_requested', containerName: result.containerName });
+  }
+
+  // Kein aktiver In-Process-Handle gefunden (z.B. Agent-Neustart waehrend des
+  // Builds) - wenn die DB die Deployment noch als aktiv fuehrt, ist das ein
+  // verwaister Zustand, den sonst nichts je korrigieren wuerde.
+  const db = adminClient();
+  await db.connect();
+  try {
+    const { rows } = await db.query('SELECT status FROM deployments WHERE id = $1', [req.params.id]);
+    if (rows.length === 0) return res.status(404).json({ error: 'deployment not found' });
+    if (!['queued', 'building', 'healthchecking'].includes(rows[0].status)) {
+      return res.status(409).json({ error: result.reason || 'deployment ist in diesem Status nicht abbrechbar' });
+    }
+    await db.query(
+      `UPDATE deployments SET status = 'cancelled', finished_at = now(),
+         build_log = COALESCE(build_log, '') || $2
+       WHERE id = $1`,
+      [req.params.id, '\n[cancel] Kein aktiver Prozess im Agent gefunden (vermutlich Neustart) - Status manuell auf cancelled gesetzt.\n']
+    );
+    await logAudit('deployment.cancel', null, { deploymentId: req.params.id, orphaned: true });
+    res.json({ status: 'cancelled', orphaned: true });
   } finally {
     await db.end();
   }

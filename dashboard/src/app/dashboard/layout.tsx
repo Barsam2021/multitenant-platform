@@ -24,6 +24,9 @@ export default async function DashboardLayout({
         <div className="sidebar-brand">
           UP2 <span>Console</span>
         </div>
+        <Link href="/dashboard" className="nav-link">
+          Übersicht
+        </Link>
         <Link href="/dashboard/projects" className="nav-link">
           Projekte
         </Link>

@@ -3,6 +3,8 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { Modal, CopyValue } from "@/components/Modal";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { useToast } from "@/components/Toast";
 
 interface Instruction {
   type: "A" | "CNAME";
@@ -101,7 +103,8 @@ export default function DomainsPage() {
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [verifying, setVerifying] = useState<string | null>(null);
-  const [toast, setToast] = useState<{ msg: string; kind: "ok" | "err" } | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Domain | null>(null);
+  const toastApi = useToast();
 
   // Dialog-Zustand
   const [modalOpen, setModalOpen] = useState(false);
@@ -110,8 +113,8 @@ export default function DomainsPage() {
   const [addResult, setAddResult] = useState<any>(null);
 
   const notify = (msg: string, kind: "ok" | "err" = "ok") => {
-    setToast({ msg, kind });
-    setTimeout(() => setToast(null), 5000);
+    if (kind === "ok") toastApi.success(msg);
+    else toastApi.error(msg);
   };
 
   const loadDomains = useCallback(async (projectId: string) => {
@@ -194,7 +197,6 @@ export default function DomainsPage() {
   }
 
   async function handleDelete(d: Domain) {
-    if (!confirm(`${d.hostname} entfernen?\n\nDer Traefik-Router wird gelöscht, die Domain ist danach nicht mehr erreichbar.`)) return;
     const res = await fetch(`/api/domains/${d.id}`, { method: "DELETE" });
     const data = await res.json();
     if (res.ok) {
@@ -216,15 +218,6 @@ export default function DomainsPage() {
           Domain hinzufügen
         </button>
       </div>
-
-      {toast && (
-        <div style={{
-          marginBottom: 16, padding: "10px 14px", borderRadius: 8, fontSize: 13,
-          border: `1px solid ${toast.kind === "ok" ? "#16a34a" : "#dc2626"}`,
-          background: toast.kind === "ok" ? "rgba(22,163,74,0.08)" : "rgba(220,38,38,0.08)",
-          color: toast.kind === "ok" ? "#16a34a" : "#dc2626",
-        }}>{toast.msg}</div>
-      )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {domains.map((d) => {
@@ -281,7 +274,7 @@ export default function DomainsPage() {
                       {!d.is_primary && (d.status === "live" || d.status === "tls_pending") && (
                         <button className="btn" onClick={() => handleSetPrimary(d)}>Als Primär</button>
                       )}
-                      <button className="btn btn-danger" onClick={() => handleDelete(d)}>Entfernen</button>
+                      <button className="btn btn-danger" onClick={() => setDeleteTarget(d)}>Entfernen</button>
                     </>
                   )}
                 </div>
@@ -391,6 +384,15 @@ export default function DomainsPage() {
           </>
         )}
       </Modal>
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => deleteTarget && handleDelete(deleteTarget)}
+        title={`${deleteTarget?.hostname ?? ""} entfernen`}
+        description="Der Traefik-Router wird gelöscht, die Domain ist danach nicht mehr erreichbar."
+        confirmLabel="Entfernen"
+      />
     </div>
   );
 }

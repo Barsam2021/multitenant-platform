@@ -15,6 +15,7 @@ import { githubRouter } from './routes/github';
 import { backupsRouter } from './routes/backups';
 import { secretsRouter } from './routes/secrets';
 import { auditRouter } from './routes/audit';
+import { statsRouter } from './routes/stats';
 import { encrypt } from './lib/crypto';
 import { signTenantJwt } from './lib/jwt';
 import { logAudit } from './lib/audit';
@@ -62,12 +63,144 @@ app.use((req, res, next) => {
   next();
 });
 
+// P0-4: geteilte Aufraeumlogik fuer einen Tenant — wird sowohl fuer den echten
+// DELETE-Endpunkt genutzt als auch fuer das automatische Rollback, wenn
+// POST /tenants auf halbem Weg scheitert. Jeder Schritt ist einzeln
+// fehlertolerant (sammelt Warnungen statt abzubrechen): ein Tenant, der nur
+// teilweise angelegt wurde, hat naturgemaess nicht alle Ressourcen — DROP
+// DATABASE IF EXISTS/DROP ROLE IF EXISTS sind No-Ops, mc-Befehle auf nicht
+// existente Buckets/User/Policies schlagen einzeln fehl und werden geloggt,
+// statt den gesamten Cleanup abzubrechen (frueher riss ein einzelner Fehler,
+// z.B. bei DROP DATABASE, den kompletten Rest des Cleanups mit sich).
+async function cleanupTenantResources(slug: string): Promise<{ warnings: string[] }> {
+  const dbName = `kunde_${slug}`;
+  const tenantDir = `/opt/multitenant-platform/kunden-instances/${slug}`;
+  const warnings: string[] = [];
+
+  if (isMonitoringConfigured()) {
+    try {
+      const monitorAdmin = new Client({
+        connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
+      });
+      await monitorAdmin.connect();
+      const { rows: projectRows } = await monitorAdmin.query(
+        'SELECT kuma_monitor_id FROM projects WHERE tenant_slug = $1 AND kuma_monitor_id IS NOT NULL',
+        [slug]
+      );
+      await monitorAdmin.end();
+      for (const p of projectRows) {
+        await deleteMonitor(p.kuma_monitor_id).catch((e: any) =>
+          warnings.push(`Monitor ${p.kuma_monitor_id} löschen fehlgeschlagen: ${e.message}`)
+        );
+      }
+    } catch (e: any) {
+      warnings.push(`Monitor-Cleanup fehlgeschlagen: ${e.message}`);
+    }
+  }
+
+  try {
+    const routerDb = new Client({
+      connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
+    });
+    await routerDb.connect();
+    const { rows: slugRows } = await routerDb.query('SELECT slug FROM projects WHERE tenant_slug = $1', [slug]);
+    await routerDb.end();
+    for (const p of slugRows) {
+      await removeAllRoutersForProject(p.slug);
+    }
+  } catch (e: any) {
+    warnings.push(`Traefik-Router-Cleanup fehlgeschlagen: ${e.message}`);
+  }
+
+  try {
+    await execFileP('docker', ['compose', '-f', `${tenantDir}/docker-compose.yml`, 'down']);
+  } catch (e: any) {
+    warnings.push(`Container-Stop fehlgeschlagen (evtl. nie gestartet): ${e.message}`);
+  }
+
+  try {
+    const master = new Client({
+      connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/postgres`,
+    });
+    await master.connect();
+    await master.query('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1', [dbName]);
+    await master.query(format('DROP DATABASE IF EXISTS %I;', dbName));
+    await master.query(format('DROP ROLE IF EXISTS %I;', `authenticator_${slug}`));
+    await master.end();
+  } catch (e: any) {
+    warnings.push(`DB/Rolle löschen fehlgeschlagen: ${e.message}`);
+  }
+
+  await execFileP('mc', ['rb', '--force', `localminio/kunde-${slug}-storage`]).catch((e: any) =>
+    warnings.push(`MinIO-Bucket löschen fehlgeschlagen (evtl. nie angelegt): ${e.message}`)
+  );
+
+  try {
+    const admin2 = new Client({
+      connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
+    });
+    await admin2.connect();
+    const { rows } = await admin2.query('SELECT minio_access_key FROM kunden WHERE slug = $1', [slug]);
+    await admin2.end();
+    if (rows[0]?.minio_access_key) {
+      await execFileP('mc', ['admin', 'user', 'remove', 'localminio', rows[0].minio_access_key]).catch((e: any) =>
+        warnings.push(`MinIO-User löschen fehlgeschlagen: ${e.message}`)
+      );
+    }
+  } catch (e: any) {
+    warnings.push(`MinIO-User-Lookup fehlgeschlagen: ${e.message}`);
+  }
+
+  await execFileP('mc', ['admin', 'policy', 'remove', 'localminio', `kunde-${slug}-policy`]).catch((e: any) =>
+    warnings.push(`MinIO-Policy löschen fehlgeschlagen (evtl. nie angelegt): ${e.message}`)
+  );
+
+  await execFileP('rm', ['-rf', tenantDir]).catch((e: any) =>
+    warnings.push(`Verzeichnis löschen fehlgeschlagen: ${e.message}`)
+  );
+
+  try {
+    const admin3 = new Client({
+      connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
+    });
+    await admin3.connect();
+    await admin3.query('DELETE FROM kunden WHERE slug = $1', [slug]);
+    await admin3.end();
+  } catch (e: any) {
+    warnings.push(`DB-Zeile löschen fehlgeschlagen: ${e.message}`);
+  }
+
+  return { warnings };
+}
+
 app.post('/tenants', sensitiveOpLimiter, async (req, res) => {
   const { tenantSlug, tariff } = req.body;
   const tenantTariff = ['starter','business','premium'].includes(tariff) ? tariff : 'starter';
 
   if (!tenantSlug || !/^[a-z0-9-]+$/.test(tenantSlug)) {
     return res.status(400).json({ error: 'invalid slug' });
+  }
+
+  // P0-4: MUSS vor jeder Ressourcen-Erstellung stehen. Ohne diesen Check wuerde
+  // ein Slug-Konflikt erst bei "CREATE DATABASE" (Postgres-Fehler) auffallen,
+  // UND das anschliessende automatische Rollback wuerde den bereits bestehenden,
+  // funktionierenden Tenant mit demselben Slug versehentlich mitloeschen —
+  // das waere ein destruktiverer Bug als das, was P0-4 eigentlich beheben soll.
+  // Eigener try/catch: schlaegt schon DIESE Verbindung fehl, ist noch nichts
+  // angelegt, ein Rollback-Versuch waere unnoetig und wuerde nur verwirren.
+  try {
+    const existsCheck = new Client({
+      connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
+    });
+    await existsCheck.connect();
+    const { rows: existingRows } = await existsCheck.query('SELECT 1 FROM kunden WHERE slug = $1', [tenantSlug]);
+    await existsCheck.end();
+    if (existingRows.length > 0) {
+      return res.status(409).json({ error: `Tenant "${tenantSlug}" existiert bereits` });
+    }
+  } catch (err: any) {
+    console.error('Slug-Existenzprüfung fehlgeschlagen:', err.message);
+    return res.status(500).json({ error: `Konnte nicht prüfen, ob Slug bereits existiert: ${err.message}` });
   }
 
   const dbName = `kunde_${tenantSlug}`;
@@ -118,8 +251,23 @@ app.post('/tenants', sensitiveOpLimiter, async (req, res) => {
       .replace(/\$\{POSTGREST_CPUS\}/g, postgrestCpus)
       .replace(/\$\{GOTRUE_MEM\}/g, gotrueMem)
       .replace(/\$\{GOTRUE_CPUS\}/g, gotrueCpus)
-      .replace(/\$\{RESEND_API_KEY\}/g, '')
+      // P1-7: hier stand bisher hart '' — RESEND_API_KEY wurde nie tatsächlich
+      // durchgereicht, GOTRUE_SMTP_PASS war deshalb bei JEDEM Tenant leer und
+      // GoTrue konnte nie eine Bestätigungsmail verschicken (bei
+      // GOTRUE_MAILER_AUTOCONFIRM=false heisst das: kein Tenant-User konnte sich
+      // je registrieren). RESEND_API_KEY ist eine globale Plattform-Variable
+      // (.env.example), keine pro-Tenant-Einstellung — resend_api_key_encrypted
+      // in kunden bleibt bewusst ungenutzt (siehe routes/secrets.ts Kommentar).
+      .replace(/\$\{RESEND_API_KEY\}/g, process.env.RESEND_API_KEY || '')
       .replace(/\$\{TENANT_NAME\}/g, tenantSlug);
+
+    if (!process.env.RESEND_API_KEY) {
+      console.warn(
+        `RESEND_API_KEY nicht gesetzt — GoTrue-Bestätigungsmails für Tenant "${tenantSlug}" ` +
+        `werden fehlschlagen, kein User kann sich registrieren, bis .env ergänzt und ` +
+        `der auth-Container neu gestartet wird.`
+      );
+    }
 
     const tenantDir = `/opt/multitenant-platform/kunden-instances/${tenantSlug}`;
     await mkdir(tenantDir, { recursive: true });
@@ -170,7 +318,23 @@ app.post('/tenants', sensitiveOpLimiter, async (req, res) => {
     res.json({ status: 'ok', slug: tenantSlug, dbName });
   } catch (err: any) {
     console.error('Provisioning failed:', err.message);
-    res.status(500).json({ error: err.message });
+    console.error(`Führe Rollback für "${tenantSlug}" aus...`);
+    const { warnings } = await cleanupTenantResources(tenantSlug).catch((cleanupErr: any) => {
+      console.error('Rollback selbst fehlgeschlagen:', cleanupErr.message);
+      return { warnings: [`Rollback-Funktion selbst fehlgeschlagen: ${cleanupErr.message}`] };
+    });
+    if (warnings.length > 0) {
+      console.error(`Rollback für "${tenantSlug}" mit Warnungen abgeschlossen:`, warnings);
+    } else {
+      console.error(`Rollback für "${tenantSlug}" vollständig — Slug ist wieder frei.`);
+    }
+    await logAudit('tenant.create.failed_rollback', tenantSlug, { error: err.message, rollbackWarnings: warnings }).catch(() => {});
+    res.status(500).json({
+      error: warnings.length === 0
+        ? `${err.message} (automatisch zurückgerollt — Slug ist wieder frei)`
+        : `${err.message} (Rollback mit Warnungen — Server-Log prüfen, ggf. manuell nachräumen)`,
+      rollbackWarnings: warnings,
+    });
   }
 });
 
@@ -180,100 +344,11 @@ app.delete('/tenants/:slug', sensitiveOpLimiter, async (req, res) => {
   if (!slug || !/^[a-z0-9-]+$/.test(slug)) {
     return res.status(400).json({ error: 'invalid slug' });
   }
-  const dbName = `kunde_${slug}`;
-  const tenantDir = `/opt/multitenant-platform/kunden-instances/${slug}`;
 
   try {
-    // Phase 4: verknüpfte Uptime-Kuma-Monitore entfernen, bevor die Projekte durch das
-    // Löschen der DB-Zeilen "verwaist" sind (kunden.slug wird unten gelöscht, projects.tenant_slug
-    // hat ON DELETE SET NULL — die Projekt-Zeilen selbst bleiben also bestehen, siehe
-    // 03_fix_projects_schema.sql; wir räumen hier nur die Monitore auf, best effort).
-    if (isMonitoringConfigured()) {
-      try {
-        const monitorAdmin = new Client({
-          connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
-        });
-        await monitorAdmin.connect();
-        const { rows: projectRows } = await monitorAdmin.query(
-          'SELECT kuma_monitor_id FROM projects WHERE tenant_slug = $1 AND kuma_monitor_id IS NOT NULL',
-          [slug]
-        );
-        await monitorAdmin.end();
-        for (const p of projectRows) {
-          await deleteMonitor(p.kuma_monitor_id).catch((e: any) =>
-            console.error(`Monitor ${p.kuma_monitor_id} löschen fehlgeschlagen (weiter):`, e.message)
-          );
-        }
-      } catch (e: any) {
-        console.error('Monitor-Cleanup fehlgeschlagen (weiter):', e.message);
-      }
-    }
-
-    // P1-1j: Traefik-Router entfernen, bevor die Container verschwinden. Ohne das
-    // bleiben Router-Dateien zurueck, die auf nicht mehr existierende Container zeigen.
-    try {
-      const routerDb = new Client({
-        connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
-      });
-      await routerDb.connect();
-      const { rows: slugRows } = await routerDb.query(
-        'SELECT slug FROM projects WHERE tenant_slug = $1', [slug]
-      );
-      await routerDb.end();
-      for (const p of slugRows) {
-        const n = await removeAllRoutersForProject(p.slug);
-        if (n > 0) console.log(`Traefik-Router entfernt fuer ${p.slug}: ${n} Datei(en)`);
-      }
-    } catch (e: any) {
-      console.error('Traefik-Router-Cleanup fehlgeschlagen (weiter):', e.message);
-    }
-
-    try {
-      await execFileP('docker', ['compose', '-f', `${tenantDir}/docker-compose.yml`, 'down']);
-    } catch (e: any) {
-      console.error('Container stop failed (continuing):', e.message);
-    }
-
-    const master = new Client({
-      connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/postgres`,
-    });
-    await master.connect();
-    await master.query('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1', [dbName]);
-    await master.query(format('DROP DATABASE IF EXISTS %I;', dbName));
-    await master.query(format('DROP ROLE IF EXISTS %I;', `authenticator_${slug}`));
-    await master.end();
-
-    try {
-      await execFileP('mc', ['rb', '--force', `localminio/kunde-${slug}-storage`]);
-    } catch (e: any) {
-      console.error('MinIO bucket removal failed (continuing):', e.message);
-    }
-
-    const admin2 = new Client({
-      connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
-    });
-    await admin2.connect();
-    const { rows } = await admin2.query('SELECT minio_access_key FROM kunden WHERE slug = $1', [slug]);
-    if (rows[0]?.minio_access_key) {
-      try {
-        await execFileP('mc', ['admin', 'user', 'remove', 'localminio', rows[0].minio_access_key]);
-      } catch (e: any) {
-        console.error('MinIO user removal failed (continuing):', e.message);
-      }
-    }
-    try {
-      await execFileP('mc', ['admin', 'policy', 'remove', 'localminio', `kunde-${slug}-policy`]);
-    } catch (e: any) {
-      console.error('MinIO policy removal failed (continuing):', e.message);
-    }
-
-    await execFileP('rm', ['-rf', tenantDir]);
-
-    await admin2.query('DELETE FROM kunden WHERE slug = $1', [slug]);
-    await admin2.end();
-
-    await logAudit('tenant.delete', slug, {});
-    res.json({ status: 'ok', slug });
+    const { warnings } = await cleanupTenantResources(slug);
+    await logAudit('tenant.delete', slug, { warnings });
+    res.json({ status: 'ok', slug, warnings: warnings.length > 0 ? warnings : undefined });
   } catch (err: any) {
     console.error('Tenant deletion failed:', err.message);
     res.status(500).json({ error: err.message });
@@ -288,28 +363,8 @@ app.use(githubRouter);
 app.use(backupsRouter);
 app.use(secretsRouter); // rate-limitet sich selbst, siehe routes/secrets.ts
 app.use(auditRouter);
+app.use(statsRouter); // P1-8: /stats + /stats/overview, siehe routes/stats.ts
 
-
-app.get('/stats', async (_req, res) => {
-  try {
-    const { stdout } = await execFileP('docker', ['stats', '--no-stream', '--format', '{{json .}}']);
-    const containers = stdout.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
-
-    const master = new Client({
-      connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/postgres`,
-    });
-    await master.connect();
-    const { rows: dbConnections } = await master.query(
-      "SELECT datname, count(*) AS connections FROM pg_stat_activity WHERE datname LIKE 'kunde_%' GROUP BY datname"
-    );
-    await master.end();
-
-    res.json({ containers, dbConnections });
-  } catch (err: any) {
-    console.error('Stats fetch failed:', err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 

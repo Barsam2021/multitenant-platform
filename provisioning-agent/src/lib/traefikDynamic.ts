@@ -135,6 +135,63 @@ export async function removeRouterFile(fileName: string): Promise<void> {
 }
 
 /**
+ * P1-6: Router fuer den PostgREST- oder GoTrue-Container EINES Tenants — nur
+ * gesetzt, wenn der Kunde in `kunden.postgrest_public_enabled` bzw.
+ * `auth_public_enabled` (Migration 02, bis jetzt nie gelesen) zugestimmt hat.
+ * Beide Container liegen sonst ausschliesslich im Docker-internen `traefik-net`
+ * und sind von aussen gar nicht adressierbar — genau das Problem, das die
+ * Dashboard-Anzeige "POSTGREST_URL: http://api-<slug>:3000" verschleiert hat.
+ *
+ * DNS-01 (myresolver) statt HTTP-01: die Hostnamen liegen unter der eigenen
+ * PLATFORM_DOMAIN (Wildcard-Zertifikat via Cloudflare bereits vorhanden),
+ * anders als bei Custom-Domains von Kunden.
+ */
+export function tenantServiceRouterFileName(kind: 'postgrest' | 'auth', tenantSlug: string): string {
+  return `tenant-${kind}-${tenantSlug}.yml`;
+}
+
+export async function writeTenantServiceRouter(
+  kind: 'postgrest' | 'auth',
+  tenantSlug: string,
+  hostname: string
+): Promise<string> {
+  if (!/^[a-z0-9-]+$/.test(tenantSlug)) throw new Error('invalid tenant slug for traefik router');
+  if (!/^[a-z0-9.-]+$/.test(hostname)) throw new Error('invalid hostname for traefik router');
+
+  const containerName = kind === 'postgrest' ? `api-${tenantSlug}` : `auth-${tenantSlug}`;
+  const containerPort = kind === 'postgrest' ? 3000 : 9999;
+  const routerName = `tenant-${kind}-${tenantSlug}`;
+  const fileName = tenantServiceRouterFileName(kind, tenantSlug);
+
+  const yaml = `# Automatisch erzeugt vom Provisioning Agent — nicht von Hand editieren.
+# Tenant:  ${tenantSlug}
+# Dienst:  ${kind === 'postgrest' ? 'PostgREST' : 'GoTrue'}
+http:
+  routers:
+    ${routerName}:
+      rule: "Host(\`${hostname}\`)"
+      entryPoints:
+        - websecure
+      service: ${routerName}-svc
+      tls:
+        certResolver: myresolver
+  services:
+    ${routerName}-svc:
+      loadBalancer:
+        servers:
+          - url: "http://${containerName}:${containerPort}"
+`;
+
+  await writeFile(`${DYNAMIC_DIR}/${fileName}`, yaml, 'utf8');
+  return fileName;
+}
+
+export async function removeTenantServiceRouter(kind: 'postgrest' | 'auth', tenantSlug: string): Promise<void> {
+  const fileName = tenantServiceRouterFileName(kind, tenantSlug);
+  await unlink(`${DYNAMIC_DIR}/${fileName}`).catch(() => {});
+}
+
+/**
  * P1-1j: alle Router eines Projekts entfernen — beim Loeschen von Projekt oder Tenant.
  * Ohne das bleiben Router zurueck, die auf nicht mehr existierende Container zeigen.
  */

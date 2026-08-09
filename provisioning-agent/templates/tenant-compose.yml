@@ -29,6 +29,11 @@ services:
       GOTRUE_DB_DATABASE_URL: "postgres://${AUTH_ROLE}:${AUTH_PW}@pgbouncer:5432/kunde_${SLUG}?search_path=auth"
       GOTRUE_SITE_URL: "https://${SLUG}.${PLATFORM_DOMAIN}"
       GOTRUE_API_HOST: "0.0.0.0"
+      # P1-7: explizit statt Image-Default — der Healthcheck unten muss exakt
+      # denselben Port treffen. War vorher implizit 9999 (GoTrue-Default), der
+      # Healthcheck fragte aber 8081 ab und schlug seit je her fehl, ohne dass
+      # es im laufenden Betrieb auffiel (Container blieb trotzdem "unhealthy").
+      GOTRUE_API_PORT: "9999"
       API_EXTERNAL_URL: "https://${SLUG}.${PLATFORM_DOMAIN}"
       GOTRUE_MAILER_AUTOCONFIRM: "false"
       GOTRUE_SMTP_HOST: smtp.resend.com
@@ -40,7 +45,7 @@ services:
     mem_limit: ${GOTRUE_MEM}
     cpus: ${GOTRUE_CPUS}
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8081/health"]
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9999/health"]
       interval: 30s
       timeout: 5s
       retries: 3

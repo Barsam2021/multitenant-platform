@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState, use, useCallback } from "react";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { useToast } from "@/components/Toast";
 
 interface Project {
   id: string;
@@ -33,6 +35,8 @@ export default function EnvVarsPage({
   const [bulkText, setBulkText] = useState("");
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bulkStatus, setBulkStatus] = useState<string | null>(null);
+  const [keyToDelete, setKeyToDelete] = useState<string | null>(null);
+  const toast = useToast();
 
   const loadVars = useCallback((projectId: string) => {
     fetch(`/api/projects/${projectId}/env`)
@@ -125,13 +129,17 @@ export default function EnvVarsPage({
 
   async function handleDelete(key: string) {
     if (!project) return;
-    if (!confirm(`${key} wirklich löschen?`)) return;
     const res = await fetch(`/api/projects/${project.id}/env`, {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key }),
     });
-    if (res.ok) loadVars(project.id);
+    if (res.ok) {
+      toast.success(`${key} gelöscht.`);
+      loadVars(project.id);
+    } else {
+      toast.error("Löschen fehlgeschlagen");
+    }
   }
 
   if (!project) return <div className="empty-state">Kein Projekt verbunden — siehe Übersicht-Tab.</div>;
@@ -205,7 +213,7 @@ export default function EnvVarsPage({
             }}
           >
             <span>{v.key} = ••••••••</span>
-            <button className="btn btn-danger" onClick={() => handleDelete(v.key)}>
+            <button className="btn btn-danger" onClick={() => setKeyToDelete(v.key)}>
               Löschen
             </button>
           </div>
@@ -266,6 +274,15 @@ export default function EnvVarsPage({
         Automatisch injiziert (nicht hier gesetzt): MINIO_*, S3_BUCKET_NAME, GOTRUE_URL, JWT_SECRET,
         POSTGREST_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY.
       </div>
+
+      <ConfirmDialog
+        open={!!keyToDelete}
+        onClose={() => setKeyToDelete(null)}
+        onConfirm={() => keyToDelete && handleDelete(keyToDelete)}
+        title={`${keyToDelete ?? ""} löschen`}
+        description="Wirkt erst nach dem nächsten Redeploy."
+        confirmLabel="Löschen"
+      />
     </div>
   );
 }

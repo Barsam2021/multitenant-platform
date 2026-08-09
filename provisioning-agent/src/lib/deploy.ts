@@ -24,6 +24,34 @@ const TARIFF_LIMITS: Record<string, { mem: string; cpus: string }> = {
   premium: { mem: '1g', cpus: '2' },
 };
 
+// P2-4: In-Process-Tracking laufender Deploys fuer Abbruch. Ueberlebt keinen
+// Agent-Neustart (bewusst - siehe cancelDeployment() fuer den verwaisten Fall,
+// den die Route separat behandelt). pastPointOfNoReturn schuetzt davor, dass ein
+// Abbruch mitten im Traffic-Switch (altes Container schon umbenannt) live geht.
+interface ActiveDeployState {
+  abort: AbortController;
+  containerName?: string;
+  pastPointOfNoReturn: boolean;
+}
+const activeDeployments = new Map<string, ActiveDeployState>();
+
+class DeploymentCancelledError extends Error {
+  constructor() {
+    super('deployment cancelled');
+    this.name = 'DeploymentCancelledError';
+  }
+}
+
+export function cancelDeployment(deploymentId: string): { ok: boolean; reason?: string; containerName?: string } {
+  const state = activeDeployments.get(deploymentId);
+  if (!state) return { ok: false, reason: 'kein aktiver Prozess fuer dieses Deployment im Agent gefunden' };
+  if (state.pastPointOfNoReturn) {
+    return { ok: false, reason: 'Deployment schaltet bereits Live-Traffic um - kann nicht mehr abgebrochen werden' };
+  }
+  state.abort.abort();
+  return { ok: true, containerName: state.containerName };
+}
+
 export interface Project {
   id: string;
   tenant_slug: string;
@@ -42,7 +70,14 @@ export interface Project {
 async function updateDeployment(
   db: PGClient,
   deploymentId: string,
-  fields: { status?: string; build_log?: string; container_name?: string; image_tag?: string; finished_at?: boolean }
+  fields: {
+    status?: string;
+    build_log?: string;
+    container_name?: string;
+    image_tag?: string;
+    finished_at?: boolean;
+    commit_message?: string;
+  }
 ) {
   const sets: string[] = [];
   const vals: any[] = [];
@@ -51,6 +86,7 @@ async function updateDeployment(
   if (fields.build_log !== undefined) { sets.push(`build_log = $${i++}`); vals.push(fields.build_log); }
   if (fields.container_name !== undefined) { sets.push(`container_name = $${i++}`); vals.push(fields.container_name); }
   if (fields.image_tag !== undefined) { sets.push(`image_tag = $${i++}`); vals.push(fields.image_tag); }
+  if (fields.commit_message !== undefined) { sets.push(`commit_message = $${i++}`); vals.push(fields.commit_message); }
   if (fields.finished_at) { sets.push(`finished_at = now()`); }
   vals.push(deploymentId);
   await db.query(`UPDATE deployments SET ${sets.join(', ')} WHERE id = $${i}`, vals);
@@ -65,10 +101,12 @@ async function pollHealthcheck(
   containerName: string,
   port: number,
   timeoutMs = 60_000,
-  path = '/'
+  path = '/',
+  signal?: AbortSignal
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    if (signal?.aborted) throw new DeploymentCancelledError();
     try {
       const res = await fetch(`http://${containerName}:${port}${path}`, { signal: AbortSignal.timeout(3000) });
       if (res.status < 500) return true;
@@ -98,13 +136,30 @@ export async function runDeployment(
   const appPort = project.app_port || 3000;
   const healthPath = project.health_path || '/';
 
+  const state: ActiveDeployState = { abort: new AbortController(), pastPointOfNoReturn: false };
+  activeDeployments.set(deploymentId, state);
+  const signal = state.abort.signal;
+  const checkCancelled = () => {
+    if (signal.aborted) throw new DeploymentCancelledError();
+  };
+
   try {
     await updateDeployment(db, deploymentId, { status: 'building' });
 
     // 1. Repo auschecken
-    const { path: buildPath, resolvedSha } = await checkoutRepo(project.slug, project.repo_url, ref);
+    const { path: buildPath, resolvedSha, commitMessage } = await checkoutRepo(
+      project.slug,
+      project.repo_url,
+      ref,
+      signal
+    );
     buildLog += `Checked out ${resolvedSha} for ${project.slug}\n`;
-    await db.query('UPDATE deployments SET commit_sha = $1 WHERE id = $2', [resolvedSha, deploymentId]);
+    await db.query('UPDATE deployments SET commit_sha = $1, commit_message = $2 WHERE id = $3', [
+      resolvedSha,
+      commitMessage || null,
+      deploymentId,
+    ]);
+    checkCancelled();
 
     // 2. Env-Vars sammeln (Tenant-Secrets + manuelle project_env_vars, Auto-Injection) —
     //    VOR dem Build, damit sie auch nixpacksBuild zur Verfügung stehen (siehe dort).
@@ -113,9 +168,10 @@ export async function runDeployment(
 
     // 3. Nixpacks-Build
     const imageTag = `app-${project.slug}:${resolvedSha.slice(0, 12)}`;
-    const buildResult = await nixpacksBuild(buildPath, imageTag, project.build_command || undefined, envVars);
+    const buildResult = await nixpacksBuild(buildPath, imageTag, project.build_command || undefined, envVars, signal);
     buildLog += buildResult.log;
     await updateDeployment(db, deploymentId, { build_log: buildLog, image_tag: imageTag });
+    checkCancelled();
 
     // 4. Neuen Container starten (interner Name, noch ohne öffentliche Traefik-Labels)
     const limits = TARIFF_LIMITS[tariff] || TARIFF_LIMITS.starter;
@@ -130,11 +186,12 @@ export async function runDeployment(
       ...envArgs,
       imageTag,
     ]);
+    state.containerName = newContainerName;
     buildLog += `Started candidate container ${newContainerName}\n`;
     await updateDeployment(db, deploymentId, { status: 'healthchecking', build_log: maskSecrets(buildLog), container_name: newContainerName });
 
     // 5. Healthcheck gegen den neuen Container (intern, noch kein Traffic)
-    const healthy = await pollHealthcheck(newContainerName, appPort, 60_000, healthPath);
+    const healthy = await pollHealthcheck(newContainerName, appPort, 60_000, healthPath, signal);
     if (!healthy) {
       buildLog += `Healthcheck FAILED for ${newContainerName} auf Port ${appPort}${healthPath} — rolling back, old container bleibt aktiv.\n`;
       buildLog += `Hinweis: Antwortet die App auf einem anderen Port? Port und Healthcheck-Pfad sind pro Projekt einstellbar.\n`;
@@ -150,6 +207,12 @@ export async function runDeployment(
       return;
     }
     buildLog += `Healthcheck OK\n`;
+
+    // Letzter Cancel-Check vor dem Point of no Return: ab hier wird der oeffentliche
+    // Container angefasst, ein Abbruch waere ab jetzt riskanter als ihn durchlaufen
+    // zu lassen (haette sonst potenziell keinen laufenden Container mehr zur Folge).
+    checkCancelled();
+    state.pastPointOfNoReturn = true;
 
     // 6. Traffic umschalten: neuen Container mit öffentlichem Namen + Traefik-Labels final starten,
     //    alten Container beiseiteschieben (nicht sofort löschen — Rollback-Fallback).
@@ -209,11 +272,24 @@ export async function runDeployment(
     ]);
     await updateDeployment(db, deploymentId, { status: 'deployed', build_log: maskSecrets(buildLog), container_name: publicName, finished_at: true });
   } catch (err: any) {
-    buildLog += `\nError: ${err.buildLog || err.message}`;
-    const hint = detectBuildErrorHint(buildLog);
-    if (hint) buildLog = `⚠️ ${hint}\n${'─'.repeat(60)}\n${buildLog}`;
-    await updateDeployment(db, deploymentId, { status: 'failed', build_log: maskSecrets(buildLog), finished_at: true }).catch(() => {});
+    const cancelled = err instanceof DeploymentCancelledError || err?.name === 'AbortError';
+    if (cancelled) {
+      buildLog += `\n[cancel] Deployment abgebrochen.\n`;
+      // Kandidat-Container war noch nicht live geschaltet (sonst haette
+      // pastPointOfNoReturn den Abbruch verhindert) - gefahrlos entfernbar.
+      if (state.containerName) {
+        await execFileP('docker', ['rm', '-f', state.containerName]).catch(() => {});
+        buildLog += `Kandidat-Container ${state.containerName} entfernt.\n`;
+      }
+      await updateDeployment(db, deploymentId, { status: 'cancelled', build_log: maskSecrets(buildLog), finished_at: true }).catch(() => {});
+    } else {
+      buildLog += `\nError: ${err.buildLog || err.message}`;
+      const hint = detectBuildErrorHint(buildLog);
+      if (hint) buildLog = `⚠️ ${hint}\n${'─'.repeat(60)}\n${buildLog}`;
+      await updateDeployment(db, deploymentId, { status: 'failed', build_log: maskSecrets(buildLog), finished_at: true }).catch(() => {});
+    }
   } finally {
+    activeDeployments.delete(deploymentId);
     await db.end();
   }
 }
@@ -255,9 +331,9 @@ export async function rollbackToDeployment(project: Project, targetDeploymentId:
 
     await db.query('UPDATE projects SET active_container = $1, active_deployment_id = $2 WHERE id = $3', [publicName, targetDeploymentId, project.id]);
     await db.query(
-      `INSERT INTO deployments (project_id, commit_sha, status, container_name, image_tag, triggered_by, finished_at)
-       VALUES ($1, $2, 'rolled_back', $3, $4, 'api', now())`,
-      [project.id, target.commit_sha, publicName, target.image_tag]
+      `INSERT INTO deployments (project_id, commit_sha, commit_message, status, container_name, image_tag, triggered_by, finished_at)
+       VALUES ($1, $2, $3, 'rolled_back', $4, $5, 'api', now())`,
+      [project.id, target.commit_sha, target.commit_message, publicName, target.image_tag]
     );
   } finally {
     await db.end();

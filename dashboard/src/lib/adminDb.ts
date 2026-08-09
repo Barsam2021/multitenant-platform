@@ -39,3 +39,35 @@ export async function getTenantBySlug(slug: string): Promise<Tenant | null> {
   );
   return rows[0] ?? null;
 }
+
+export interface SavedQuery {
+  id: string;
+  tenant_slug: string;
+  name: string;
+  sql_text: string;
+  created_at: string;
+}
+
+// P2-3: Gespeicherte SQL-Editor-Abfragen pro Tenant.
+export async function listSavedQueries(tenantSlug: string): Promise<SavedQuery[]> {
+  const pool = getAdminPool();
+  const { rows } = await pool.query<SavedQuery>(
+    "SELECT id, tenant_slug, name, sql_text, created_at FROM saved_queries WHERE tenant_slug = $1 ORDER BY created_at DESC",
+    [tenantSlug]
+  );
+  return rows;
+}
+
+export async function saveQuery(tenantSlug: string, name: string, sqlText: string): Promise<SavedQuery> {
+  const pool = getAdminPool();
+  const { rows } = await pool.query<SavedQuery>(
+    "INSERT INTO saved_queries (tenant_slug, name, sql_text) VALUES ($1, $2, $3) RETURNING id, tenant_slug, name, sql_text, created_at",
+    [tenantSlug, name, sqlText]
+  );
+  return rows[0];
+}
+
+export async function deleteSavedQuery(id: string, tenantSlug: string): Promise<void> {
+  const pool = getAdminPool();
+  await pool.query("DELETE FROM saved_queries WHERE id = $1 AND tenant_slug = $2", [id, tenantSlug]);
+}

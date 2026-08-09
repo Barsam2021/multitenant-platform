@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { useToast } from "@/components/Toast";
 
 interface Backup {
   id: string;
@@ -42,6 +44,8 @@ export default function BackupsPage() {
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [restoreResult, setRestoreResult] = useState<Record<string, RestoreResultEntry>>({});
+  const [restoreTarget, setRestoreTarget] = useState<string | null>(null);
+  const toast = useToast();
 
   const load = useCallback(() => {
     fetch("/api/backups")
@@ -83,9 +87,6 @@ export default function BackupsPage() {
   }
 
   async function handleRestoreTest(filename: string) {
-    if (!confirm(`Restore-Test für "${filename}" starten? Legt eine temporäre Test-DB an und räumt sie danach wieder ab.`)) {
-      return;
-    }
     setRestoreResult((prev) => ({ ...prev, [filename]: { status: "running" } }));
     try {
       const res = await fetch("/api/backups/restore-test", {
@@ -99,17 +100,20 @@ export default function BackupsPage() {
           ...prev,
           [filename]: { status: "failed", error: data.error || "Restore-Test fehlgeschlagen" },
         }));
+        toast.error(data.error || "Restore-Test fehlgeschlagen");
         return;
       }
       setRestoreResult((prev) => ({
         ...prev,
         [filename]: { status: "ok", tableCount: data.tableCount },
       }));
+      toast.success(`Restore-Test ok (${data.tableCount ?? "?"} Tabellen).`);
     } catch {
       setRestoreResult((prev) => ({
         ...prev,
         [filename]: { status: "failed", error: "Verbindung zum Provisioning Agent fehlgeschlagen" },
       }));
+      toast.error("Verbindung zum Provisioning Agent fehlgeschlagen");
     }
   }
 
@@ -177,7 +181,7 @@ export default function BackupsPage() {
               {b.status === "ok" && (
                 <button
                   className="btn"
-                  onClick={() => handleRestoreTest(b.filename)}
+                  onClick={() => setRestoreTarget(b.filename)}
                   disabled={result?.status === "running" || restoreTestRunning}
                 >
                   {result?.status === "running" ? "Läuft…" : "Restore-Test"}
@@ -197,6 +201,15 @@ export default function BackupsPage() {
           </div>
         );
       })}
+
+      <ConfirmDialog
+        open={!!restoreTarget}
+        onClose={() => setRestoreTarget(null)}
+        onConfirm={() => restoreTarget && handleRestoreTest(restoreTarget)}
+        title="Restore-Test starten"
+        description={`Legt eine temporäre Test-DB aus "${restoreTarget ?? ""}" an und räumt sie danach wieder ab.`}
+        confirmLabel="Test starten"
+      />
     </div>
   );
 }

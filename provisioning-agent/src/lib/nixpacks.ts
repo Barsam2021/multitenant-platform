@@ -28,7 +28,8 @@ export async function nixpacksBuild(
   buildPath: string,
   imageTag: string,
   buildCommand?: string,
-  envVars?: Record<string, string>
+  envVars?: Record<string, string>,
+  signal?: AbortSignal // P2-4: Deploy-Abbruch waehrend des Builds
 ): Promise<{ imageTag: string; log: string }> {
   // Nur schreiben, wenn das Repo keine eigene nixpacks.toml mitbringt — Repo-eigene
   // Config hat immer Vorrang, wir liefern nur einen sinnvollen Plattform-Default.
@@ -68,9 +69,14 @@ export async function nixpacksBuild(
     const { stdout, stderr } = await execFileP('nixpacks', args, {
       maxBuffer: 1024 * 1024 * 32, // 32MB — Build-Logs können lang werden
       timeout: 10 * 60 * 1000, // 10 Minuten Hard-Timeout pro Build
+      signal,
     });
     return { imageTag, log: maskSecrets(stdout + '\n' + stderr) };
   } catch (err: any) {
+    if (err.name === 'AbortError') {
+      // P2-4: Abbruch, kein Build-Fehler - deploy.ts unterscheidet danach.
+      throw err;
+    }
     const log = maskSecrets((err.stdout || '') + '\n' + (err.stderr || '') + '\n' + err.message);
     throw Object.assign(new Error('nixpacks build failed'), { buildLog: log });
   }

@@ -18,18 +18,14 @@ export async function POST(
     return NextResponse.json({ error: "tenant not found" }, { status: 404 });
   }
 
-  const { sql } = await req.json();
+  const { sql, readOnly } = await req.json();
   if (!sql || typeof sql !== "string") {
     return NextResponse.json({ error: "sql required" }, { status: 400 });
   }
 
   try {
-    const result = await runSql(tenant.db_name, sql);
-    return NextResponse.json({
-      rows: result.rows,
-      fields: result.fields?.map((f) => f.name) ?? [],
-      rowCount: result.rowCount,
-    });
+    const result = await runSql(tenant.db_name, sql, { readOnly: readOnly !== false });
+    return NextResponse.json(result);
   } catch (err) {
     return NextResponse.json({ error: (err as Error).message }, { status: 400 });
   }

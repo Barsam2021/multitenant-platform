@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState, use } from "react";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { useToast } from "@/components/Toast";
 
 interface Tenant {
   slug: string;
@@ -48,6 +50,8 @@ export default function ProjectOverviewPage({
   const [manualEntry, setManualEntry] = useState(false);
   const [rotating, setRotating] = useState<"jwt" | "minio" | null>(null);
   const [rotateNote, setRotateNote] = useState<string | null>(null);
+  const [rotateTarget, setRotateTarget] = useState<"jwt" | "minio" | null>(null);
+  const toast = useToast();
 
   useEffect(() => {
     fetch("/api/tenants")
@@ -133,16 +137,15 @@ export default function ProjectOverviewPage({
         body: JSON.stringify({ projectId: project.id }),
       });
       const data = await res.json();
-      if (!res.ok) alert(data.error || "Deploy fehlgeschlagen");
+      if (!res.ok) toast.error(data.error || "Deploy fehlgeschlagen");
     } catch {
-      alert("Verbindung zum Provisioning Agent fehlgeschlagen");
+      toast.error("Verbindung zum Provisioning Agent fehlgeschlagen");
     } finally {
       setDeploying(false);
     }
   }
 
   async function handleRotate(secret: "jwt" | "minio") {
-    if (!confirm(`${secret === "jwt" ? "JWT-Secret" : "MinIO-Secret"} für "${slug}" jetzt rotieren? Bestehende Sessions/Zugriffe können ungültig werden.`)) return;
     setRotating(secret);
     setRotateNote(null);
     try {
@@ -152,9 +155,12 @@ export default function ProjectOverviewPage({
         body: JSON.stringify({ secret }),
       });
       const data = await res.json();
-      setRotateNote(res.ok ? data.note || "Rotation abgeschlossen." : data.error || "Rotation fehlgeschlagen");
+      const note = res.ok ? data.note || "Rotation abgeschlossen." : data.error || "Rotation fehlgeschlagen";
+      setRotateNote(note);
+      if (res.ok) toast.success(note); else toast.error(note);
     } catch {
       setRotateNote("Verbindung zum Provisioning Agent fehlgeschlagen");
+      toast.error("Verbindung zum Provisioning Agent fehlgeschlagen");
     } finally {
       setRotating(null);
     }
@@ -174,15 +180,24 @@ export default function ProjectOverviewPage({
 
       {tenant && (
         <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 20 }}>
-          <button className="btn" onClick={() => handleRotate("jwt")} disabled={rotating !== null}>
+          <button className="btn" onClick={() => setRotateTarget("jwt")} disabled={rotating !== null}>
             {rotating === "jwt" ? "Rotiere…" : "JWT-Secret rotieren"}
           </button>
-          <button className="btn" onClick={() => handleRotate("minio")} disabled={rotating !== null}>
+          <button className="btn" onClick={() => setRotateTarget("minio")} disabled={rotating !== null}>
             {rotating === "minio" ? "Rotiere…" : "MinIO-Secret rotieren"}
           </button>
           {rotateNote && <span style={{ fontSize: 12, color: "var(--text-dim)" }}>{rotateNote}</span>}
         </div>
       )}
+
+      <ConfirmDialog
+        open={!!rotateTarget}
+        onClose={() => setRotateTarget(null)}
+        onConfirm={() => rotateTarget && handleRotate(rotateTarget)}
+        title={`${rotateTarget === "jwt" ? "JWT-Secret" : "MinIO-Secret"} rotieren`}
+        description={`Für "${slug}". Bestehende Sessions/Zugriffe können ungültig werden.`}
+        confirmLabel="Rotieren"
+      />
 
       {!project && (
         <form

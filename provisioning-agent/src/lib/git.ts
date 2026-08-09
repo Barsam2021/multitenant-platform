@@ -35,8 +35,9 @@ function gitEnv(repoUrl: string): NodeJS.ProcessEnv {
 export async function checkoutRepo(
   projectSlug: string,
   repoUrl: string,
-  ref: string // Branch-Name oder Commit-SHA
-): Promise<{ path: string; resolvedSha: string }> {
+  ref: string, // Branch-Name oder Commit-SHA
+  signal?: AbortSignal // P2-4: erlaubt Abbruch eines laufenden Deploys waehrend git-Operationen
+): Promise<{ path: string; resolvedSha: string; commitMessage: string }> {
   if (!/^[a-z0-9-]+$/.test(projectSlug)) {
     throw new Error('invalid project slug for git checkout');
   }
@@ -51,27 +52,34 @@ export async function checkoutRepo(
   if (!existsSync(`${repoDir}/.git`)) {
     await execFileP('rm', ['-rf', repoDir]);
     await execFileP('mkdir', ['-p', repoDir]);
-    await execFileP('git', ['clone', '--no-single-branch', repoUrl, repoDir], { env });
+    await execFileP('git', ['clone', '--no-single-branch', repoUrl, repoDir], { env, signal });
   } else {
-    await execFileP('git', ['-C', repoDir, 'fetch', '--all', '--prune'], { env });
+    await execFileP('git', ['-C', repoDir, 'fetch', '--all', '--prune'], { env, signal });
   }
 
   // ref kann Branch oder SHA sein — 'git checkout' handhabt beides.
-  await execFileP('git', ['-C', repoDir, 'checkout', ref]);
+  await execFileP('git', ['-C', repoDir, 'checkout', ref], { signal });
   // Falls ref ein Branch war: auf neuesten Remote-Stand ziehen.
-  await execFileP('git', ['-C', repoDir, 'reset', '--hard', `origin/${ref}`]).catch(() => {
+  await execFileP('git', ['-C', repoDir, 'reset', '--hard', `origin/${ref}`], { signal }).catch(() => {
     // Kein Remote-Branch dieses Namens (z.B. weil ref bereits ein SHA war) — ignorieren.
   });
 
   const { stdout } = await execFileP('git', ['-C', repoDir, 'rev-parse', 'HEAD']);
   const resolvedSha = stdout.trim();
 
+  // P2-4: Commit-Message fuer die Deployment-Historie - Betreffzeile reicht,
+  // der volle Body wuerde die Liste unleserlich machen.
+  const { stdout: msgOut } = await execFileP('git', ['-C', repoDir, 'log', '-1', '--format=%s', resolvedSha]).catch(
+    () => ({ stdout: '' })
+  );
+  const commitMessage = msgOut.trim();
+
   // Isolierter Build-Snapshot pro Commit, damit parallele Deploys sich nicht in die Quere kommen.
   const commitDir = `${BUILDS_ROOT}/${projectSlug}/${resolvedSha.slice(0, 12)}`;
   await execFileP('rm', ['-rf', commitDir]);
   await execFileP('cp', ['-r', repoDir, commitDir]);
 
-  return { path: commitDir, resolvedSha };
+  return { path: commitDir, resolvedSha, commitMessage };
 }
 
 /**

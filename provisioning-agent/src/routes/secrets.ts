@@ -6,6 +6,7 @@ import { promisify } from 'util';
 import { readFile, writeFile } from 'fs/promises';
 import crypto from 'crypto';
 import { encrypt } from '../lib/crypto';
+import { signTenantJwt } from '../lib/jwt';
 import { logAudit } from '../lib/audit';
 
 const execFileP = promisify(execFile);
@@ -66,18 +67,40 @@ secretsRouter.post('/tenants/:slug/rotate-secret', rotateLimiter, async (req, re
       const newCompose = compose.split(tenant.gotrue_jwt_secret).join(newJwtSecret);
       await writeFile(composePath, newCompose);
 
-      await db.query('UPDATE kunden SET gotrue_jwt_secret = $1 WHERE slug = $2', [newJwtSecret, slug]);
+      // P1-5: anon_jwt/service_role_jwt sind mit dem ALTEN Secret signiert — ohne
+      // Neu-Signierung würden sie mit dem neuen gotrue_jwt_secret keine gültige
+      // Signatur mehr haben und PostgREST/GoTrue würden jede Anfrage mit diesen
+      // Keys ablehnen. Deterministisch aus dem neuen Secret neu erzeugbar (siehe
+      // lib/jwt.ts), kein separater Storage nötig.
+      const newAnonJwt = signTenantJwt(newJwtSecret, 'anon');
+      const newServiceRoleJwt = signTenantJwt(newJwtSecret, 'service_role');
+
+      await db.query(
+        'UPDATE kunden SET gotrue_jwt_secret = $1, anon_jwt = $2, service_role_jwt = $3 WHERE slug = $4',
+        [newJwtSecret, newAnonJwt, newServiceRoleJwt, slug]
+      );
 
       // auth (GoTrue) + api (PostgREST) neu starten, damit beide das neue Secret laden.
       // Alle bereits ausgestellten Tokens dieses Tenants werden damit ungültig (erwartet, siehe Matrix).
       await execFileP('docker', ['compose', '-f', composePath, 'up', '-d', '--force-recreate', 'auth', 'api']);
+
+      // P1-5: laufende Kunden-App-Container haben den ALTEN anon_jwt/service_role_jwt
+      // fest als Env-Var im Speicher (Auto-Injection, siehe lib/secrets.ts buildEnvVars) —
+      // die sind jetzt ungueltig. env_dirty markieren (dieselbe Mechanik wie bei manuell
+      // gesetzten project_env_vars, siehe P1-4), damit die UI einen Redeploy einfordert,
+      // statt dass Kunden-Apps still mit 401ern von PostgREST/GoTrue haengen bleiben.
+      const { rowCount } = await db.query(
+        'UPDATE projects SET env_dirty = true WHERE tenant_slug = $1', [slug]
+      );
 
       await logAudit('rotate-secret', slug, { secret: 'jwt' });
       return res.json({
         status: 'ok',
         slug,
         secret: 'jwt',
-        note: 'auth + api neu gestartet. Alle bestehenden Sessions/Tokens dieses Tenants sind jetzt ungültig.',
+        note: rowCount && rowCount > 0
+          ? `auth + api neu gestartet. Alle bestehenden Sessions/Tokens dieses Tenants sind jetzt ungültig. ${rowCount} Projekt${rowCount === 1 ? '' : 'e'} laufen noch mit dem alten API-Key — Redeploy nötig (siehe Env-Vars-Seite).`
+          : 'auth + api neu gestartet. Alle bestehenden Sessions/Tokens dieses Tenants sind jetzt ungültig.',
       });
     }
 
@@ -100,13 +123,20 @@ secretsRouter.post('/tenants/:slug/rotate-secret', rotateLimiter, async (req, re
       encrypt(newMinioSecret),
       slug,
     ]);
+    // P1-5: gleiche Begründung wie bei JWT — laufende Container haben den alten
+    // Secret-Key noch im Speicher, env_dirty macht das für die UI sichtbar.
+    const { rowCount } = await db.query(
+      'UPDATE projects SET env_dirty = true WHERE tenant_slug = $1', [slug]
+    );
 
     await logAudit('rotate-secret', slug, { secret: 'minio' });
     return res.json({
       status: 'ok',
       slug,
       secret: 'minio',
-      note: 'Neuer MinIO-Secret-Key gesetzt. App-Container dieses Tenants laufen noch mit dem alten Key im Speicher — POST /deployments für betroffene Projekte auslösen, um ihn per Auto-Env-Injection zu erneuern.',
+      note: rowCount && rowCount > 0
+        ? `Neuer MinIO-Secret-Key gesetzt. ${rowCount} Projekt${rowCount === 1 ? '' : 'e'} laufen noch mit dem alten Key im Speicher — Redeploy nötig (siehe Env-Vars-Seite).`
+        : 'Neuer MinIO-Secret-Key gesetzt.',
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

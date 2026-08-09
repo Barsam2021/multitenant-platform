@@ -24,10 +24,35 @@ export async function GET(
   const url = new URL(req.url);
   const limit = Math.min(Number(url.searchParams.get("limit") ?? 50), 500);
   const offset = Math.max(Number(url.searchParams.get("offset") ?? 0), 0);
+  const orderBy = url.searchParams.get("orderBy") || undefined;
+  const orderDirRaw = url.searchParams.get("orderDir");
+  const orderDir = orderDirRaw === "desc" ? "desc" : orderDirRaw === "asc" ? "asc" : undefined;
+
+  let filters: Record<string, string> | undefined;
+  const filtersRaw = url.searchParams.get("filters");
+  if (filtersRaw) {
+    try {
+      const parsed = JSON.parse(filtersRaw);
+      if (parsed && typeof parsed === "object") {
+        filters = Object.fromEntries(
+          Object.entries(parsed).filter(([, v]) => typeof v === "string" && v.length > 0)
+        ) as Record<string, string>;
+      }
+    } catch {
+      // ungueltiges JSON im Filter-Parameter -> einfach ignorieren, kein 400
+      // fuer einen reinen Anzeige-Parameter
+    }
+  }
 
   try {
-    const { rows, columns } = await getRows(tenant.db_name, table, limit, offset);
-    return NextResponse.json({ rows, columns });
+    const { rows, columns, totalCount, hasPrimaryKey } = await getRows(tenant.db_name, table, {
+      limit,
+      offset,
+      orderBy,
+      orderDir,
+      filters,
+    });
+    return NextResponse.json({ rows, columns, totalCount, hasPrimaryKey });
   } catch (err) {
     console.error("Failed to fetch rows:", (err as Error).message);
     return NextResponse.json({ error: "internal error" }, { status: 500 });

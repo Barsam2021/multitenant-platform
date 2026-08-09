@@ -12,6 +12,16 @@
   --success: #3fb88a;
   --font-ui: -apple-system, "Segoe UI", system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  /* Alias fuer Stellen, die --bg-card/--text-muted referenzieren (Modal.tsx,
+     domains/page.tsx). Beide Namen existierten nirgends in :root - der Wert
+     war damit ungueltiges CSS und wurde geraeuschlos ignoriert (P2-1 Fund). */
+  --bg-card: var(--panel);
+  --text-muted: var(--text-dim);
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 :root[data-theme="light"] {

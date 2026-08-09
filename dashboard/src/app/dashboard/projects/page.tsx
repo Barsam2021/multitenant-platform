@@ -2,6 +2,9 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { EmptyState } from "@/components/StatusBadge";
+import { useToast } from "@/components/Toast";
 
 interface Tenant {
   id: string;
@@ -29,6 +32,8 @@ export default function ProjectsPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [deletingSlug, setDeletingSlug] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [confirmTarget, setConfirmTarget] = useState<Tenant | null>(null);
+  const toast = useToast();
 
   function load() {
     setTenants(null);
@@ -76,7 +81,6 @@ export default function ProjectsPage() {
   }
 
   async function handleDelete(s: string) {
-    if (!confirm(`Projekt "${s}" wirklich löschen? DB, Container, App und Bucket werden entfernt.`)) return;
     setDeletingSlug(s);
     setDeleteError(null);
     try {
@@ -84,11 +88,14 @@ export default function ProjectsPage() {
       const data = await res.json();
       if (!res.ok) {
         setDeleteError(data.error || "Löschen fehlgeschlagen");
+        toast.error(data.error || "Löschen fehlgeschlagen");
         return;
       }
+      toast.success(`"${s}" wurde entfernt.`);
       load();
     } catch {
       setDeleteError("Verbindung zum Provisioning Agent fehlgeschlagen");
+      toast.error("Verbindung zum Provisioning Agent fehlgeschlagen");
     } finally {
       setDeletingSlug(null);
     }
@@ -139,7 +146,15 @@ export default function ProjectsPage() {
       {deleteError && <div className="error-box" style={{ marginBottom: 12 }}>{deleteError}</div>}
       {!tenants && !error && <div className="empty-state">Lade Projekte…</div>}
       {tenants && tenants.length === 0 && (
-        <div className="empty-state">Noch keine Projekte angelegt.</div>
+        <EmptyState
+          title="Noch keine Projekte angelegt."
+          hint="Ein Projekt legt eine eigene Datenbank, Auth-Instanz und einen MinIO-Bucket an."
+          action={
+            <button className="btn btn-primary" onClick={() => setShowForm(true)}>
+              + Neues Projekt
+            </button>
+          }
+        />
       )}
 
       <div className="card-grid">
@@ -175,7 +190,7 @@ export default function ProjectsPage() {
                 style={{ position: "absolute", top: 10, right: 10, color: "var(--danger)" }}
                 onClick={(e) => {
                   e.preventDefault();
-                  handleDelete(t.slug);
+                  setConfirmTarget(t);
                 }}
                 disabled={deletingSlug === t.slug}
               >
@@ -185,6 +200,24 @@ export default function ProjectsPage() {
           );
         })}
       </div>
+
+      <ConfirmDialog
+        open={!!confirmTarget}
+        onClose={() => setConfirmTarget(null)}
+        onConfirm={() => confirmTarget && handleDelete(confirmTarget.slug)}
+        title={`Projekt "${confirmTarget?.slug ?? ""}" löschen`}
+        description="Dieser Vorgang ist nicht rückgängig zu machen."
+        level="destructive"
+        confirmText={confirmTarget?.slug}
+        confirmLabel="Endgültig löschen"
+        resources={[
+          `Datenbank kunde_${confirmTarget?.slug ?? ""}`,
+          "Alle Docker-Container (App, Auth, API)",
+          "MinIO-Bucket und IAM-Policy",
+          "Traefik-Router aller verbundenen Domains",
+          "Projekt- und Deployment-Einträge",
+        ]}
+      />
     </div>
   );
 }
