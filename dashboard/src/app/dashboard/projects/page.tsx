@@ -42,6 +42,7 @@ export default function ProjectsPage() {
   const [statusTarget, setStatusTarget] = useState<{ tenant: Tenant; next: string } | null>(null);
   const [statusBusy, setStatusBusy] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [projectsError, setProjectsError] = useState<string | null>(null);
   const toast = useToast();
 
   function load() {
@@ -52,8 +53,10 @@ export default function ProjectsPage() {
       .catch(() => setError("Verbindung zum Dashboard fehlgeschlagen"));
     fetch("/api/projects")
       .then((r) => r.json())
-      .then((d) => Array.isArray(d) && setProjects(d))
-      .catch(() => {});
+      // P2-7: 401/403 kam vorher als leere Liste an (Repo/Live-Badges fehlten
+      // dann kommentarlos) statt als sichtbarer Fehler.
+      .then((d) => (Array.isArray(d) ? setProjects(d) : setProjectsError(d?.error || "Projektdaten konnten nicht geladen werden")))
+      .catch(() => setProjectsError("Verbindung zum Provisioning Agent fehlgeschlagen"));
   }
 
   useEffect(() => {

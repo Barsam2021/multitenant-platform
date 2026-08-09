@@ -1,7 +1,7 @@
-import Link from "next/link";
 import { auth, signOut } from "@/auth";
 import { redirect } from "next/navigation";
 import ThemeToggle from "@/components/ThemeToggle";
+import { SidebarNav } from "@/components/SidebarNav";
 
 export default async function DashboardLayout({
   children,
@@ -15,28 +15,7 @@ export default async function DashboardLayout({
 
   return (
     <div className="shell">
-      <input type="checkbox" id="nav-toggle" className="nav-toggle" />
-      <label htmlFor="nav-toggle" className="hamburger-btn" aria-label="Menü öffnen">
-        ☰
-      </label>
-      <label htmlFor="nav-toggle" className="nav-overlay" aria-hidden="true"></label>
-      <aside className="sidebar">
-        <div className="sidebar-brand">
-          UP2 <span>Console</span>
-        </div>
-        <Link href="/dashboard" className="nav-link">
-          Übersicht
-        </Link>
-        <Link href="/dashboard/projects" className="nav-link">
-          Projekte
-        </Link>
-        <Link href="/dashboard/backups" className="nav-link">
-          Backups
-        </Link>
-        <Link href="/dashboard/audit" className="nav-link">
-          Audit-Log
-        </Link>
-        <div style={{ flex: 1 }} />
+      <SidebarNav>
         <ThemeToggle />
         <form
           action={async () => {
@@ -48,7 +27,7 @@ export default async function DashboardLayout({
             Abmelden
           </button>
         </form>
-      </aside>
+      </SidebarNav>
       <main className="main">{children}</main>
     </div>
   );

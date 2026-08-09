@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import { Modal, CopyValue } from "@/components/Modal";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useToast } from "@/components/Toast";
+import { useProject } from "@/components/ProjectContext";
 
 interface Instruction {
   type: "A" | "CNAME";
@@ -27,13 +28,6 @@ interface Domain {
   is_primary: boolean;
   created_at: string;
   instructions: Instruction[];
-}
-
-interface Project {
-  id: string;
-  slug: string;
-  tenant_slug: string;
-  preview_hostname: string | null;
 }
 
 const STATUS_META: Record<string, { label: string; color: string; dot: string }> = {
@@ -97,10 +91,9 @@ function InstructionTable({ instructions }: { instructions: Instruction[] }) {
 export default function DomainsPage() {
   const params = useParams();
   const slug = params.slug as string;
+  const { project, loading: projectLoading } = useProject();
 
-  const [project, setProject] = useState<Project | null>(null);
   const [domains, setDomains] = useState<Domain[]>([]);
-  const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [verifying, setVerifying] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Domain | null>(null);
@@ -124,15 +117,8 @@ export default function DomainsPage() {
   }, []);
 
   useEffect(() => {
-    (async () => {
-      const res = await fetch("/api/projects");
-      const list = await res.json();
-      const p = Array.isArray(list) ? list.find((x: Project) => x.tenant_slug === slug) : null;
-      setProject(p || null);
-      if (p) await loadDomains(p.id);
-      setLoading(false);
-    })();
-  }, [slug, loadDomains]);
+    if (project) loadDomains(project.id);
+  }, [project, loadDomains]);
 
   // Polling nur solange etwas offen ist — und nur bei sichtbarem Tab (P3-2).
   useEffect(() => {
@@ -207,7 +193,7 @@ export default function DomainsPage() {
     }
   }
 
-  if (loading) return <p style={{ color: "var(--text-muted)" }}>Lade…</p>;
+  if (projectLoading) return <p style={{ color: "var(--text-muted)" }}>Lade…</p>;
   if (!project) return <p style={{ color: "var(--text-muted)" }}>Kein Projekt für diesen Tenant.</p>;
 
   return (

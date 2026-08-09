@@ -164,6 +164,11 @@ async function cleanupTenantResources(slug: string): Promise<{ warnings: string[
       connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
     });
     await admin3.connect();
+    // P2-7: projects.tenant_slug hat ON DELETE SET NULL - ohne dieses DELETE
+    // blieben Projekt-Zeilen als unsichtbarer Muell zurueck (GET /projects joint
+    // gegen kunden, ein NULL-tenant_slug faellt aus dem Join raus, taucht in
+    // keiner UI mehr auf, existiert aber weiter in der DB).
+    await admin3.query('DELETE FROM projects WHERE tenant_slug = $1', [slug]);
     await admin3.query('DELETE FROM kunden WHERE slug = $1', [slug]);
     await admin3.end();
   } catch (e: any) {

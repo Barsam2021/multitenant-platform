@@ -3,6 +3,7 @@
 import { useEffect, useState, use } from "react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useToast } from "@/components/Toast";
+import { useProject } from "@/components/ProjectContext";
 
 interface Tenant {
   slug: string;
@@ -12,15 +13,6 @@ interface Tenant {
   contact_email: string | null;
   notes: string | null;
   status: string;
-}
-
-interface Project {
-  id: string;
-  slug: string;
-  tenant_slug: string;
-  repo_url: string | null;
-  default_branch: string;
-  active_container: string | null;
 }
 
 interface GithubRepo {
@@ -38,10 +30,9 @@ export default function ProjectOverviewPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = use(params);
+  const { project, loading, reload: reloadProject } = useProject();
   const [tenant, setTenant] = useState<Tenant | null>(null);
-  const [project, setProject] = useState<Project | null>(null);
   const [previewHostname, setPreviewHostname] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [repoUrl, setRepoUrl] = useState("");
   const [defaultBranch, setDefaultBranch] = useState("main");
@@ -61,6 +52,10 @@ export default function ProjectOverviewPage({
   const toast = useToast();
 
   useEffect(() => {
+    if (project?.preview_hostname) setPreviewHostname(project.preview_hostname);
+  }, [project]);
+
+  useEffect(() => {
     fetch("/api/tenants")
       .then((r) => r.json())
       .then((d) => {
@@ -74,14 +69,6 @@ export default function ProjectOverviewPage({
             notes: t.notes || "",
           });
         }
-      });
-    fetch("/api/projects")
-      .then((r) => r.json())
-      .then((list) => {
-        const p = Array.isArray(list) ? list.find((x: Project) => x.tenant_slug === slug) : null;
-        setProject(p || null);
-        setPreviewHostname(p?.preview_hostname || null);
-        setLoading(false);
       });
     fetch("/api/github/repos")
       .then((r) => r.json())
@@ -127,7 +114,7 @@ export default function ProjectOverviewPage({
         setConnectError(data.error || "Verbinden fehlgeschlagen");
         return;
       }
-      setProject(data.project);
+      reloadProject();
       setPreviewHostname(data.previewHostname || null);
       setWebhookNote(
         data.githubWebhook?.registered

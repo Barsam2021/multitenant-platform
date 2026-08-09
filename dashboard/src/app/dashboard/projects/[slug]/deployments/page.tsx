@@ -3,6 +3,7 @@
 import { useEffect, useState, use, useCallback, useRef } from "react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useToast } from "@/components/Toast";
+import { useProject } from "@/components/ProjectContext";
 
 interface Deployment {
   id: string;
@@ -14,14 +15,6 @@ interface Deployment {
   triggered_by: string;
   created_at: string;
   finished_at: string | null;
-}
-
-interface Project {
-  id: string;
-  slug: string;
-  tenant_slug: string;
-  repo_url: string | null;
-  active_deployment_id: string | null;
 }
 
 const ACTIVE_STATES = ["queued", "building", "healthchecking"];
@@ -103,7 +96,7 @@ export default function DeploymentsPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = use(params);
-  const [project, setProject] = useState<Project | null>(null);
+  const { project, error: projectError } = useProject();
   const [deployments, setDeployments] = useState<Deployment[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [deploying, setDeploying] = useState(false);
@@ -112,24 +105,11 @@ export default function DeploymentsPage({
   const [cancelTarget, setCancelTarget] = useState<string | null>(null);
   const toast = useToast();
 
-  useEffect(() => {
-    fetch("/api/projects")
-      .then((r) => r.json())
-      .then((list: Project[]) => {
-        const p = Array.isArray(list) ? list.find((x) => x.tenant_slug === slug) : null;
-        if (!p) {
-          setError("Kein Projekt verbunden — siehe Übersicht-Tab.");
-          return;
-        }
-        setProject(p);
-      })
-      .catch(() => setError("Verbindung zum Provisioning Agent fehlgeschlagen"));
-  }, [slug]);
-
   const loadDeployments = useCallback((projectId: string) => {
     fetch(`/api/deployments/${projectId}`)
       .then((r) => r.json())
-      .then((d) => Array.isArray(d) && setDeployments(d))
+      // P2-7: 401/403 kam vorher als leere Liste an, nicht als Fehlermeldung.
+      .then((d) => (Array.isArray(d) ? setDeployments(d) : setError(d?.error || "Deployment-Historie konnte nicht geladen werden")))
       .catch(() => setError("Deployment-Historie konnte nicht geladen werden"));
   }, []);
 
@@ -232,7 +212,7 @@ export default function DeploymentsPage({
     }
   }
 
-  if (!project) return <div className="empty-state">{error || "Lade…"}</div>;
+  if (!project) return <div className="empty-state">{error || projectError || "Lade…"}</div>;
 
   return (
     <div>

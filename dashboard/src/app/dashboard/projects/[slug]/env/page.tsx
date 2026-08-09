@@ -3,11 +3,7 @@
 import { useEffect, useState, use, useCallback } from "react";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useToast } from "@/components/Toast";
-
-interface Project {
-  id: string;
-  tenant_slug: string;
-}
+import { useProject } from "@/components/ProjectContext";
 
 interface EnvVar {
   key: string;
@@ -25,7 +21,7 @@ export default function EnvVarsPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = use(params);
-  const [project, setProject] = useState<Project | null>(null);
+  const { project } = useProject();
   const [vars, setVars] = useState<EnvVar[]>([]);
   const [envKey, setEnvKey] = useState("");
   const [envValue, setEnvValue] = useState("");
@@ -41,24 +37,23 @@ export default function EnvVarsPage({
   const loadVars = useCallback((projectId: string) => {
     fetch(`/api/projects/${projectId}/env`)
       .then((r) => r.json())
-      .then((d) => Array.isArray(d) && setVars(d))
-      .catch(() => {});
+      // P2-7: bei 401/403 (o.ae.) ist die Antwort ein {error}-Objekt statt eines
+      // Arrays - vorher wurde das still ignoriert, die Liste blieb leer ohne
+      // jeden Hinweis, dass ueberhaupt ein Fehler aufgetreten ist.
+      .then((d) => (Array.isArray(d) ? setVars(d) : setStatus(d?.error || "Env-Vars konnten nicht geladen werden")))
+      .catch(() => setStatus("Verbindung zum Provisioning Agent fehlgeschlagen"));
   }, []);
 
   useEffect(() => {
-    fetch("/api/projects")
-      .then((r) => r.json())
-      .then((list: Project[]) => {
-        const p = Array.isArray(list) ? list.find((x) => x.tenant_slug === slug) : null;
-        setProject(p || null);
-        if (p) loadVars(p.id);
-      });
+    if (project) loadVars(project.id);
+  }, [project, loadVars]);
 
+  useEffect(() => {
     fetch(`/api/tenants/${slug}/api-keys`)
       .then((r) => r.json())
       .then((d) => d && d.anonKey && setApiKeys(d))
       .catch(() => {});
-  }, [slug, loadVars]);
+  }, [slug]);
 
   function copyToClipboard(label: string, value: string) {
     navigator.clipboard.writeText(value).then(() => {

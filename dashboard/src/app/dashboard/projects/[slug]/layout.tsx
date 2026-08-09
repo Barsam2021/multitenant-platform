@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useParams } from "next/navigation";
+import { ProjectProvider } from "@/components/ProjectContext";
 
 const TABS = [
   { href: "", label: "Übersicht" },
@@ -18,27 +19,29 @@ export default function ProjectLayout({ children }: { children: React.ReactNode 
   const base = `/dashboard/projects/${slug}`;
 
   return (
-    <div className="content">
-      <div className="project-tabs">
-        {TABS.map((t) => {
-          const href = `${base}${t.href}`;
-          const active = pathname === href;
-          return (
-            <Link
-              key={t.href}
-              href={href}
-              className="project-tab"
-              style={{
-                color: active ? "var(--text)" : "var(--text-dim)",
-                borderBottom: active ? "2px solid var(--accent)" : "2px solid transparent",
-              }}
-            >
-              {t.label}
-            </Link>
-          );
-        })}
+    <ProjectProvider slug={slug}>
+      <div className="content">
+        <div className="project-tabs">
+          {TABS.map((t) => {
+            const href = `${base}${t.href}`;
+            const active = pathname === href;
+            return (
+              <Link
+                key={t.href}
+                href={href}
+                className="project-tab"
+                style={{
+                  color: active ? "var(--text)" : "var(--text-dim)",
+                  borderBottom: active ? "2px solid var(--accent)" : "2px solid transparent",
+                }}
+              >
+                {t.label}
+              </Link>
+            );
+          })}
+        </div>
+        {children}
       </div>
-      {children}
-    </div>
+    </ProjectProvider>
   );
 }
