@@ -5,8 +5,18 @@ services:
     environment:
       PGRST_DB_URI: "postgres://${AUTH_ROLE}:${AUTH_PW}@pgbouncer:5432/kunde_${SLUG}"
       PGRST_DB_SCHEMA: "public"
-      PGRST_DB_ANON_ROLE: "anon"
+      # P0-2b: tenant-eigene Rolle statt der clusterweiten "anon".
+      PGRST_DB_ANON_ROLE: "anon_${SLUG}"
       PGRST_JWT_SECRET: "${JWT_SECRET}"
+      # P1-10: PgBouncer laeuft mit POOL_MODE=transaction. Prepared Statements
+      # sind Session-State — Folge-Requests landen auf einer anderen Server-
+      # Verbindung und quittieren mit "prepared statement does not exist".
+      # PostgREST-Default ist true, PostgREST dokumentiert die Kombination
+      # explizit als inkompatibel. Sporadische 500er unter Last.
+      PGRST_DB_PREPARED_STATEMENTS: "false"
+      # Audit §5: Default 10 pro Tenant war bei 20 Tenants die Haelfte des
+      # PgBouncer-Budgets allein fuer PostgREST.
+      PGRST_DB_POOL: "5"
     mem_limit: ${POSTGREST_MEM}
     cpus: ${POSTGREST_CPUS}
     # Image-eigenen HEALTHCHECK explizit deaktivieren (nicht nur weglassen!):
@@ -19,6 +29,11 @@ services:
     networks:
       - traefik-net
     restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   auth:
     image: supabase/gotrue:v2.193.1
@@ -35,13 +50,20 @@ services:
       # es im laufenden Betrieb auffiel (Container blieb trotzdem "unhealthy").
       GOTRUE_API_PORT: "9999"
       API_EXTERNAL_URL: "https://${SLUG}.${PLATFORM_DOMAIN}"
+      # P0-2b: der role-Claim in GoTrue-Tokens muss die tenant-eigene Rolle
+      # nennen, sonst macht PostgREST SET ROLE auf die clusterweite Rolle
+      # (die authenticator_<slug> nach der Migration nicht mehr annehmen darf).
+      GOTRUE_JWT_DEFAULT_GROUP_NAME: "authenticated_${SLUG}"
+      GOTRUE_JWT_ADMIN_ROLES: "service_role_${SLUG}"
       GOTRUE_MAILER_AUTOCONFIRM: "false"
       GOTRUE_SMTP_HOST: smtp.resend.com
       GOTRUE_SMTP_PORT: "465"
       GOTRUE_SMTP_USER: resend
       GOTRUE_SMTP_PASS: "${RESEND_API_KEY}"
       GOTRUE_SMTP_SENDER_NAME: "${TENANT_NAME}"
-      GOTRUE_DISABLE_SIGNUP: "false"
+      # P2-11: offene Registrierung war Default auf JEDER Kunden-Auth-Instanz.
+      # Wer Self-Signup braucht, schaltet es pro Tenant bewusst frei.
+      GOTRUE_DISABLE_SIGNUP: "true"
     mem_limit: ${GOTRUE_MEM}
     cpus: ${GOTRUE_CPUS}
     healthcheck:
@@ -52,6 +74,11 @@ services:
     networks:
       - traefik-net
     restart: always
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 networks:
   traefik-net:

@@ -24,6 +24,8 @@ import { actorStorage } from './lib/actorContext';
 import { logAudit } from './lib/audit';
 import { deleteMonitor, isMonitoringConfigured } from './lib/monitoring';
 import { removeAllRoutersForProject } from './lib/traefikDynamic';
+import { wrapRouterAsync } from './lib/asyncRoutes';
+import { alert } from './lib/alert';
 
 const execFileP = promisify(execFile);
 const app = express();
@@ -115,6 +117,7 @@ async function cleanupTenantResources(slug: string): Promise<{ warnings: string[
       const monitorAdmin = new Client({
         connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
       });
+      monitorAdmin.on('error', (e) => console.error('pg client error (monitorAdmin):', e.message));
       await monitorAdmin.connect();
       const { rows: projectRows } = await monitorAdmin.query(
         'SELECT kuma_monitor_id FROM projects WHERE tenant_slug = $1 AND kuma_monitor_id IS NOT NULL',
@@ -135,6 +138,7 @@ async function cleanupTenantResources(slug: string): Promise<{ warnings: string[
     const routerDb = new Client({
       connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
     });
+    routerDb.on('error', (e) => console.error('pg client error (routerDb):', e.message));
     await routerDb.connect();
     const { rows: slugRows } = await routerDb.query('SELECT slug FROM projects WHERE tenant_slug = $1', [slug]);
     await routerDb.end();
@@ -155,6 +159,7 @@ async function cleanupTenantResources(slug: string): Promise<{ warnings: string[
     const master = new Client({
       connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/postgres`,
     });
+    master.on('error', (e) => console.error('pg client error (master):', e.message));
     await master.connect();
     await master.query('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1', [dbName]);
     await master.query(format('DROP DATABASE IF EXISTS %I;', dbName));
@@ -172,6 +177,7 @@ async function cleanupTenantResources(slug: string): Promise<{ warnings: string[
     const admin2 = new Client({
       connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
     });
+    admin2.on('error', (e) => console.error('pg client error (admin2):', e.message));
     await admin2.connect();
     const { rows } = await admin2.query('SELECT minio_access_key FROM kunden WHERE slug = $1', [slug]);
     await admin2.end();
@@ -196,6 +202,7 @@ async function cleanupTenantResources(slug: string): Promise<{ warnings: string[
     const admin3 = new Client({
       connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
     });
+    admin3.on('error', (e) => console.error('pg client error (admin3):', e.message));
     await admin3.connect();
     // P2-7: projects.tenant_slug hat ON DELETE SET NULL - ohne dieses DELETE
     // blieben Projekt-Zeilen als unsichtbarer Muell zurueck (GET /projects joint
@@ -219,6 +226,45 @@ app.post('/tenants', sensitiveOpLimiter, async (req, res) => {
     return res.status(400).json({ error: 'invalid slug' });
   }
 
+  // P0-3 (Audit 0430f9c): Der Existenz-Check unten ist NICHT atomar zum
+  // CREATE DATABASE. Zwischen beidem liegen >8 Sekunden Provisioning. Ein
+  // Doppelklick auf "Tenant anlegen" liess Request 2 durch den Check laufen,
+  // an CREATE DATABASE scheitern ("already exists") — und das automatische
+  // Rollback von Request 2 hat den gerade fertig gebauten Tenant von Request 1
+  // vollstaendig geloescht: DROP DATABASE, DROP ROLE, mc rb --force auf den
+  // MinIO-Bucket, rm -rf auf das Tenant-Verzeichnis, DELETE FROM kunden.
+  //
+  // Session-Level Advisory Lock: haelt genau so lange wie diese pg-Session.
+  // Bewusst pg_try_advisory_lock (nicht blockierend) — der zweite Request soll
+  // sofort 409 bekommen, nicht 8 Sekunden auf einen Fehler warten.
+  // Faellt der Agent mitten im Provisioning aus, gibt Postgres den Lock beim
+  // Verbindungsabbruch automatisch frei — kein verwaister Lock.
+  const lockKey = crypto.createHash('sha256').update(`tenant:${tenantSlug}`).digest().readInt32BE(0);
+  const lockClient = new Client({
+    connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
+  });
+  lockClient.on('error', (e) => console.error('lockClient error:', e.message));
+  let lockHeld = false;
+  const releaseLock = async () => {
+    if (lockHeld) {
+      lockHeld = false;
+      await lockClient.query('SELECT pg_advisory_unlock($1)', [lockKey]).catch(() => {});
+    }
+    await lockClient.end().catch(() => {});
+  };
+  try {
+    await lockClient.connect();
+    const { rows: lockRows } = await lockClient.query('SELECT pg_try_advisory_lock($1) AS locked', [lockKey]);
+    lockHeld = lockRows[0]?.locked === true;
+  } catch (err: any) {
+    await lockClient.end().catch(() => {});
+    return res.status(500).json({ error: `Konnte Provisioning-Lock nicht setzen: ${err.message}` });
+  }
+  if (!lockHeld) {
+    await lockClient.end().catch(() => {});
+    return res.status(409).json({ error: `Provisioning fuer "${tenantSlug}" laeuft bereits — bitte warten, nicht erneut klicken.` });
+  }
+
   // P0-4: MUSS vor jeder Ressourcen-Erstellung stehen. Ohne diesen Check wuerde
   // ein Slug-Konflikt erst bei "CREATE DATABASE" (Postgres-Fehler) auffallen,
   // UND das anschliessende automatische Rollback wuerde den bereits bestehenden,
@@ -230,46 +276,71 @@ app.post('/tenants', sensitiveOpLimiter, async (req, res) => {
     const existsCheck = new Client({
       connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
     });
+    existsCheck.on('error', (e) => console.error('pg client error (existsCheck):', e.message));
     await existsCheck.connect();
     const { rows: existingRows } = await existsCheck.query('SELECT 1 FROM kunden WHERE slug = $1', [tenantSlug]);
     await existsCheck.end();
     if (existingRows.length > 0) {
+      await releaseLock();
       return res.status(409).json({ error: `Tenant "${tenantSlug}" existiert bereits` });
     }
   } catch (err: any) {
     console.error('Slug-Existenzprüfung fehlgeschlagen:', err.message);
+    await releaseLock();
     return res.status(500).json({ error: `Konnte nicht prüfen, ob Slug bereits existiert: ${err.message}` });
   }
 
   const dbName = `kunde_${tenantSlug}`;
   const jwtSecret = crypto.randomBytes(32).toString('hex');
-  const anonJwt = signTenantJwt(jwtSecret, 'anon');
-  const serviceRoleJwt = signTenantJwt(jwtSecret, 'service_role');
+  // P0-2b: role-Claim = tenant-eigene Rolle (anon_<slug>/service_role_<slug>).
+  const anonJwt = signTenantJwt(jwtSecret, 'anon', tenantSlug);
+  const serviceRoleJwt = signTenantJwt(jwtSecret, 'service_role', tenantSlug);
   const authenticatorPw = crypto.randomBytes(16).toString('hex');
   const authenticatorRole = `authenticator_${tenantSlug}`;
+  const anonRole = `anon_${tenantSlug}`;
+  const authenticatedRole = `authenticated_${tenantSlug}`;
+  const serviceRole = `service_role_${tenantSlug}`;
 
   try {
     const master = new Client({
       connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/postgres`,
     });
+    master.on('error', (e) => console.error('pg client error (master):', e.message));
     await master.connect();
     await master.query(format('CREATE DATABASE %I;', dbName));
+    // P0-2a (Audit 0430f9c): Postgres vergibt CONNECT auf jede neue Datenbank
+    // standardmaessig an PUBLIC. Ohne dieses REVOKE kann sich JEDE Login-Rolle
+    // im Cluster — also jeder authenticator_<fremder-slug> — auf diese Tenant-DB
+    // verbinden. Zusammen mit den clusterweiten Rollen anon/authenticated/
+    // service_role (BYPASSRLS) bedeutet das vollen Lese- und Schreibzugriff auf
+    // fremde Tenants. Muss VOR dem Rollen-Template stehen, damit zwischen
+    // CREATE DATABASE und REVOKE kein Fenster offen ist.
+    await master.query(format('REVOKE ALL ON DATABASE %I FROM PUBLIC;', dbName));
     await master.end();
 
     const tenant = new Client({
       connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/${dbName}`,
     });
+    tenant.on('error', (e) => console.error('pg client error (tenant):', e.message));
     await tenant.connect();
     const rolesSql = await readFile(
       '/opt/multitenant-platform/core-postgres/templates/authenticator-role.sql.template',
       'utf8'
     );
     await tenant.query(
-      rolesSql.replace(/__AUTH_ROLE__/g, authenticatorRole).replace(/CHANGE_ME/g, authenticatorPw)
+      rolesSql
+        .replace(/__AUTH_ROLE__/g, authenticatorRole)
+        .replace(/__ANON_ROLE__/g, anonRole)
+        .replace(/__AUTHENTICATED_ROLE__/g, authenticatedRole)
+        .replace(/__SERVICE_ROLE__/g, serviceRole)
+        .replace(/CHANGE_ME/g, authenticatorPw)
     );
     await tenant.query(format('CREATE SCHEMA IF NOT EXISTS auth AUTHORIZATION %I;', authenticatorRole));
     await tenant.query(format('GRANT ALL ON SCHEMA auth TO %I;', authenticatorRole));
     await tenant.query(format('ALTER ROLE %I IN DATABASE %I SET search_path = auth, public;', authenticatorRole, dbName));
+    // P0-2a: Gegenstueck zum REVOKE oben — genau diese eine Rolle darf rein.
+    // TEMPORARY ist session-lokal und damit kein Isolationsrisiko.
+    await tenant.query(format('GRANT CONNECT, TEMPORARY ON DATABASE %I TO %I;', dbName, authenticatorRole));
     await tenant.end();
 
     const tierPrefix = tenantTariff.toUpperCase();
@@ -312,7 +383,26 @@ app.post('/tenants', sensitiveOpLimiter, async (req, res) => {
     await writeFile(`${tenantDir}/docker-compose.yml`, compose);
 
     await execFileP('docker', ['compose', '-f', `${tenantDir}/docker-compose.yml`, 'up', '-d', 'auth']);
-    await new Promise((r) => setTimeout(r, 8000));
+
+    // P2-1: vorher hart `setTimeout(8000)`. Auf einer belasteten VPS ist GoTrue
+    // nach 8s noch nicht durch seine DB-Migrationen — das Provisioning scheiterte
+    // dann und loeste (vor P0-3) das destruktive Rollback aus. Jetzt echter
+    // Readiness-Poll gegen /health, mit demselben 8s-Wert als Untergrenze fuer
+    // schnelle Maschinen und 90s Obergrenze fuer langsame.
+    {
+      const deadline = Date.now() + 90_000;
+      let ready = false;
+      while (Date.now() < deadline) {
+        try {
+          const r = await fetch(`http://auth-${tenantSlug}:9999/health`, { signal: AbortSignal.timeout(3000) });
+          if (r.ok) { ready = true; break; }
+        } catch { /* Container startet noch */ }
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+      if (!ready) {
+        throw new Error(`GoTrue (auth-${tenantSlug}) wurde in 90s nicht bereit — docker logs auth-${tenantSlug} pruefen`);
+      }
+    }
 
     await execFileP('mc', ['alias', 'set', 'localminio', 'http://core-minio:9000', process.env.MINIO_ROOT_USER!, process.env.MINIO_ROOT_PASSWORD!]);
     try {
@@ -339,12 +429,15 @@ app.post('/tenants', sensitiveOpLimiter, async (req, res) => {
     await writeFile(policyPath, policyDoc);
     await execFileP('mc', ['admin', 'policy', 'create', 'localminio', `kunde-${tenantSlug}-policy`, policyPath]);
     await execFileP('mc', ['admin', 'policy', 'attach', 'localminio', `kunde-${tenantSlug}-policy`, '--user', minioAccessKey]);
+    // P2-17: lag vorher dauerhaft im Container-tmp, mit der MinIO-Policy im Klartext.
+    await execFileP('rm', ['-f', policyPath]).catch(() => {});
 
     await execFileP('docker', ['compose', '-f', `${tenantDir}/docker-compose.yml`, 'up', '-d', 'api']);
 
     const admin = new Client({
       connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
     });
+    admin.on('error', (e) => console.error('pg client error (admin):', e.message));
     await admin.connect();
     await admin.query(
       'INSERT INTO kunden (slug, db_name, tariff, gotrue_jwt_secret, authenticator_password, minio_access_key, minio_secret_key_encrypted, anon_jwt, service_role_jwt, display_name, contact_email, notes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)',
@@ -360,9 +453,28 @@ app.post('/tenants', sensitiveOpLimiter, async (req, res) => {
     await admin.end();
 
     await logAudit('tenant.create', tenantSlug, { tariff: tenantTariff, dbName });
+    await releaseLock();
     res.json({ status: 'ok', slug: tenantSlug, dbName });
   } catch (err: any) {
     console.error('Provisioning failed:', err.message);
+
+    // P0-3, zweite Absicherung: NIEMALS aufraeumen, wenn der Fehler bedeutet,
+    // dass die Ressource schon vorher existierte. Der Advisory Lock oben
+    // schliesst das Rennen zwischen zwei gleichzeitigen Requests, dieser Guard
+    // faengt den Rest ab: manuell angelegte DB, verwaiste Rolle aus einem
+    // frueheren Abbruch, Bucket-Reste. In all diesen Faellen wuerde ein Cleanup
+    // fremde Daten zerstoeren statt eigene aufzuraeumen.
+    if (/already exists/i.test(err.message || '')) {
+      console.error(`KEIN Rollback fuer "${tenantSlug}": Ressource existierte bereits.`);
+      await logAudit('tenant.create.conflict_no_rollback', tenantSlug, { error: err.message }).catch(() => {});
+      await releaseLock();
+      return res.status(409).json({
+        error: `${err.message} — es wurde NICHTS geloescht. Bestehende Ressourcen zu "${tenantSlug}" ` +
+               `manuell pruefen (Datenbank kunde_${tenantSlug}, Rolle authenticator_${tenantSlug}, ` +
+               `MinIO-Bucket kunde-${tenantSlug}-storage) und ggf. gezielt entfernen.`,
+      });
+    }
+
     console.error(`Führe Rollback für "${tenantSlug}" aus...`);
     const { warnings } = await cleanupTenantResources(tenantSlug).catch((cleanupErr: any) => {
       console.error('Rollback selbst fehlgeschlagen:', cleanupErr.message);
@@ -374,6 +486,7 @@ app.post('/tenants', sensitiveOpLimiter, async (req, res) => {
       console.error(`Rollback für "${tenantSlug}" vollständig — Slug ist wieder frei.`);
     }
     await logAudit('tenant.create.failed_rollback', tenantSlug, { error: err.message, rollbackWarnings: warnings }).catch(() => {});
+    await releaseLock();
     res.status(500).json({
       error: warnings.length === 0
         ? `${err.message} (automatisch zurückgerollt — Slug ist wieder frei)`
@@ -400,6 +513,15 @@ app.delete('/tenants/:slug', sensitiveOpLimiter, async (req, res) => {
   }
 });
 
+// P1-4: Jeden Router einmal umbiegen, bevor er gemountet wird — danach landet
+// eine Rejection aus einem async-Handler bei der Error-Middleware unten statt
+// als unhandledRejection den Prozess zu beenden.
+for (const r of [projectsRouter, tenantsRouter, deploymentsRouter, domainsRouter,
+                 githubRouter, backupsRouter, secretsRouter, auditRouter,
+                 statsRouter, cleanupRouter, webhooksRouter]) {
+  wrapRouterAsync(r);
+}
+
 app.use(projectsRouter);
 app.use(tenantsRouter);
 app.use(deploymentsRouter);
@@ -414,8 +536,45 @@ app.use(cleanupRouter); // P3-6: /cleanup/run
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
+// Die direkt auf `app` registrierten Handler (POST/DELETE /tenants) haengen im
+// app-eigenen Stack, nicht in einem der Router oben.
+wrapRouterAsync(app);
+
+// Zentrale Error-Middleware. Muss NACH allen Routen stehen und vier Parameter
+// haben, sonst behandelt Express sie als normale Middleware.
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('Unbehandelter Fehler im Request-Handler:', err?.stack || err?.message || err);
+  if (res.headersSent) return;
+  res.status(500).json({ error: 'internal error' });
+});
+
+// P1-4, letzte Verteidigungslinie: was trotz Wrapper durchkommt (Timer-
+// Callbacks, fire-and-forget-Promises wie pollDomain oder runDeployment), soll
+// den Prozess nicht mehr stillschweigend beenden.
+process.on('unhandledRejection', (reason: any) => {
+  console.error('unhandledRejection:', reason?.stack || reason);
+  alert('unhandledRejection im Provisioning Agent',
+        String(reason?.stack || reason), 'unhandledRejection').catch(() => {});
+});
+process.on('uncaughtException', (err) => {
+  console.error('uncaughtException:', err?.stack || err.message);
+  alert('uncaughtException im Provisioning Agent', String(err?.stack || err.message),
+        'uncaughtException').catch(() => {});
+  // Bewusst KEIN process.exit(): ein halb fertiger Blue-Green-Swap ist der
+  // schlechteste Moment fuer einen Neustart. Der Healthcheck im Compose
+  // erkennt einen wirklich kaputten Prozess.
+});
+
 app.listen(3001, () => {
   console.log('Provisioning Agent (mit Deployment Engine) listening on :3001');
+  // Audit §15: ein Agent-Start im laufenden Betrieb bedeutet, dass er vorher
+  // gestorben ist. Genau das war bisher nirgends sichtbar.
+  alert('Provisioning Agent gestartet',
+        `Der Agent hat um ${new Date().toISOString()} gestartet.\n\n` +
+        `Wenn das kein geplantes Deployment war, ist er vorher abgestuerzt — ` +
+        `laufende Deployments und der In-Memory-State sind dann verloren.\n` +
+        `Logs: docker logs --since 30m provisioning-agent`,
+        'agent-start').catch(() => {});
   // P1-1c: offene Domain-Verifikationen nach einem Neustart wieder aufnehmen.
   // Erst fehlende Router reparieren, dann offene Verifikationen fortsetzen.
   healMissingRouters()

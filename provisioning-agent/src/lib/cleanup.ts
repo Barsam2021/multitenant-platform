@@ -10,9 +10,17 @@ const PGBOUNCER_HOST = process.env.PGBOUNCER_HOST || 'pgbouncer';
 const MASTER_DB_PASSWORD = process.env.MASTER_DB_PASSWORD!;
 
 function adminClient(): PGClient {
-  return new PGClient({
+  // P1-4 (Audit 0430f9c): ein pg.Client emittiert bei Verbindungsverlust ein
+  // 'error'-Event. OHNE Listener ist das in Node eine uncaught exception, also
+  // Prozessende — im schlimmsten Fall mitten im Deploy zwischen `docker rename`
+  // und `docker run`: Kundenseite offline, und nichts raeumt auf. deploy.ts
+  // haelt einen solchen Client ueber die gesamte Deploy-Dauer offen (Build-
+  // Timeout allein 10 Minuten).
+  const client = new PGClient({
     connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
   });
+  client.on('error', (err) => console.error('pg client error (adminClient):', err.message));
+  return client;
 }
 
 // P3-6: build_log ist TEXT ohne Grenze, maxBuffer erlaubt bis zu 32MB pro Build.
@@ -119,13 +127,44 @@ export async function pruneOldDockerImages(): Promise<{ removed: string[]; error
       const projectImages = allImages.filter((img) => img.startsWith(prefix));
       if (projectImages.length === 0) continue;
 
-      const { rows: recentDeploys } = await db.query(
-        `SELECT image_tag FROM deployments
-         WHERE project_id = $1 AND image_tag IS NOT NULL
-         ORDER BY created_at DESC LIMIT 5`,
+      // P1-8 (Audit 0430f9c): vorher wurden schlicht die letzten 5 Deployments
+      // nach created_at behalten — unabhaengig davon, welches aktiv ist und
+      // welche fuer einen Rollback gebraucht werden. Nach fuenf fehlgeschlagenen
+      // Deploys war das letzte funktionierende Image weg, die UI bot es
+      // weiterhin als Rollback-Ziel an, und der Rollback scheiterte mit
+      // "no such image" NACH dem docker rm -f. Kunde offline, kein Weg zurueck
+      // ausser neu bauen.
+      //
+      // Jetzt drei Schutzklassen: das aktive Image des Projekts, die letzten
+      // fuenf ERFOLGREICHEN Deployments (= die realistischen Rollback-Ziele) und
+      // zusaetzlich die letzten drei Images ueberhaupt fuer die Fehlerdiagnose.
+      const { rows: protectedDeploys } = await db.query(
+        `SELECT DISTINCT image_tag FROM deployments d
+         WHERE d.project_id = $1 AND d.image_tag IS NOT NULL
+           AND (
+             d.id = (SELECT active_deployment_id FROM projects WHERE id = $1)
+             OR d.id IN (
+               SELECT id FROM deployments
+               WHERE project_id = $1 AND image_tag IS NOT NULL
+                 AND status IN ('deployed', 'rolled_back')
+               ORDER BY created_at DESC LIMIT 5
+             )
+             OR d.id IN (
+               SELECT id FROM deployments
+               WHERE project_id = $1 AND image_tag IS NOT NULL
+               ORDER BY created_at DESC LIMIT 3
+             )
+           )`,
         [project.id]
       );
-      const keepTags = new Set(recentDeploys.map((d) => d.image_tag));
+      const keepTags = new Set(protectedDeploys.map((d) => d.image_tag));
+
+      // Zusaetzliche Absicherung unabhaengig von der DB: was gerade laeuft,
+      // wird nie entfernt, auch wenn die deployments-Tabelle es nicht kennt.
+      try {
+        const { stdout: inUse } = await execFileP('docker', ['ps', '-a', '--format', '{{.Image}}']);
+        for (const img of inUse.trim().split('\n')) if (img) keepTags.add(img);
+      } catch { /* docker nicht erreichbar - dann lieber gar nicht loeschen */ }
 
       for (const img of projectImages) {
         if (keepTags.has(img)) continue;

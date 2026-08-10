@@ -7,9 +7,17 @@ const PGBOUNCER_HOST = process.env.PGBOUNCER_HOST || 'pgbouncer';
 const MASTER_DB_PASSWORD = process.env.MASTER_DB_PASSWORD!;
 
 function adminClient(): PGClient {
-  return new PGClient({
+  // P1-4 (Audit 0430f9c): ein pg.Client emittiert bei Verbindungsverlust ein
+  // 'error'-Event. OHNE Listener ist das in Node eine uncaught exception, also
+  // Prozessende — im schlimmsten Fall mitten im Deploy zwischen `docker rename`
+  // und `docker run`: Kundenseite offline, und nichts raeumt auf. deploy.ts
+  // haelt einen solchen Client ueber die gesamte Deploy-Dauer offen (Build-
+  // Timeout allein 10 Minuten).
+  const client = new PGClient({
     connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
   });
+  client.on('error', (err) => console.error('pg client error (adminClient):', err.message));
+  return client;
 }
 
 export const webhooksRouter = Router();
@@ -46,6 +54,16 @@ webhooksRouter.post('/webhooks/github/:projectId', async (req, res) => {
     const pushedBranch = (payload.ref || '').replace('refs/heads/', '');
     if (pushedBranch !== project.default_branch) {
       return res.json({ status: 'ignored', reason: `push to ${pushedBranch}, watching ${project.default_branch}` });
+    }
+
+    // P1-11 (Audit 0430f9c): POST /tenants/:slug/status mit "suspended" stoppt
+    // Container und entfernt Router — aber weder runDeployment() noch der
+    // Webhook-Handler pruefen kunden.status. Ein Push ins verbundene Repo eines
+    // gesperrten Kunden baute einen neuen Container samt Traefik-Labels und hob
+    // die Sperre faktisch auf, inklusive Verbrauch von Build-CPU, Disk und RAM.
+    const { rows: statusRows } = await db.query('SELECT status FROM kunden WHERE slug = $1', [project.tenant_slug]);
+    if (statusRows[0]?.status === 'suspended') {
+      return res.status(423).json({ error: `Tenant "${project.tenant_slug}" ist gesperrt — kein Deployment moeglich.` });
     }
 
     const { rows: tariffRows } = await db.query('SELECT tariff FROM kunden WHERE slug = $1', [project.tenant_slug]);

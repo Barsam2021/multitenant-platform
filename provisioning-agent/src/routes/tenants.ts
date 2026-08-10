@@ -12,9 +12,17 @@ const MASTER_DB_PASSWORD = process.env.MASTER_DB_PASSWORD!;
 const PLATFORM_DOMAIN = process.env.PLATFORM_DOMAIN || 'example.com';
 
 function adminClient(): PGClient {
-  return new PGClient({
+  // P1-4 (Audit 0430f9c): ein pg.Client emittiert bei Verbindungsverlust ein
+  // 'error'-Event. OHNE Listener ist das in Node eine uncaught exception, also
+  // Prozessende — im schlimmsten Fall mitten im Deploy zwischen `docker rename`
+  // und `docker run`: Kundenseite offline, und nichts raeumt auf. deploy.ts
+  // haelt einen solchen Client ueber die gesamte Deploy-Dauer offen (Build-
+  // Timeout allein 10 Minuten).
+  const client = new PGClient({
     connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
   });
+  client.on('error', (err) => console.error('pg client error (adminClient):', err.message));
+  return client;
 }
 
 export const tenantsRouter = Router();

@@ -22,9 +22,17 @@ const rotateLimiter = rateLimit({
 });
 
 function adminClient(): PGClient {
-  return new PGClient({
+  // P1-4 (Audit 0430f9c): ein pg.Client emittiert bei Verbindungsverlust ein
+  // 'error'-Event. OHNE Listener ist das in Node eine uncaught exception, also
+  // Prozessende — im schlimmsten Fall mitten im Deploy zwischen `docker rename`
+  // und `docker run`: Kundenseite offline, und nichts raeumt auf. deploy.ts
+  // haelt einen solchen Client ueber die gesamte Deploy-Dauer offen (Build-
+  // Timeout allein 10 Minuten).
+  const client = new PGClient({
     connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
   });
+  client.on('error', (err) => console.error('pg client error (adminClient):', err.message));
+  return client;
 }
 
 export const secretsRouter = Router();
@@ -72,8 +80,8 @@ secretsRouter.post('/tenants/:slug/rotate-secret', rotateLimiter, async (req, re
       // Signatur mehr haben und PostgREST/GoTrue würden jede Anfrage mit diesen
       // Keys ablehnen. Deterministisch aus dem neuen Secret neu erzeugbar (siehe
       // lib/jwt.ts), kein separater Storage nötig.
-      const newAnonJwt = signTenantJwt(newJwtSecret, 'anon');
-      const newServiceRoleJwt = signTenantJwt(newJwtSecret, 'service_role');
+      const newAnonJwt = signTenantJwt(newJwtSecret, 'anon', slug);
+      const newServiceRoleJwt = signTenantJwt(newJwtSecret, 'service_role', slug);
 
       await db.query(
         'UPDATE kunden SET gotrue_jwt_secret = $1, anon_jwt = $2, service_role_jwt = $3 WHERE slug = $4',

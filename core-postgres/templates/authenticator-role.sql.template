@@ -1,17 +1,41 @@
--- Login-Rolle für PostgREST & GoTrue eines einzelnen Tenants.
--- __AUTH_ROLE__ wird vom Provisioning Agent (index.ts) durch einen eindeutigen,
--- tenant-spezifischen Namen ersetzt (z.B. "authenticator_<slug>"), CHANGE_ME durch
--- das generierte Passwort. Bewusst NICHT unter core-postgres/init-scripts/, damit
--- Postgres diese Datei niemals automatisch beim Cluster-Start ausführt — sie darf
--- nur genau einmal pro Tenant, mit bereits aufgelöstem Rollennamen, laufen.
+-- Rollen eines einzelnen Tenants. Wird vom Provisioning Agent (src/index.ts) mit
+-- aufgeloesten Namen genau einmal pro Tenant in der Tenant-Datenbank ausgefuehrt.
+-- Bewusst NICHT unter core-postgres/init-scripts/, damit Postgres die Datei
+-- niemals automatisch beim Cluster-Start ausfuehrt.
+--
+-- Platzhalter (alle von index.ts ersetzt):
+--   __AUTH_ROLE__          -> authenticator_<slug>   (LOGIN)
+--   __ANON_ROLE__          -> anon_<slug>
+--   __AUTHENTICATED_ROLE__ -> authenticated_<slug>
+--   __SERVICE_ROLE__       -> service_role_<slug>
+--   CHANGE_ME              -> generiertes Passwort
+--
+-- P0-2b (Audit 0430f9c): frueher waren anon/authenticated/service_role
+-- CLUSTERWEITE Rollen und jeder authenticator_<slug> war Mitglied aller drei.
+-- Ein Tenant, der nach Supabase-Konvention "GRANT ALL ... TO service_role"
+-- ausfuehrt, hat damit jedem anderen Tenant-Authenticator im Cluster Zugriff
+-- gegeben — und service_role hat BYPASSRLS, also unter Umgehung aller Policies.
+-- Rollen-ATTRIBUTE wie BYPASSRLS werden nicht ueber Mitgliedschaft vererbt,
+-- deshalb braucht service_role_<slug> das Attribut selbst.
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '__AUTH_ROLE__') THEN
     CREATE ROLE "__AUTH_ROLE__" LOGIN NOINHERIT PASSWORD 'CHANGE_ME';
   END IF;
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '__ANON_ROLE__') THEN
+    CREATE ROLE "__ANON_ROLE__" NOLOGIN NOINHERIT;
+  END IF;
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '__AUTHENTICATED_ROLE__') THEN
+    CREATE ROLE "__AUTHENTICATED_ROLE__" NOLOGIN NOINHERIT;
+  END IF;
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '__SERVICE_ROLE__') THEN
+    CREATE ROLE "__SERVICE_ROLE__" NOLOGIN NOINHERIT BYPASSRLS;
+  END IF;
 END
 $$;
 
-GRANT anon TO "__AUTH_ROLE__";
-GRANT authenticated TO "__AUTH_ROLE__";
-GRANT service_role TO "__AUTH_ROLE__";
+-- Nur die tenant-eigenen Rollen. Die clusterweiten anon/authenticated/
+-- service_role werden hier bewusst NICHT mehr vergeben.
+GRANT "__ANON_ROLE__"          TO "__AUTH_ROLE__";
+GRANT "__AUTHENTICATED_ROLE__" TO "__AUTH_ROLE__";
+GRANT "__SERVICE_ROLE__"       TO "__AUTH_ROLE__";

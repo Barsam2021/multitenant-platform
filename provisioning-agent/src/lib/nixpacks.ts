@@ -47,16 +47,44 @@ export async function nixpacksBuild(
   'type=docker',
   ];
 
-  // Env-Vars (Tenant-Secrets + project_env_vars) auch dem BUILD-Schritt verfügbar
-  // machen, nicht nur dem späteren `docker run` — Next.js liest z.B. beim `next build`
-  // (Page-Data-Collection, NEXT_PUBLIC_*-Inlining) bereits Env-Vars, siehe RESEND_API_KEY-
-  // Fehler bei up2-website (Modul-Level `new Resend(...)` wirft schon beim Build, nicht
-  // erst beim Container-Start). Landet dadurch als ENV im fertigen Image — bewusster
-  // Trade-off, für Next.js/Vite-artige Frameworks nötig (Werte teils schon zur Build-Zeit
-  // in den JS-Bundle inlined).
+  // Env-Vars dem BUILD-Schritt verfügbar machen — Next.js/Vite lesen beim Build
+  // bereits Env-Vars (Page-Data-Collection, NEXT_PUBLIC_*-Inlining, Modul-Level
+  // `new Resend(...)` wirft sonst schon beim Build).
+  //
+  // P0-4 (Audit 0430f9c): ABER NICHT ALLE. Was hier reingeht, landet als ENV-Layer
+  // im fertigen Image und ist per `docker history app-<slug>:<sha>` lesbar. Vorher
+  // ging JWT_SECRET (das Signaturgeheimnis von GoTrue — wer es hat, faelscht
+  // beliebige Tokens fuer beliebige Rollen dieses Tenants) und
+  // SUPABASE_SERVICE_ROLE_KEY (BYPASSRLS) mit ins Image.
+  //
+  // Regel: zur Build-Zeit nur, was im Client-Bundle sowieso oeffentlich landet.
+  // Alles andere ausschliesslich zur Laufzeit ueber `docker run -e` (siehe
+  // deploy.ts, envArgs) — dort ist es zwar per `docker inspect` sichtbar, aber
+  // nicht im weitergebbaren Image und nicht im Build-Log.
+  const BUILD_TIME_DENYLIST = [
+    'JWT_SECRET',
+    'SUPABASE_SERVICE_ROLE_KEY',
+    'MINIO_SECRET_KEY',
+    'DATABASE_URL',
+    'POSTGRES_PASSWORD',
+  ];
+  const isBuildTimeSafe = (key: string): boolean => {
+    if (BUILD_TIME_DENYLIST.includes(key)) return false;
+    // Framework-Konventionen fuer "landet im Browser-Bundle" — per Definition oeffentlich.
+    if (/^(NEXT_PUBLIC_|VITE_|PUBLIC_|REACT_APP_|NUXT_PUBLIC_|GATSBY_|EXPO_PUBLIC_)/.test(key)) return true;
+    // Alles, was nach Secret aussieht, bleibt draussen.
+    if (/SECRET|PASSWORD|PASSWD|PRIVATE_KEY|ACCESS_KEY|_KEY$|^KEY$|TOKEN|CREDENTIAL/i.test(key)) return false;
+    return true;
+  };
+
+  const skippedAtBuildTime: string[] = [];
   for (const [key, value] of Object.entries(envVars || {})) {
+    if (!isBuildTimeSafe(key)) { skippedAtBuildTime.push(key); continue; }
     args.push('--env', `${key}=${value}`);
   }
+  const skipNote = skippedAtBuildTime.length
+    ? `[build-env] Zur Build-Zeit ausgelassen (nur zur Laufzeit gesetzt): ${skippedAtBuildTime.join(', ')}\n`
+    : '';
 
   if (buildCommand) {
     // Nixpacks erlaubt Override einzelner Build-Phasen über --build-cmd.
@@ -71,13 +99,20 @@ export async function nixpacksBuild(
       timeout: 10 * 60 * 1000, // 10 Minuten Hard-Timeout pro Build
       signal,
     });
-    return { imageTag, log: maskSecrets(stdout + '\n' + stderr) };
+    const secretValues = Object.values(envVars || {});
+    return { imageTag, log: skipNote + maskSecrets(stdout + '\n' + stderr, secretValues) };
   } catch (err: any) {
     if (err.name === 'AbortError') {
       // P2-4: Abbruch, kein Build-Fehler - deploy.ts unterscheidet danach.
       throw err;
     }
-    const log = maskSecrets((err.stdout || '') + '\n' + (err.stderr || '') + '\n' + err.message);
+    // Node haengt bei execFile-Fehlern das komplette Kommando inklusive aller
+    // Argumente an err.message — also auch jedes durchgereichte --env KEY=VALUE.
+    // Genau das war der Hauptleak-Pfad in deployments.build_log.
+    const log = skipNote + maskSecrets(
+      (err.stdout || '') + '\n' + (err.stderr || '') + '\n' + err.message,
+      Object.values(envVars || {})
+    );
     throw Object.assign(new Error('nixpacks build failed'), { buildLog: log });
   }
 }

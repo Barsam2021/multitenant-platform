@@ -14,9 +14,17 @@ const ADMIN_DB_HOST = process.env.ADMIN_DB_HOST || process.env.PGBOUNCER_HOST ||
 const MASTER_DB_PASSWORD = process.env.MASTER_DB_PASSWORD!;
 
 function adminClient(): PGClient {
-  return new PGClient({
+  // P1-4 (Audit 0430f9c): ein pg.Client emittiert bei Verbindungsverlust ein
+  // 'error'-Event. OHNE Listener ist das in Node eine uncaught exception, also
+  // Prozessende — im schlimmsten Fall mitten im Deploy zwischen `docker rename`
+  // und `docker run`: Kundenseite offline, und nichts raeumt auf. deploy.ts
+  // haelt einen solchen Client ueber die gesamte Deploy-Dauer offen (Build-
+  // Timeout allein 10 Minuten).
+  const client = new PGClient({
     connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${ADMIN_DB_HOST}:5432/admin_dashboard`,
   });
+  client.on('error', (err) => console.error('pg client error (adminClient):', err.message));
+  return client;
 }
 
 export const domainsRouter = Router();
@@ -277,6 +285,23 @@ domainsRouter.post('/domains', async (req, res) => {
   const host = String(hostname).trim().toLowerCase().replace(/\.$/, '');
   if (!/^[a-z0-9.-]+$/.test(host) || !host.includes('.') || host.length > 253) {
     return res.status(400).json({ error: 'Ungueltiger Hostname.' });
+  }
+
+  // P1-9 (Audit 0430f9c): geprueft wurden bisher nur Format und Duplikate
+  // innerhalb der domains-Tabelle. Nicht erfasst und damit uebernehmbar waren
+  // webhooks.<PLATFORM_DOMAIN>, admin.<PLATFORM_DOMAIN>, status-vps.<...>,
+  // <slug>-api.<...> und <slug>-auth.<...>. Ein Custom-Domain-Eintrag darauf
+  // schreibt eine File-Provider-Router-Datei mit kollidierender Host()-Regel —
+  // Traefik loest identische Regeln nicht deterministisch dokumentiert auf, der
+  // Traffic eines fremden PostgREST-Endpunkts kann auf einen anderen
+  // App-Container gehen. Verschaerfend: tryAutoDns() benutzt CF_DNS_API_TOKEN
+  // fuer die eigene Zone und wuerde einen A-Record ins produktive
+  // Plattform-DNS schreiben.
+  const PLATFORM = (process.env.PLATFORM_DOMAIN || '').toLowerCase();
+  if (PLATFORM && (host === PLATFORM || host.endsWith(`.${PLATFORM}`))) {
+    return res.status(400).json({
+      error: `Hostnamen unter ${PLATFORM} sind fuer die Plattform reserviert und koennen nicht als Custom-Domain registriert werden.`,
+    });
   }
 
   const db = adminClient();
