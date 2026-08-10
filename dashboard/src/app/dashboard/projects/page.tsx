@@ -221,6 +221,7 @@ export default function ProjectsPage() {
 
       {error && <div className="error-box">{error}</div>}
       {deleteError && <div className="error-box" style={{ marginBottom: 12 }}>{deleteError}</div>}
+      {projectsError && <div className="error-box" style={{ marginBottom: 12 }}>{projectsError}</div>}
       {!tenants && !error && <div className="empty-state">Lade Projekte…</div>}
       {tenants && tenants.length === 0 && (
         <EmptyState

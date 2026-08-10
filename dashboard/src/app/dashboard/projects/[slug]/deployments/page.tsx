@@ -47,7 +47,7 @@ function githubCommitUrl(repoUrl: string | null, sha: string | null): string | n
   return `https://github.com/${m[1]}/${m[2]}/commit/${sha}`;
 }
 
-function LogViewer({ slug, deployment }: { slug: string; deployment: Deployment }) {
+function LogViewer({ deployment }: { deployment: Deployment }) {
   const [log, setLog] = useState("");
   const [loaded, setLoaded] = useState(false);
   const offsetRef = useRef(0);
@@ -98,7 +98,7 @@ export default function DeploymentsPage({
 }: {
   params: Promise<{ slug: string }>;
 }) {
-  const { slug } = use(params);
+  use(params);
   const { project, error: projectError } = useProject();
   const [deployments, setDeployments] = useState<Deployment[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -298,7 +298,7 @@ export default function DeploymentsPage({
                 )}
               </div>
             </div>
-            {logsOpen && <LogViewer slug={slug} deployment={d} />}
+            {logsOpen && <LogViewer deployment={d} />}
           </div>
         );
       })}

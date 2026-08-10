@@ -1,0 +1,48 @@
+name: CI
+
+# P3-4: bisher war "npm run build" der einzige Schutz, und der lief erst beim
+# Deployment auf dem Server - ein Typfehler landete fruehestens dort. Diese
+# Workflow-Datei laeuft bei jedem Push/PR und blockt vorher.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  dashboard:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Lint
+        run: npx next lint
+      - name: Build
+        run: npm run build
+
+  provisioning-agent:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: provisioning-agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: provisioning-agent/package-lock.json
+      - run: npm ci
+      - name: Typecheck + Build
+        run: npm run build

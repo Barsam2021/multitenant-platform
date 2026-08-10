@@ -1,3 +1,211 @@
+#!/usr/bin/env bash
+# Sprint 18 — P3-4: CI / Typecheck-Gate
+# Auf der VPS ausführen: /opt/multitenant-platform
+#
+# Was passiert:
+#   - Neu: .github/workflows/ci.yml - laeuft bei jedem Push/PR auf main:
+#     Dashboard (tsc --noEmit, next lint, next build) und Provisioning-Agent
+#     (tsc via npm run build) je als eigener Job. Vorher war "npm run build"
+#     der einzige Schutz, und der lief erst beim Deployment auf dem Server -
+#     ein Typfehler landete fruehestens dort.
+#   - Neu: dashboard/eslint.config.mjs - "next lint" stand als Script schon in
+#     package.json, ohne Config lief es aber nie (interaktiver Erst-Setup-
+#     Wizard, in CI ohne TTY ein Hang). eslint + eslint-config-next als
+#     devDependencies ergaenzt.
+#   - @types/psl fuer den Agent ergaenzt (P3-4-TODO woertlich) - psl bringt in
+#     der aktuell installierten Version zufaellig eigene Typen mit, das ist
+#     aber nicht garantiert und war im Gap-Analyse explizit als Bruchrisiko
+#     genannt ("kann den Build brechen, je nachdem, ob psl eigene Typen
+#     mitliefert")
+#   - provisioning-agent/package-lock.json war bisher nicht committet (npm ci
+#     in CI braucht sie) - jetzt Teil des Repos
+#   - Der erste echte Lint-Lauf hat drei tatsaechliche Bugs aufgedeckt, die
+#     hier mitkorrigiert sind: projects/page.tsx zeigte einen gesetzten
+#     Fehlerstatus (projectsError, aus Sprint 15) nie an; zwei ungenutzte
+#     "slug"-Reste aus dem ProjectContext-Umbau (Sprint 15); ein "any"-Typ in
+#     domains/page.tsx, dessen Ersatz durch einen echten Typ einen bis dahin
+#     unbemerkten Fall aufgedeckt hat (domainId waere potenziell undefined an
+#     handleVerify() gegangen)
+#
+# WICHTIG: Kein minimaler Integrationstest (Tenant anlegen -> Projekt
+# verbinden -> Deploy -> loeschen) in CI - das existierende
+# scripts/smoke-test.sh braucht die echte VPS-Umgebung (Docker-Socket-Proxy,
+# PgBouncer, MinIO, echte .env) und laesst sich nicht sinnvoll auf einem
+# gehosteten GitHub-Runner nachbauen, ohne einen kompletten Stack samt
+# Secrets dort neu aufzusetzen. Bleibt bewusst ein manueller Schritt auf dem
+# Server (siehe SETUP.md Schritt 8) - ein self-hosted Runner auf der VPS
+# waere die naechste Ausbaustufe, ist aber eine eigene
+# Infrastrukturentscheidung und hier nicht mit umgesetzt.
+#
+# Rollback: ./sprint18-p3-4-ci.sh --rollback _backup-sprint18-<timestamp>
+
+set -euo pipefail
+
+PLATFORM_DIR="/opt/multitenant-platform"
+TS=$(date +%Y%m%d-%H%M%S)
+BACKUP_DIR="$PLATFORM_DIR/_backup-sprint18-$TS"
+
+FILES=(
+  "dashboard/package.json"
+  "dashboard/package-lock.json"
+  "provisioning-agent/package.json"
+  "dashboard/src/app/dashboard/projects/[slug]/deployments/page.tsx"
+  "dashboard/src/app/dashboard/projects/[slug]/domains/page.tsx"
+  "dashboard/src/app/dashboard/projects/page.tsx"
+)
+NEW_FILES=(
+  ".github/workflows/ci.yml"
+  "dashboard/eslint.config.mjs"
+  "provisioning-agent/package-lock.json"
+)
+
+if [[ "${1:-}" == "--rollback" ]]; then
+  RESTORE_FROM="${2:?Verzeichnis angeben: ./sprint18-p3-4-ci.sh --rollback _backup-sprint18-XXXXXXXX-XXXXXX}"
+  cd "$PLATFORM_DIR"
+  echo "Rollback aus $RESTORE_FROM ..."
+  for f in "${FILES[@]}"; do
+    if [[ -f "$RESTORE_FROM/$f" ]]; then
+      mkdir -p "$(dirname "$f")"
+      cp "$RESTORE_FROM/$f" "$f"
+      echo "  restored: $f"
+    fi
+  done
+  for f in "${NEW_FILES[@]}"; do
+    rm -f "$f"
+    echo "  removed (war neu in Sprint 18): $f"
+  done
+  find "$PLATFORM_DIR/.github" -type d -empty -delete 2>/dev/null || true
+  echo "Rebuild..."
+  cd "$PLATFORM_DIR/provisioning-agent" && docker compose --env-file ../.env build && docker compose --env-file ../.env up -d
+  cd "$PLATFORM_DIR/dashboard" && docker compose --env-file ../.env build && docker compose --env-file ../.env up -d
+  echo "Rollback abgeschlossen."
+  exit 0
+fi
+
+echo "== Sprint 18 (P3-4): Backup nach $BACKUP_DIR =="
+cd "$PLATFORM_DIR"
+mkdir -p "$BACKUP_DIR"
+for f in "${FILES[@]}"; do
+  if [[ -f "$f" ]]; then
+    mkdir -p "$BACKUP_DIR/$(dirname "$f")"
+    cp "$f" "$BACKUP_DIR/$f"
+  fi
+done
+echo "Backup fertig."
+
+echo "== Geaenderte/neue Dateien schreiben =="
+
+mkdir -p "$(dirname "$PLATFORM_DIR/.github/workflows/ci.yml")"
+cat > "$PLATFORM_DIR/.github/workflows/ci.yml" << 'CIWORKFLOW_EOF'
+name: CI
+
+# P3-4: bisher war "npm run build" der einzige Schutz, und der lief erst beim
+# Deployment auf dem Server - ein Typfehler landete fruehestens dort. Diese
+# Workflow-Datei laeuft bei jedem Push/PR und blockt vorher.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  dashboard:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Lint
+        run: npx next lint
+      - name: Build
+        run: npm run build
+
+  provisioning-agent:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: provisioning-agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: provisioning-agent/package-lock.json
+      - run: npm ci
+      - name: Typecheck + Build
+        run: npm run build
+CIWORKFLOW_EOF
+
+mkdir -p "$(dirname "$PLATFORM_DIR/dashboard/eslint.config.mjs")"
+cat > "$PLATFORM_DIR/dashboard/eslint.config.mjs" << 'ESLINTCONFIG_EOF'
+import { FlatCompat } from "@eslint/eslintrc";
+import { dirname } from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+const compat = new FlatCompat({
+  baseDirectory: __dirname,
+});
+
+// P3-4: next lint stand als Script schon in package.json, ohne Config lief es
+// aber nie (interaktiver Erst-Setup-Wizard, in CI ohne TTY ein Hang/Fehlschlag).
+const eslintConfig = [
+  ...compat.extends("next/core-web-vitals", "next/typescript"),
+];
+
+export default eslintConfig;
+ESLINTCONFIG_EOF
+
+mkdir -p "$(dirname "$PLATFORM_DIR/dashboard/package.json")"
+cat > "$PLATFORM_DIR/dashboard/package.json" << 'DASHBOARD_PKG_EOF'
+{
+  "name": "multitenant-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "bcryptjs": "2.4.3",
+    "next": "15.5.22",
+    "next-auth": "^5.0.0-beta.32",
+    "pg": "8.13.1",
+    "pg-format": "1.0.4",
+    "react": "19.0.0",
+    "react-dom": "19.0.0"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "2.4.6",
+    "@types/node": "20.14.10",
+    "@types/pg": "8.11.10",
+    "@types/react": "19.0.1",
+    "@types/react-dom": "19.0.1",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "^15.5.22",
+    "typescript": "5.6.3"
+  }
+}
+DASHBOARD_PKG_EOF
+
+mkdir -p "$(dirname "$PLATFORM_DIR/dashboard/package-lock.json")"
+cat > "$PLATFORM_DIR/dashboard/package-lock.json" << 'DASHBOARD_LOCK_EOF'
 {
   "name": "multitenant-dashboard",
   "version": "0.1.0",
@@ -5893,3 +6101,2642 @@
     }
   }
 }
+DASHBOARD_LOCK_EOF
+
+mkdir -p "$(dirname "$PLATFORM_DIR/provisioning-agent/package.json")"
+cat > "$PLATFORM_DIR/provisioning-agent/package.json" << 'AGENT_PKG_EOF'
+{
+  "name": "provisioning-agent",
+  "version": "1.0.0",
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "express-rate-limit": "^8.6.1",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.13.1",
+    "pg-format": "^1.0.4",
+    "psl": "^1.9.0",
+    "socket.io-client": "^4.8.3"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/node": "^20.14.10",
+    "@types/pg": "^8.11.10",
+    "@types/psl": "^1.1.3",
+    "typescript": "^5.6.3"
+  }
+}
+AGENT_PKG_EOF
+
+mkdir -p "$(dirname "$PLATFORM_DIR/provisioning-agent/package-lock.json")"
+cat > "$PLATFORM_DIR/provisioning-agent/package-lock.json" << 'AGENT_LOCK_EOF'
+{
+  "name": "provisioning-agent",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "name": "provisioning-agent",
+      "version": "1.0.0",
+      "dependencies": {
+        "express": "^4.19.2",
+        "express-rate-limit": "^8.6.1",
+        "jsonwebtoken": "^9.0.2",
+        "pg": "^8.13.1",
+        "pg-format": "^1.0.4",
+        "psl": "^1.9.0",
+        "socket.io-client": "^4.8.3"
+      },
+      "devDependencies": {
+        "@types/express": "^4.17.21",
+        "@types/jsonwebtoken": "^9.0.7",
+        "@types/node": "^20.14.10",
+        "@types/pg": "^8.11.10",
+        "@types/psl": "^1.1.3",
+        "typescript": "^5.6.3"
+      }
+    },
+    "node_modules/@socket.io/component-emitter": {
+      "version": "3.1.2",
+      "resolved": "https://registry.npmjs.org/@socket.io/component-emitter/-/component-emitter-3.1.2.tgz",
+      "integrity": "sha512-9BCxFwvbGg/RsZK9tjXd8s4UcwR0MWeFQ1XEKIQVVvAGJyINdrqKMcTRyLoK8Rse1GjzLV9cwjWV1olXRWEXVA==",
+      "license": "MIT"
+    },
+    "node_modules/@types/body-parser": {
+      "version": "1.19.6",
+      "resolved": "https://registry.npmjs.org/@types/body-parser/-/body-parser-1.19.6.tgz",
+      "integrity": "sha512-HLFeCYgz89uk22N5Qg3dvGvsv46B8GLvKKo1zKG4NybA8U2DiEO3w9lqGg29t/tfLRJpJ6iQxnVw4OnB7MoM9g==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@types/connect": "*",
+        "@types/node": "*"
+      }
+    },
+    "node_modules/@types/connect": {
+      "version": "3.4.38",
+      "resolved": "https://registry.npmjs.org/@types/connect/-/connect-3.4.38.tgz",
+      "integrity": "sha512-K6uROf1LD88uDQqJCktA4yzL1YYAK6NgfsI0v/mTgyPKWsX1CnJ0XPSDhViejru1GcRkLWb8RlzFYJRqGUbaug==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@types/node": "*"
+      }
+    },
+    "node_modules/@types/express": {
+      "version": "4.17.25",
+      "resolved": "https://registry.npmjs.org/@types/express/-/express-4.17.25.tgz",
+      "integrity": "sha512-dVd04UKsfpINUnK0yBoYHDF3xu7xVH4BuDotC/xGuycx4CgbP48X/KF/586bcObxT0HENHXEU8Nqtu6NR+eKhw==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@types/body-parser": "*",
+        "@types/express-serve-static-core": "^4.17.33",
+        "@types/qs": "*",
+        "@types/serve-static": "^1"
+      }
+    },
+    "node_modules/@types/express-serve-static-core": {
+      "version": "4.19.9",
+      "resolved": "https://registry.npmjs.org/@types/express-serve-static-core/-/express-serve-static-core-4.19.9.tgz",
+      "integrity": "sha512-QP2ESEe/ImWY0HDwNAnK9PvEffUyhLTnWkk7KXzHfyeWAnlrDe1fN77bXl6ia8KT3wPlmA7t9/VPRpnf4Ex9sg==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@types/node": "*",
+        "@types/qs": "*",
+        "@types/range-parser": "*",
+        "@types/send": "*"
+      }
+    },
+    "node_modules/@types/http-errors": {
+      "version": "2.0.5",
+      "resolved": "https://registry.npmjs.org/@types/http-errors/-/http-errors-2.0.5.tgz",
+      "integrity": "sha512-r8Tayk8HJnX0FztbZN7oVqGccWgw98T/0neJphO91KkmOzug1KkofZURD4UaD5uH8AqcFLfdPErnBod0u71/qg==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/@types/jsonwebtoken": {
+      "version": "9.0.10",
+      "resolved": "https://registry.npmjs.org/@types/jsonwebtoken/-/jsonwebtoken-9.0.10.tgz",
+      "integrity": "sha512-asx5hIG9Qmf/1oStypjanR7iKTv0gXQ1Ov/jfrX6kS/EO0OFni8orbmGCn0672NHR3kXHwpAwR+B368ZGN/2rA==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@types/ms": "*",
+        "@types/node": "*"
+      }
+    },
+    "node_modules/@types/mime": {
+      "version": "1.3.5",
+      "resolved": "https://registry.npmjs.org/@types/mime/-/mime-1.3.5.tgz",
+      "integrity": "sha512-/pyBZWSLD2n0dcHE3hq8s8ZvcETHtEuF+3E7XVt0Ig2nvsVQXdghHVcEkIWjy9A0wKfTn97a/PSDYohKIlnP/w==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/@types/ms": {
+      "version": "2.1.0",
+      "resolved": "https://registry.npmjs.org/@types/ms/-/ms-2.1.0.tgz",
+      "integrity": "sha512-GsCCIZDE/p3i96vtEqx+7dBUGXrc7zeSK3wwPHIaRThS+9OhWIXRqzs4d6k1SVU8g91DrNRWxWUGhp5KXQb2VA==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/@types/node": {
+      "version": "20.19.43",
+      "resolved": "https://registry.npmjs.org/@types/node/-/node-20.19.43.tgz",
+      "integrity": "sha512-6oYBAi5ikg4Pl+kGsoYtawUMBT2zZMCvPNF7pVLnHZfd1zf38DRiWn/gT01RYCdUqkv7Fhr+C9ot4/tb+2sVvA==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "undici-types": "~6.21.0"
+      }
+    },
+    "node_modules/@types/pg": {
+      "version": "8.21.0",
+      "resolved": "https://registry.npmjs.org/@types/pg/-/pg-8.21.0.tgz",
+      "integrity": "sha512-AYdtudzabjLZgVgRZmAnU8bAnVUXzuJX2IYHeSIiIHm68olD+LgQYCGWdtcNYnP0uq9c4S4NibVG3Ni7VbKW7Q==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@types/node": "*",
+        "pg-protocol": "*",
+        "pg-types": "^2.2.0"
+      }
+    },
+    "node_modules/@types/psl": {
+      "version": "1.1.3",
+      "resolved": "https://registry.npmjs.org/@types/psl/-/psl-1.1.3.tgz",
+      "integrity": "sha512-Iu174JHfLd7i/XkXY6VDrqSlPvTDQOtQI7wNAXKKOAADJ9TduRLkNdMgjGiMxSttUIZnomv81JAbAbC0DhggxA==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/@types/qs": {
+      "version": "6.15.1",
+      "resolved": "https://registry.npmjs.org/@types/qs/-/qs-6.15.1.tgz",
+      "integrity": "sha512-GZHUBZR9hckSUhrxmp1nG6NwdpM9fCunJwyThLW1X3AyHgd9IlHb6VANpQQqDr2o/qQp6McZ3y/IA2rVzKzSbw==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/@types/range-parser": {
+      "version": "1.2.7",
+      "resolved": "https://registry.npmjs.org/@types/range-parser/-/range-parser-1.2.7.tgz",
+      "integrity": "sha512-hKormJbkJqzQGhziax5PItDUTMAM9uE2XXQmM37dyd4hVM+5aVl7oVxMVUiVQn2oCQFN/LKCZdvSM0pFRqbSmQ==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/@types/send": {
+      "version": "1.2.1",
+      "resolved": "https://registry.npmjs.org/@types/send/-/send-1.2.1.tgz",
+      "integrity": "sha512-arsCikDvlU99zl1g69TcAB3mzZPpxgw0UQnaHeC1Nwb015xp8bknZv5rIfri9xTOcMuaVgvabfIRA7PSZVuZIQ==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@types/node": "*"
+      }
+    },
+    "node_modules/@types/serve-static": {
+      "version": "1.15.10",
+      "resolved": "https://registry.npmjs.org/@types/serve-static/-/serve-static-1.15.10.tgz",
+      "integrity": "sha512-tRs1dB+g8Itk72rlSI2ZrW6vZg0YrLI81iQSTkMmOqnqCaNr/8Ek4VwWcN5vZgCYWbg/JJSGBlUaYGAOP73qBw==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@types/http-errors": "*",
+        "@types/node": "*",
+        "@types/send": "<1"
+      }
+    },
+    "node_modules/@types/serve-static/node_modules/@types/send": {
+      "version": "0.17.6",
+      "resolved": "https://registry.npmjs.org/@types/send/-/send-0.17.6.tgz",
+      "integrity": "sha512-Uqt8rPBE8SY0RK8JB1EzVOIZ32uqy8HwdxCnoCOsYrvnswqmFZ/k+9Ikidlk/ImhsdvBsloHbAlewb2IEBV/Og==",
+      "dev": true,
+      "license": "MIT",
+      "dependencies": {
+        "@types/mime": "^1",
+        "@types/node": "*"
+      }
+    },
+    "node_modules/accepts": {
+      "version": "1.3.8",
+      "resolved": "https://registry.npmjs.org/accepts/-/accepts-1.3.8.tgz",
+      "integrity": "sha512-PYAthTa2m2VKxuvSD3DPC/Gy+U+sOA1LAuT8mkmRuvw+NACSaeXEQ+NHcVF7rONl6qcaxV3Uuemwawk+7+SJLw==",
+      "license": "MIT",
+      "dependencies": {
+        "mime-types": "~2.1.34",
+        "negotiator": "0.6.3"
+      },
+      "engines": {
+        "node": ">= 0.6"
+      }
+    },
+    "node_modules/array-flatten": {
+      "version": "1.1.1",
+      "resolved": "https://registry.npmjs.org/array-flatten/-/array-flatten-1.1.1.tgz",
+      "integrity": "sha512-PCVAQswWemu6UdxsDFFX/+gVeYqKAod3D3UVm91jHwynguOwAvYPhx8nNlM++NqRcK6CxxpUafjmhIdKiHibqg==",
+      "license": "MIT"
+    },
+    "node_modules/body-parser": {
+      "version": "1.20.6",
+      "resolved": "https://registry.npmjs.org/body-parser/-/body-parser-1.20.6.tgz",
+      "integrity": "sha512-p5tAzS57i5MV9fZFDj9LeIiTZEufbSe2eDozP+ElheSUq1m74CRq1jI4mYNDdVs9vQztXFLuk/Gd6BWTdwRJ5g==",
+      "license": "MIT",
+      "dependencies": {
+        "bytes": "~3.1.2",
+        "content-type": "~1.0.5",
+        "debug": "2.6.9",
+        "depd": "2.0.0",
+        "destroy": "~1.2.0",
+        "http-errors": "~2.0.1",
+        "iconv-lite": "~0.4.24",
+        "on-finished": "~2.4.1",
+        "qs": "~6.15.1",
+        "raw-body": "~2.5.3",
+        "type-is": "~1.6.18",
+        "unpipe": "~1.0.0"
+      },
+      "engines": {
+        "node": ">= 0.8",
+        "npm": "1.2.8000 || >= 1.4.16"
+      }
+    },
+    "node_modules/buffer-equal-constant-time": {
+      "version": "1.0.1",
+      "resolved": "https://registry.npmjs.org/buffer-equal-constant-time/-/buffer-equal-constant-time-1.0.1.tgz",
+      "integrity": "sha512-zRpUiDwd/xk6ADqPMATG8vc9VPrkck7T07OIx0gnjmJAnHnTVXNQG3vfvWNuiZIkwu9KrKdA1iJKfsfTVxE6NA==",
+      "license": "BSD-3-Clause"
+    },
+    "node_modules/bytes": {
+      "version": "3.1.2",
+      "resolved": "https://registry.npmjs.org/bytes/-/bytes-3.1.2.tgz",
+      "integrity": "sha512-/Nf7TyzTx6S3yRJObOAV7956r8cr2+Oj8AC5dt8wSP3BQAoeX58NoHyCU8P8zGkNXStjTSi6fzO6F0pBdcYbEg==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.8"
+      }
+    },
+    "node_modules/call-bind-apply-helpers": {
+      "version": "1.0.2",
+      "resolved": "https://registry.npmjs.org/call-bind-apply-helpers/-/call-bind-apply-helpers-1.0.2.tgz",
+      "integrity": "sha512-Sp1ablJ0ivDkSzjcaJdxEunN5/XvksFJ2sMBFfq6x0ryhQV/2b/KwFe21cMpmHtPOSij8K99/wSfoEuTObmuMQ==",
+      "license": "MIT",
+      "dependencies": {
+        "es-errors": "^1.3.0",
+        "function-bind": "^1.1.2"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/call-bound": {
+      "version": "1.0.4",
+      "resolved": "https://registry.npmjs.org/call-bound/-/call-bound-1.0.4.tgz",
+      "integrity": "sha512-+ys997U96po4Kx/ABpBCqhA9EuxJaQWDQg7295H4hBphv3IZg0boBKuwYpt4YXp6MZ5AmZQnU/tyMTlRpaSejg==",
+      "license": "MIT",
+      "dependencies": {
+        "call-bind-apply-helpers": "^1.0.2",
+        "get-intrinsic": "^1.3.0"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/content-disposition": {
+      "version": "0.5.4",
+      "resolved": "https://registry.npmjs.org/content-disposition/-/content-disposition-0.5.4.tgz",
+      "integrity": "sha512-FveZTNuGw04cxlAiWbzi6zTAL/lhehaWbTtgluJh4/E95DqMwTmha3KZN1aAWA8cFIhHzMZUvLevkw5Rqk+tSQ==",
+      "license": "MIT",
+      "dependencies": {
+        "safe-buffer": "5.2.1"
+      },
+      "engines": {
+        "node": ">= 0.6"
+      }
+    },
+    "node_modules/content-type": {
+      "version": "1.0.5",
+      "resolved": "https://registry.npmjs.org/content-type/-/content-type-1.0.5.tgz",
+      "integrity": "sha512-nTjqfcBFEipKdXCv4YDQWCfmcLZKm81ldF0pAopTvyrFGVbcR6P/VAAd5G7N+0tTr8QqiU0tFadD6FK4NtJwOA==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.6"
+      }
+    },
+    "node_modules/cookie": {
+      "version": "0.7.2",
+      "resolved": "https://registry.npmjs.org/cookie/-/cookie-0.7.2.tgz",
+      "integrity": "sha512-yki5XnKuf750l50uGTllt6kKILY4nQ1eNIQatoXEByZ5dWgnKqbnqmTrBE5B4N7lrMJKQ2ytWMiTO2o0v6Ew/w==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.6"
+      }
+    },
+    "node_modules/cookie-signature": {
+      "version": "1.0.7",
+      "resolved": "https://registry.npmjs.org/cookie-signature/-/cookie-signature-1.0.7.tgz",
+      "integrity": "sha512-NXdYc3dLr47pBkpUCHtKSwIOQXLVn8dZEuywboCOJY/osA0wFSLlSawr3KN8qXJEyX66FcONTH8EIlVuK0yyFA==",
+      "license": "MIT"
+    },
+    "node_modules/debug": {
+      "version": "2.6.9",
+      "resolved": "https://registry.npmjs.org/debug/-/debug-2.6.9.tgz",
+      "integrity": "sha512-bC7ElrdJaJnPbAP+1EotYvqZsb3ecl5wi6Bfi6BJTUcNowp6cvspg0jXznRTKDjm/E7AdgFBVeAPVMNcKGsHMA==",
+      "license": "MIT",
+      "dependencies": {
+        "ms": "2.0.0"
+      }
+    },
+    "node_modules/depd": {
+      "version": "2.0.0",
+      "resolved": "https://registry.npmjs.org/depd/-/depd-2.0.0.tgz",
+      "integrity": "sha512-g7nH6P6dyDioJogAAGprGpCtVImJhpPk/roCzdb3fIh61/s/nPsfR6onyMwkCAR/OlC3yBC0lESvUoQEAssIrw==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.8"
+      }
+    },
+    "node_modules/destroy": {
+      "version": "1.2.0",
+      "resolved": "https://registry.npmjs.org/destroy/-/destroy-1.2.0.tgz",
+      "integrity": "sha512-2sJGJTaXIIaR1w4iJSNoN0hnMY7Gpc/n8D4qSCJw8QqFWXf7cuAgnEHxBpweaVcPevC2l3KpjYCx3NypQQgaJg==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.8",
+        "npm": "1.2.8000 || >= 1.4.16"
+      }
+    },
+    "node_modules/dunder-proto": {
+      "version": "1.0.1",
+      "resolved": "https://registry.npmjs.org/dunder-proto/-/dunder-proto-1.0.1.tgz",
+      "integrity": "sha512-KIN/nDJBQRcXw0MLVhZE9iQHmG68qAVIBg9CqmUYjmQIhgij9U5MFvrqkUL5FbtyyzZuOeOt0zdeRe4UY7ct+A==",
+      "license": "MIT",
+      "dependencies": {
+        "call-bind-apply-helpers": "^1.0.1",
+        "es-errors": "^1.3.0",
+        "gopd": "^1.2.0"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/ecdsa-sig-formatter": {
+      "version": "1.0.11",
+      "resolved": "https://registry.npmjs.org/ecdsa-sig-formatter/-/ecdsa-sig-formatter-1.0.11.tgz",
+      "integrity": "sha512-nagl3RYrbNv6kQkeJIpt6NJZy8twLB/2vtz6yN9Z4vRKHN4/QZJIEbqohALSgwKdnksuY3k5Addp5lg8sVoVcQ==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "safe-buffer": "^5.0.1"
+      }
+    },
+    "node_modules/ee-first": {
+      "version": "1.1.1",
+      "resolved": "https://registry.npmjs.org/ee-first/-/ee-first-1.1.1.tgz",
+      "integrity": "sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow==",
+      "license": "MIT"
+    },
+    "node_modules/encodeurl": {
+      "version": "2.0.0",
+      "resolved": "https://registry.npmjs.org/encodeurl/-/encodeurl-2.0.0.tgz",
+      "integrity": "sha512-Q0n9HRi4m6JuGIV1eFlmvJB7ZEVxu93IrMyiMsGC0lrMJMWzRgx6WGquyfQgZVb31vhGgXnfmPNNXmxnOkRBrg==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.8"
+      }
+    },
+    "node_modules/engine.io-client": {
+      "version": "6.6.6",
+      "resolved": "https://registry.npmjs.org/engine.io-client/-/engine.io-client-6.6.6.tgz",
+      "integrity": "sha512-iY6QdftLQ9pyiPoX082bpf/u1UewnOaJrtJIF9T0++QB34lZrj0uP+Q/bj8AlUsAxqhnkTV2BS8SBZSxOmoV5Q==",
+      "license": "MIT",
+      "dependencies": {
+        "@socket.io/component-emitter": "~3.1.0",
+        "debug": "~4.4.1",
+        "engine.io-parser": "~5.2.1",
+        "ws": "~8.21.0",
+        "xmlhttprequest-ssl": "~2.1.1"
+      }
+    },
+    "node_modules/engine.io-client/node_modules/debug": {
+      "version": "4.4.3",
+      "resolved": "https://registry.npmjs.org/debug/-/debug-4.4.3.tgz",
+      "integrity": "sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==",
+      "license": "MIT",
+      "dependencies": {
+        "ms": "^2.1.3"
+      },
+      "engines": {
+        "node": ">=6.0"
+      },
+      "peerDependenciesMeta": {
+        "supports-color": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/engine.io-client/node_modules/ms": {
+      "version": "2.1.3",
+      "resolved": "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz",
+      "integrity": "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==",
+      "license": "MIT"
+    },
+    "node_modules/engine.io-parser": {
+      "version": "5.2.3",
+      "resolved": "https://registry.npmjs.org/engine.io-parser/-/engine.io-parser-5.2.3.tgz",
+      "integrity": "sha512-HqD3yTBfnBxIrbnM1DoD6Pcq8NECnh8d4As1Qgh0z5Gg3jRRIqijury0CL3ghu/edArpUYiYqQiDUQBIs4np3Q==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=10.0.0"
+      }
+    },
+    "node_modules/es-define-property": {
+      "version": "1.0.1",
+      "resolved": "https://registry.npmjs.org/es-define-property/-/es-define-property-1.0.1.tgz",
+      "integrity": "sha512-e3nRfgfUZ4rNGL232gUgX06QNyyez04KdjFrF+LTRoOXmrOgFKDg4BCdsjW8EnT69eqdYGmRpJwiPVYNrCaW3g==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/es-errors": {
+      "version": "1.3.0",
+      "resolved": "https://registry.npmjs.org/es-errors/-/es-errors-1.3.0.tgz",
+      "integrity": "sha512-Zf5H2Kxt2xjTvbJvP2ZWLEICxA6j+hAmMzIlypy4xcBg1vKVnx89Wy0GbS+kf5cwCVFFzdCFh2XSCFNULS6csw==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/es-object-atoms": {
+      "version": "1.1.2",
+      "resolved": "https://registry.npmjs.org/es-object-atoms/-/es-object-atoms-1.1.2.tgz",
+      "integrity": "sha512-HWcBoN6NileqtSydK2FqHbS/LoDd2pqrnQHLyJzBj4kOp/ky2MWMN694xOfkK8/SnUsW2DH7EfyVlydKCsm1Zw==",
+      "license": "MIT",
+      "dependencies": {
+        "es-errors": "^1.3.0"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/escape-html": {
+      "version": "1.0.3",
+      "resolved": "https://registry.npmjs.org/escape-html/-/escape-html-1.0.3.tgz",
+      "integrity": "sha512-NiSupZ4OeuGwr68lGIeym/ksIZMJodUGOSCZ/FSnTxcrekbvqrgdUxlJOMpijaKZVjAJrWrGs/6Jy8OMuyj9ow==",
+      "license": "MIT"
+    },
+    "node_modules/etag": {
+      "version": "1.8.1",
+      "resolved": "https://registry.npmjs.org/etag/-/etag-1.8.1.tgz",
+      "integrity": "sha512-aIL5Fx7mawVa300al2BnEE4iNvo1qETxLrPI/o05L7z6go7fCw1J6EQmbK4FmJ2AS7kgVF/KEZWufBfdClMcPg==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.6"
+      }
+    },
+    "node_modules/express": {
+      "version": "4.22.2",
+      "resolved": "https://registry.npmjs.org/express/-/express-4.22.2.tgz",
+      "integrity": "sha512-IuL+Elrou2ZvCFHs18/CIzy2Nzvo25nZ1/D2eIZlz7c+QUayAcYoiM2BthCjs+EBHVpjYjcuLDAiCWgeIX3X1Q==",
+      "license": "MIT",
+      "dependencies": {
+        "accepts": "~1.3.8",
+        "array-flatten": "1.1.1",
+        "body-parser": "~1.20.5",
+        "content-disposition": "~0.5.4",
+        "content-type": "~1.0.4",
+        "cookie": "~0.7.1",
+        "cookie-signature": "~1.0.6",
+        "debug": "2.6.9",
+        "depd": "2.0.0",
+        "encodeurl": "~2.0.0",
+        "escape-html": "~1.0.3",
+        "etag": "~1.8.1",
+        "finalhandler": "~1.3.1",
+        "fresh": "~0.5.2",
+        "http-errors": "~2.0.0",
+        "merge-descriptors": "1.0.3",
+        "methods": "~1.1.2",
+        "on-finished": "~2.4.1",
+        "parseurl": "~1.3.3",
+        "path-to-regexp": "~0.1.12",
+        "proxy-addr": "~2.0.7",
+        "qs": "~6.15.1",
+        "range-parser": "~1.2.1",
+        "safe-buffer": "5.2.1",
+        "send": "~0.19.0",
+        "serve-static": "~1.16.2",
+        "setprototypeof": "1.2.0",
+        "statuses": "~2.0.1",
+        "type-is": "~1.6.18",
+        "utils-merge": "1.0.1",
+        "vary": "~1.1.2"
+      },
+      "engines": {
+        "node": ">= 0.10.0"
+      },
+      "funding": {
+        "type": "opencollective",
+        "url": "https://opencollective.com/express"
+      }
+    },
+    "node_modules/express-rate-limit": {
+      "version": "8.6.2",
+      "resolved": "https://registry.npmjs.org/express-rate-limit/-/express-rate-limit-8.6.2.tgz",
+      "integrity": "sha512-YH4ru+eOJxQABscKFfRCy9R7x9QFGdezclVMwwgFFndzS2Xnm0uo6B0ABZsLhcpeptGv2qvuJVWlQr9gQZoC3A==",
+      "license": "MIT",
+      "dependencies": {
+        "debug": "^4.4.3",
+        "ip-address": "^10.2.0"
+      },
+      "engines": {
+        "node": ">= 16"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/express-rate-limit"
+      },
+      "peerDependencies": {
+        "express": ">= 4.11"
+      }
+    },
+    "node_modules/express-rate-limit/node_modules/debug": {
+      "version": "4.4.3",
+      "resolved": "https://registry.npmjs.org/debug/-/debug-4.4.3.tgz",
+      "integrity": "sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==",
+      "license": "MIT",
+      "dependencies": {
+        "ms": "^2.1.3"
+      },
+      "engines": {
+        "node": ">=6.0"
+      },
+      "peerDependenciesMeta": {
+        "supports-color": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/express-rate-limit/node_modules/ms": {
+      "version": "2.1.3",
+      "resolved": "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz",
+      "integrity": "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==",
+      "license": "MIT"
+    },
+    "node_modules/finalhandler": {
+      "version": "1.3.2",
+      "resolved": "https://registry.npmjs.org/finalhandler/-/finalhandler-1.3.2.tgz",
+      "integrity": "sha512-aA4RyPcd3badbdABGDuTXCMTtOneUCAYH/gxoYRTZlIJdF0YPWuGqiAsIrhNnnqdXGswYk6dGujem4w80UJFhg==",
+      "license": "MIT",
+      "dependencies": {
+        "debug": "2.6.9",
+        "encodeurl": "~2.0.0",
+        "escape-html": "~1.0.3",
+        "on-finished": "~2.4.1",
+        "parseurl": "~1.3.3",
+        "statuses": "~2.0.2",
+        "unpipe": "~1.0.0"
+      },
+      "engines": {
+        "node": ">= 0.8"
+      }
+    },
+    "node_modules/forwarded": {
+      "version": "0.2.0",
+      "resolved": "https://registry.npmjs.org/forwarded/-/forwarded-0.2.0.tgz",
+      "integrity": "sha512-buRG0fpBtRHSTCOASe6hD258tEubFoRLb4ZNA6NxMVHNw2gOcwHo9wyablzMzOA5z9xA9L1KNjk/Nt6MT9aYow==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.6"
+      }
+    },
+    "node_modules/fresh": {
+      "version": "0.5.2",
+      "resolved": "https://registry.npmjs.org/fresh/-/fresh-0.5.2.tgz",
+      "integrity": "sha512-zJ2mQYM18rEFOudeV4GShTGIQ7RbzA7ozbU9I/XBpm7kqgMywgmylMwXHxZJmkVoYkna9d2pVXVXPdYTP9ej8Q==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.6"
+      }
+    },
+    "node_modules/function-bind": {
+      "version": "1.1.2",
+      "resolved": "https://registry.npmjs.org/function-bind/-/function-bind-1.1.2.tgz",
+      "integrity": "sha512-7XHNxH7qX9xG5mIwxkhumTox/MIRNcOgDrxWsMt2pAr23WHp6MrRlN7FBSFpCpr+oVO0F744iUgR82nJMfG2SA==",
+      "license": "MIT",
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/get-intrinsic": {
+      "version": "1.3.0",
+      "resolved": "https://registry.npmjs.org/get-intrinsic/-/get-intrinsic-1.3.0.tgz",
+      "integrity": "sha512-9fSjSaos/fRIVIp+xSJlE6lfwhES7LNtKaCBIamHsjr2na1BiABJPo0mOjjz8GJDURarmCPGqaiVg5mfjb98CQ==",
+      "license": "MIT",
+      "dependencies": {
+        "call-bind-apply-helpers": "^1.0.2",
+        "es-define-property": "^1.0.1",
+        "es-errors": "^1.3.0",
+        "es-object-atoms": "^1.1.1",
+        "function-bind": "^1.1.2",
+        "get-proto": "^1.0.1",
+        "gopd": "^1.2.0",
+        "has-symbols": "^1.1.0",
+        "hasown": "^2.0.2",
+        "math-intrinsics": "^1.1.0"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/get-proto": {
+      "version": "1.0.1",
+      "resolved": "https://registry.npmjs.org/get-proto/-/get-proto-1.0.1.tgz",
+      "integrity": "sha512-sTSfBjoXBp89JvIKIefqw7U2CCebsc74kiY6awiGogKtoSGbgjYE/G/+l9sF3MWFPNc9IcoOC4ODfKHfxFmp0g==",
+      "license": "MIT",
+      "dependencies": {
+        "dunder-proto": "^1.0.1",
+        "es-object-atoms": "^1.0.0"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/gopd": {
+      "version": "1.2.0",
+      "resolved": "https://registry.npmjs.org/gopd/-/gopd-1.2.0.tgz",
+      "integrity": "sha512-ZUKRh6/kUFoAiTAtTYPZJ3hw9wNxx+BIBOijnlG9PnrJsCcSjs1wyyD6vJpaYtgnzDrKYRSqf3OO6Rfa93xsRg==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.4"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/has-symbols": {
+      "version": "1.1.0",
+      "resolved": "https://registry.npmjs.org/has-symbols/-/has-symbols-1.1.0.tgz",
+      "integrity": "sha512-1cDNdwJ2Jaohmb3sg4OmKaMBwuC48sYni5HUw2DvsC8LjGTLK9h+eb1X6RyuOHe4hT0ULCW68iomhjUoKUqlPQ==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.4"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/hasown": {
+      "version": "2.0.4",
+      "resolved": "https://registry.npmjs.org/hasown/-/hasown-2.0.4.tgz",
+      "integrity": "sha512-T2UbfbBEF32wiepXIsMlTW9+dDYC6wMh/t/vYA4tuOMKqWz/n3vr1NFSxQiyP+zk2mXsoMA/i/7qV6LKut1t1A==",
+      "license": "MIT",
+      "dependencies": {
+        "function-bind": "^1.1.2"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/http-errors": {
+      "version": "2.0.1",
+      "resolved": "https://registry.npmjs.org/http-errors/-/http-errors-2.0.1.tgz",
+      "integrity": "sha512-4FbRdAX+bSdmo4AUFuS0WNiPz8NgFt+r8ThgNWmlrjQjt1Q7ZR9+zTlce2859x4KSXrwIsaeTqDoKQmtP8pLmQ==",
+      "license": "MIT",
+      "dependencies": {
+        "depd": "~2.0.0",
+        "inherits": "~2.0.4",
+        "setprototypeof": "~1.2.0",
+        "statuses": "~2.0.2",
+        "toidentifier": "~1.0.1"
+      },
+      "engines": {
+        "node": ">= 0.8"
+      },
+      "funding": {
+        "type": "opencollective",
+        "url": "https://opencollective.com/express"
+      }
+    },
+    "node_modules/iconv-lite": {
+      "version": "0.4.24",
+      "resolved": "https://registry.npmjs.org/iconv-lite/-/iconv-lite-0.4.24.tgz",
+      "integrity": "sha512-v3MXnZAcvnywkTUEZomIActle7RXXeedOR31wwl7VlyoXO4Qi9arvSenNQWne1TcRwhCL1HwLI21bEqdpj8/rA==",
+      "license": "MIT",
+      "dependencies": {
+        "safer-buffer": ">= 2.1.2 < 3"
+      },
+      "engines": {
+        "node": ">=0.10.0"
+      }
+    },
+    "node_modules/inherits": {
+      "version": "2.0.4",
+      "resolved": "https://registry.npmjs.org/inherits/-/inherits-2.0.4.tgz",
+      "integrity": "sha512-k/vGaX4/Yla3WzyMCvTQOXYeIHvqOKtnqBduzTHpzpQZzAskKMhZ2K+EnBiSM9zGSoIFeMpXKxa4dYeZIQqewQ==",
+      "license": "ISC"
+    },
+    "node_modules/ip-address": {
+      "version": "10.4.0",
+      "resolved": "https://registry.npmjs.org/ip-address/-/ip-address-10.4.0.tgz",
+      "integrity": "sha512-oSK96Grm3aP6OrS263xVxbNDGVL7rzBtYdpGqlDG8iQdoenDoTs/nkki+DflYbAEE8Xl6o5YxhxlrKvI3nqKXQ==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 12"
+      }
+    },
+    "node_modules/ipaddr.js": {
+      "version": "1.9.1",
+      "resolved": "https://registry.npmjs.org/ipaddr.js/-/ipaddr.js-1.9.1.tgz",
+      "integrity": "sha512-0KI/607xoxSToH7GjN1FfSbLoU0+btTicjsQSWQlh/hZykN8KpmMf7uYwPW3R+akZ6R/w18ZlXSHBYXiYUPO3g==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.10"
+      }
+    },
+    "node_modules/jsonwebtoken": {
+      "version": "9.0.3",
+      "resolved": "https://registry.npmjs.org/jsonwebtoken/-/jsonwebtoken-9.0.3.tgz",
+      "integrity": "sha512-MT/xP0CrubFRNLNKvxJ2BYfy53Zkm++5bX9dtuPbqAeQpTVe0MQTFhao8+Cp//EmJp244xt6Drw/GVEGCUj40g==",
+      "license": "MIT",
+      "dependencies": {
+        "jws": "^4.0.1",
+        "lodash.includes": "^4.3.0",
+        "lodash.isboolean": "^3.0.3",
+        "lodash.isinteger": "^4.0.4",
+        "lodash.isnumber": "^3.0.3",
+        "lodash.isplainobject": "^4.0.6",
+        "lodash.isstring": "^4.0.1",
+        "lodash.once": "^4.0.0",
+        "ms": "^2.1.1",
+        "semver": "^7.5.4"
+      },
+      "engines": {
+        "node": ">=12",
+        "npm": ">=6"
+      }
+    },
+    "node_modules/jsonwebtoken/node_modules/ms": {
+      "version": "2.1.3",
+      "resolved": "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz",
+      "integrity": "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==",
+      "license": "MIT"
+    },
+    "node_modules/jwa": {
+      "version": "2.0.1",
+      "resolved": "https://registry.npmjs.org/jwa/-/jwa-2.0.1.tgz",
+      "integrity": "sha512-hRF04fqJIP8Abbkq5NKGN0Bbr3JxlQ+qhZufXVr0DvujKy93ZCbXZMHDL4EOtodSbCWxOqR8MS1tXA5hwqCXDg==",
+      "license": "MIT",
+      "dependencies": {
+        "buffer-equal-constant-time": "^1.0.1",
+        "ecdsa-sig-formatter": "1.0.11",
+        "safe-buffer": "^5.0.1"
+      }
+    },
+    "node_modules/jws": {
+      "version": "4.0.1",
+      "resolved": "https://registry.npmjs.org/jws/-/jws-4.0.1.tgz",
+      "integrity": "sha512-EKI/M/yqPncGUUh44xz0PxSidXFr/+r0pA70+gIYhjv+et7yxM+s29Y+VGDkovRofQem0fs7Uvf4+YmAdyRduA==",
+      "license": "MIT",
+      "dependencies": {
+        "jwa": "^2.0.1",
+        "safe-buffer": "^5.0.1"
+      }
+    },
+    "node_modules/lodash.includes": {
+      "version": "4.3.0",
+      "resolved": "https://registry.npmjs.org/lodash.includes/-/lodash.includes-4.3.0.tgz",
+      "integrity": "sha512-W3Bx6mdkRTGtlJISOvVD/lbqjTlPPUDTMnlXZFnVwi9NKJ6tiAk6LVdlhZMm17VZisqhKcgzpO5Wz91PCt5b0w==",
+      "license": "MIT"
+    },
+    "node_modules/lodash.isboolean": {
+      "version": "3.0.3",
+      "resolved": "https://registry.npmjs.org/lodash.isboolean/-/lodash.isboolean-3.0.3.tgz",
+      "integrity": "sha512-Bz5mupy2SVbPHURB98VAcw+aHh4vRV5IPNhILUCsOzRmsTmSQ17jIuqopAentWoehktxGd9e/hbIXq980/1QJg==",
+      "license": "MIT"
+    },
+    "node_modules/lodash.isinteger": {
+      "version": "4.0.4",
+      "resolved": "https://registry.npmjs.org/lodash.isinteger/-/lodash.isinteger-4.0.4.tgz",
+      "integrity": "sha512-DBwtEWN2caHQ9/imiNeEA5ys1JoRtRfY3d7V9wkqtbycnAmTvRRmbHKDV4a0EYc678/dia0jrte4tjYwVBaZUA==",
+      "license": "MIT"
+    },
+    "node_modules/lodash.isnumber": {
+      "version": "3.0.3",
+      "resolved": "https://registry.npmjs.org/lodash.isnumber/-/lodash.isnumber-3.0.3.tgz",
+      "integrity": "sha512-QYqzpfwO3/CWf3XP+Z+tkQsfaLL/EnUlXWVkIk5FUPc4sBdTehEqZONuyRt2P67PXAk+NXmTBcc97zw9t1FQrw==",
+      "license": "MIT"
+    },
+    "node_modules/lodash.isplainobject": {
+      "version": "4.0.6",
+      "resolved": "https://registry.npmjs.org/lodash.isplainobject/-/lodash.isplainobject-4.0.6.tgz",
+      "integrity": "sha512-oSXzaWypCMHkPC3NvBEaPHf0KsA5mvPrOPgQWDsbg8n7orZ290M0BmC/jgRZ4vcJ6DTAhjrsSYgdsW/F+MFOBA==",
+      "license": "MIT"
+    },
+    "node_modules/lodash.isstring": {
+      "version": "4.0.1",
+      "resolved": "https://registry.npmjs.org/lodash.isstring/-/lodash.isstring-4.0.1.tgz",
+      "integrity": "sha512-0wJxfxH1wgO3GrbuP+dTTk7op+6L41QCXbGINEmD+ny/G/eCqGzxyCsh7159S+mgDDcoarnBw6PC1PS5+wUGgw==",
+      "license": "MIT"
+    },
+    "node_modules/lodash.once": {
+      "version": "4.1.1",
+      "resolved": "https://registry.npmjs.org/lodash.once/-/lodash.once-4.1.1.tgz",
+      "integrity": "sha512-Sb487aTOCr9drQVL8pIxOzVhafOjZN9UU54hiN8PU3uAiSV7lx1yYNpbNmex2PK6dSJoNTSJUUswT651yww3Mg==",
+      "license": "MIT"
+    },
+    "node_modules/math-intrinsics": {
+      "version": "1.1.0",
+      "resolved": "https://registry.npmjs.org/math-intrinsics/-/math-intrinsics-1.1.0.tgz",
+      "integrity": "sha512-/IXtbwEk5HTPyEwyKX6hGkYXxM9nbj64B+ilVJnC/R6B0pH5G4V3b0pVbL7DBj4tkhBAppbQUlf6F6Xl9LHu1g==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.4"
+      }
+    },
+    "node_modules/media-typer": {
+      "version": "0.3.0",
+      "resolved": "https://registry.npmjs.org/media-typer/-/media-typer-0.3.0.tgz",
+      "integrity": "sha512-dq+qelQ9akHpcOl/gUVRTxVIOkAJ1wR3QAvb4RsVjS8oVoFjDGTc679wJYmUmknUF5HwMLOgb5O+a3KxfWapPQ==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.6"
+      }
+    },
+    "node_modules/merge-descriptors": {
+      "version": "1.0.3",
+      "resolved": "https://registry.npmjs.org/merge-descriptors/-/merge-descriptors-1.0.3.tgz",
+      "integrity": "sha512-gaNvAS7TZ897/rVaZ0nMtAyxNyi/pdbjbAwUpFQpN70GqnVfOiXpeUUMKRBmzXaSQ8DdTX4/0ms62r2K+hE6mQ==",
+      "license": "MIT",
+      "funding": {
+        "url": "https://github.com/sponsors/sindresorhus"
+      }
+    },
+    "node_modules/methods": {
+      "version": "1.1.2",
+      "resolved": "https://registry.npmjs.org/methods/-/methods-1.1.2.tgz",
+      "integrity": "sha512-iclAHeNqNm68zFtnZ0e+1L2yUIdvzNoauKU4WBA3VvH/vPFieF7qfRlwUZU+DA9P9bPXIS90ulxoUoCH23sV2w==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.6"
+      }
+    },
+    "node_modules/mime": {
+      "version": "1.6.0",
+      "resolved": "https://registry.npmjs.org/mime/-/mime-1.6.0.tgz",
+      "integrity": "sha512-x0Vn8spI+wuJ1O6S7gnbaQg8Pxh4NNHb7KSINmEWKiPE4RKOplvijn+NkmYmmRgP68mc70j2EbeTFRsrswaQeg==",
+      "license": "MIT",
+      "bin": {
+        "mime": "cli.js"
+      },
+      "engines": {
+        "node": ">=4"
+      }
+    },
+    "node_modules/mime-db": {
+      "version": "1.52.0",
+      "resolved": "https://registry.npmjs.org/mime-db/-/mime-db-1.52.0.tgz",
+      "integrity": "sha512-sPU4uV7dYlvtWJxwwxHD0PuihVNiE7TyAbQ5SWxDCB9mUYvOgroQOwYQQOKPJ8CIbE+1ETVlOoK1UC2nU3gYvg==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.6"
+      }
+    },
+    "node_modules/mime-types": {
+      "version": "2.1.35",
+      "resolved": "https://registry.npmjs.org/mime-types/-/mime-types-2.1.35.tgz",
+      "integrity": "sha512-ZDY+bPm5zTTF+YpCrAU9nK0UgICYPT0QtT1NZWFv4s++TNkcgVaT0g6+4R2uI4MjQjzysHB1zxuWL50hzaeXiw==",
+      "license": "MIT",
+      "dependencies": {
+        "mime-db": "1.52.0"
+      },
+      "engines": {
+        "node": ">= 0.6"
+      }
+    },
+    "node_modules/ms": {
+      "version": "2.0.0",
+      "resolved": "https://registry.npmjs.org/ms/-/ms-2.0.0.tgz",
+      "integrity": "sha512-Tpp60P6IUJDTuOq/5Z8cdskzJujfwqfOTkrwIwj7IRISpnkJnT6SyJ4PCPnGMoFjC9ddhal5KVIYtAt97ix05A==",
+      "license": "MIT"
+    },
+    "node_modules/negotiator": {
+      "version": "0.6.3",
+      "resolved": "https://registry.npmjs.org/negotiator/-/negotiator-0.6.3.tgz",
+      "integrity": "sha512-+EUsqGPLsM+j/zdChZjsnX51g4XrHFOIXwfnCVPGlQk/k5giakcKsuxCObBRu6DSm9opw/O6slWbJdghQM4bBg==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.6"
+      }
+    },
+    "node_modules/object-inspect": {
+      "version": "1.13.4",
+      "resolved": "https://registry.npmjs.org/object-inspect/-/object-inspect-1.13.4.tgz",
+      "integrity": "sha512-W67iLl4J2EXEGTbfeHCffrjDfitvLANg0UlX3wFUUSTx92KXRFegMHUVgSqE+wvhAbi4WqjGg9czysTV2Epbew==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.4"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/on-finished": {
+      "version": "2.4.1",
+      "resolved": "https://registry.npmjs.org/on-finished/-/on-finished-2.4.1.tgz",
+      "integrity": "sha512-oVlzkg3ENAhCk2zdv7IJwd/QUD4z2RxRwpkcGY8psCVcCYZNq4wYnVWALHM+brtuJjePWiYF/ClmuDr8Ch5+kg==",
+      "license": "MIT",
+      "dependencies": {
+        "ee-first": "1.1.1"
+      },
+      "engines": {
+        "node": ">= 0.8"
+      }
+    },
+    "node_modules/parseurl": {
+      "version": "1.3.3",
+      "resolved": "https://registry.npmjs.org/parseurl/-/parseurl-1.3.3.tgz",
+      "integrity": "sha512-CiyeOxFT/JZyN5m0z9PfXw4SCBJ6Sygz1Dpl0wqjlhDEGGBP1GnsUVEL0p63hoG1fcj3fHynXi9NYO4nWOL+qQ==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.8"
+      }
+    },
+    "node_modules/path-to-regexp": {
+      "version": "0.1.13",
+      "resolved": "https://registry.npmjs.org/path-to-regexp/-/path-to-regexp-0.1.13.tgz",
+      "integrity": "sha512-A/AGNMFN3c8bOlvV9RreMdrv7jsmF9XIfDeCd87+I8RNg6s78BhJxMu69NEMHBSJFxKidViTEdruRwEk/WIKqA==",
+      "license": "MIT"
+    },
+    "node_modules/pg": {
+      "version": "8.23.0",
+      "resolved": "https://registry.npmjs.org/pg/-/pg-8.23.0.tgz",
+      "integrity": "sha512-Ip2EQCngowJLGOfCwkFhPXU7/ljlhn6Rxlmy4XYfL2Y+vyRM59+8uR2xqRWKdYmbXmxCFOAmKxBuSUCdF34qLg==",
+      "license": "MIT",
+      "dependencies": {
+        "pg-connection-string": "^2.14.0",
+        "pg-pool": "^3.14.0",
+        "pg-protocol": "^1.16.0",
+        "pg-types": "2.2.0",
+        "pgpass": "1.0.5"
+      },
+      "engines": {
+        "node": ">= 16.0.0"
+      },
+      "optionalDependencies": {
+        "pg-cloudflare": "^1.4.0"
+      },
+      "peerDependencies": {
+        "pg-native": ">=3.0.1"
+      },
+      "peerDependenciesMeta": {
+        "pg-native": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/pg-cloudflare": {
+      "version": "1.4.0",
+      "resolved": "https://registry.npmjs.org/pg-cloudflare/-/pg-cloudflare-1.4.0.tgz",
+      "integrity": "sha512-Vo7z/6rrQYxpNRylp4Tlob2elzbh+N/MOQbxFVWCxS7oEx6jF53GTJFxK2WWpKuBRkmiin4Mt+xofFDjx09R0A==",
+      "license": "MIT",
+      "optional": true
+    },
+    "node_modules/pg-connection-string": {
+      "version": "2.14.0",
+      "resolved": "https://registry.npmjs.org/pg-connection-string/-/pg-connection-string-2.14.0.tgz",
+      "integrity": "sha512-XwWDGcLRGCXAR8F/AM5bG7Q+A3Wm2s6QeEjlOKZLlH3UYcguiqCWKyWXVag5TLTIjR7oOJUY8kcADaZgWPyLeg==",
+      "license": "MIT"
+    },
+    "node_modules/pg-format": {
+      "version": "1.0.4",
+      "resolved": "https://registry.npmjs.org/pg-format/-/pg-format-1.0.4.tgz",
+      "integrity": "sha512-YyKEF78pEA6wwTAqOUaHIN/rWpfzzIuMh9KdAhc3rSLQ/7zkRFcCgYBAEGatDstLyZw4g0s9SNICmaTGnBVeyw==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=4.0"
+      }
+    },
+    "node_modules/pg-int8": {
+      "version": "1.0.1",
+      "resolved": "https://registry.npmjs.org/pg-int8/-/pg-int8-1.0.1.tgz",
+      "integrity": "sha512-WCtabS6t3c8SkpDBUlb1kjOs7l66xsGdKpIPZsg4wR+B3+u9UAum2odSsF9tnvxg80h4ZxLWMy4pRjOsFIqQpw==",
+      "license": "ISC",
+      "engines": {
+        "node": ">=4.0.0"
+      }
+    },
+    "node_modules/pg-pool": {
+      "version": "3.14.0",
+      "resolved": "https://registry.npmjs.org/pg-pool/-/pg-pool-3.14.0.tgz",
+      "integrity": "sha512-gKtPkFdQPU3DksooVLi9LsjZxrsBUZIpa+7aVx+LV5pNh0KzP4Zleud2po+ConrxbuXGBJ6Hfer6hdgpIBpBaw==",
+      "license": "MIT",
+      "peerDependencies": {
+        "pg": ">=8.0"
+      }
+    },
+    "node_modules/pg-protocol": {
+      "version": "1.16.0",
+      "resolved": "https://registry.npmjs.org/pg-protocol/-/pg-protocol-1.16.0.tgz",
+      "integrity": "sha512-sILXutLVjCLjcDuOmvhX5e2Z4cS5qG/6Bu3VkpFwdf/633ElGLpEh9bgmuI5I4sqKqkifQiGyiCcx1HdtrK7tg==",
+      "license": "MIT"
+    },
+    "node_modules/pg-types": {
+      "version": "2.2.0",
+      "resolved": "https://registry.npmjs.org/pg-types/-/pg-types-2.2.0.tgz",
+      "integrity": "sha512-qTAAlrEsl8s4OiEQY69wDvcMIdQN6wdz5ojQiOy6YRMuynxenON0O5oCpJI6lshc6scgAY8qvJ2On/p+CXY0GA==",
+      "license": "MIT",
+      "dependencies": {
+        "pg-int8": "1.0.1",
+        "postgres-array": "~2.0.0",
+        "postgres-bytea": "~1.0.0",
+        "postgres-date": "~1.0.4",
+        "postgres-interval": "^1.1.0"
+      },
+      "engines": {
+        "node": ">=4"
+      }
+    },
+    "node_modules/pgpass": {
+      "version": "1.0.5",
+      "resolved": "https://registry.npmjs.org/pgpass/-/pgpass-1.0.5.tgz",
+      "integrity": "sha512-FdW9r/jQZhSeohs1Z3sI1yxFQNFvMcnmfuj4WBMUTxOrAyLMaTcE1aAMBiTlbMNaXvBCQuVi0R7hd8udDSP7ug==",
+      "license": "MIT",
+      "dependencies": {
+        "split2": "^4.1.0"
+      }
+    },
+    "node_modules/postgres-array": {
+      "version": "2.0.0",
+      "resolved": "https://registry.npmjs.org/postgres-array/-/postgres-array-2.0.0.tgz",
+      "integrity": "sha512-VpZrUqU5A69eQyW2c5CA1jtLecCsN2U/bD6VilrFDWq5+5UIEVO7nazS3TEcHf1zuPYO/sqGvUvW62g86RXZuA==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=4"
+      }
+    },
+    "node_modules/postgres-bytea": {
+      "version": "1.0.1",
+      "resolved": "https://registry.npmjs.org/postgres-bytea/-/postgres-bytea-1.0.1.tgz",
+      "integrity": "sha512-5+5HqXnsZPE65IJZSMkZtURARZelel2oXUEO8rH83VS/hxH5vv1uHquPg5wZs8yMAfdv971IU+kcPUczi7NVBQ==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=0.10.0"
+      }
+    },
+    "node_modules/postgres-date": {
+      "version": "1.0.7",
+      "resolved": "https://registry.npmjs.org/postgres-date/-/postgres-date-1.0.7.tgz",
+      "integrity": "sha512-suDmjLVQg78nMK2UZ454hAG+OAW+HQPZ6n++TNDUX+L0+uUlLywnoxJKDou51Zm+zTCjrCl0Nq6J9C5hP9vK/Q==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=0.10.0"
+      }
+    },
+    "node_modules/postgres-interval": {
+      "version": "1.2.0",
+      "resolved": "https://registry.npmjs.org/postgres-interval/-/postgres-interval-1.2.0.tgz",
+      "integrity": "sha512-9ZhXKM/rw350N1ovuWHbGxnGh/SNJ4cnxHiM0rxE4VN41wsg8P8zWn9hv/buK00RP4WvlOyr/RBDiptyxVbkZQ==",
+      "license": "MIT",
+      "dependencies": {
+        "xtend": "^4.0.0"
+      },
+      "engines": {
+        "node": ">=0.10.0"
+      }
+    },
+    "node_modules/proxy-addr": {
+      "version": "2.0.7",
+      "resolved": "https://registry.npmjs.org/proxy-addr/-/proxy-addr-2.0.7.tgz",
+      "integrity": "sha512-llQsMLSUDUPT44jdrU/O37qlnifitDP+ZwrmmZcoSKyLKvtZxpyV0n2/bD/N4tBAAZ/gJEdZU7KMraoK1+XYAg==",
+      "license": "MIT",
+      "dependencies": {
+        "forwarded": "0.2.0",
+        "ipaddr.js": "1.9.1"
+      },
+      "engines": {
+        "node": ">= 0.10"
+      }
+    },
+    "node_modules/psl": {
+      "version": "1.15.0",
+      "resolved": "https://registry.npmjs.org/psl/-/psl-1.15.0.tgz",
+      "integrity": "sha512-JZd3gMVBAVQkSs6HdNZo9Sdo0LNcQeMNP3CozBJb3JYC/QUYZTnKxP+f8oWRX4rHP5EurWxqAHTSwUCjlNKa1w==",
+      "license": "MIT",
+      "dependencies": {
+        "punycode": "^2.3.1"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/lupomontero"
+      }
+    },
+    "node_modules/punycode": {
+      "version": "2.3.1",
+      "resolved": "https://registry.npmjs.org/punycode/-/punycode-2.3.1.tgz",
+      "integrity": "sha512-vYt7UD1U9Wg6138shLtLOvdAu+8DsC/ilFtEVHcH+wydcSpNE20AfSOduf6MkRFahL5FY7X1oU7nKVZFtfq8Fg==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=6"
+      }
+    },
+    "node_modules/qs": {
+      "version": "6.15.3",
+      "resolved": "https://registry.npmjs.org/qs/-/qs-6.15.3.tgz",
+      "integrity": "sha512-O9gl3zCl5h5blw1KGUzQKhA5oUXSl8rwUIM5o0S3nCXMliSvy5Dzx7/DJcI+SwgICv+IneSZwhBh1oSyEHA71A==",
+      "license": "BSD-3-Clause",
+      "dependencies": {
+        "es-define-property": "^1.0.1",
+        "side-channel": "^1.1.1"
+      },
+      "engines": {
+        "node": ">=0.6"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/range-parser": {
+      "version": "1.2.1",
+      "resolved": "https://registry.npmjs.org/range-parser/-/range-parser-1.2.1.tgz",
+      "integrity": "sha512-Hrgsx+orqoygnmhFbKaHE6c296J+HTAQXoxEF6gNupROmmGJRoyzfG3ccAveqCBrwr/2yxQ5BVd/GTl5agOwSg==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.6"
+      }
+    },
+    "node_modules/raw-body": {
+      "version": "2.5.3",
+      "resolved": "https://registry.npmjs.org/raw-body/-/raw-body-2.5.3.tgz",
+      "integrity": "sha512-s4VSOf6yN0rvbRZGxs8Om5CWj6seneMwK3oDb4lWDH0UPhWcxwOWw5+qk24bxq87szX1ydrwylIOp2uG1ojUpA==",
+      "license": "MIT",
+      "dependencies": {
+        "bytes": "~3.1.2",
+        "http-errors": "~2.0.1",
+        "iconv-lite": "~0.4.24",
+        "unpipe": "~1.0.0"
+      },
+      "engines": {
+        "node": ">= 0.8"
+      }
+    },
+    "node_modules/safe-buffer": {
+      "version": "5.2.1",
+      "resolved": "https://registry.npmjs.org/safe-buffer/-/safe-buffer-5.2.1.tgz",
+      "integrity": "sha512-rp3So07KcdmmKbGvgaNxQSJr7bGVSVk5S9Eq1F+ppbRo70+YeaDxkw5Dd8NPN+GD6bjnYm2VuPuCXmpuYvmCXQ==",
+      "funding": [
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/feross"
+        },
+        {
+          "type": "patreon",
+          "url": "https://www.patreon.com/feross"
+        },
+        {
+          "type": "consulting",
+          "url": "https://feross.org/support"
+        }
+      ],
+      "license": "MIT"
+    },
+    "node_modules/safer-buffer": {
+      "version": "2.1.2",
+      "resolved": "https://registry.npmjs.org/safer-buffer/-/safer-buffer-2.1.2.tgz",
+      "integrity": "sha512-YZo3K82SD7Riyi0E1EQPojLz7kpepnSQI9IyPbHHg1XXXevb5dJI7tpyN2ADxGcQbHG7vcyRHk0cbwqcQriUtg==",
+      "license": "MIT"
+    },
+    "node_modules/semver": {
+      "version": "7.8.5",
+      "resolved": "https://registry.npmjs.org/semver/-/semver-7.8.5.tgz",
+      "integrity": "sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==",
+      "license": "ISC",
+      "bin": {
+        "semver": "bin/semver.js"
+      },
+      "engines": {
+        "node": ">=10"
+      }
+    },
+    "node_modules/send": {
+      "version": "0.19.2",
+      "resolved": "https://registry.npmjs.org/send/-/send-0.19.2.tgz",
+      "integrity": "sha512-VMbMxbDeehAxpOtWJXlcUS5E8iXh6QmN+BkRX1GARS3wRaXEEgzCcB10gTQazO42tpNIya8xIyNx8fll1OFPrg==",
+      "license": "MIT",
+      "dependencies": {
+        "debug": "2.6.9",
+        "depd": "2.0.0",
+        "destroy": "1.2.0",
+        "encodeurl": "~2.0.0",
+        "escape-html": "~1.0.3",
+        "etag": "~1.8.1",
+        "fresh": "~0.5.2",
+        "http-errors": "~2.0.1",
+        "mime": "1.6.0",
+        "ms": "2.1.3",
+        "on-finished": "~2.4.1",
+        "range-parser": "~1.2.1",
+        "statuses": "~2.0.2"
+      },
+      "engines": {
+        "node": ">= 0.8.0"
+      }
+    },
+    "node_modules/send/node_modules/ms": {
+      "version": "2.1.3",
+      "resolved": "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz",
+      "integrity": "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==",
+      "license": "MIT"
+    },
+    "node_modules/serve-static": {
+      "version": "1.16.3",
+      "resolved": "https://registry.npmjs.org/serve-static/-/serve-static-1.16.3.tgz",
+      "integrity": "sha512-x0RTqQel6g5SY7Lg6ZreMmsOzncHFU7nhnRWkKgWuMTu5NN0DR5oruckMqRvacAN9d5w6ARnRBXl9xhDCgfMeA==",
+      "license": "MIT",
+      "dependencies": {
+        "encodeurl": "~2.0.0",
+        "escape-html": "~1.0.3",
+        "parseurl": "~1.3.3",
+        "send": "~0.19.1"
+      },
+      "engines": {
+        "node": ">= 0.8.0"
+      }
+    },
+    "node_modules/setprototypeof": {
+      "version": "1.2.0",
+      "resolved": "https://registry.npmjs.org/setprototypeof/-/setprototypeof-1.2.0.tgz",
+      "integrity": "sha512-E5LDX7Wrp85Kil5bhZv46j8jOeboKq5JMmYM3gVGdGH8xFpPWXUMsNrlODCrkoxMEeNi/XZIwuRvY4XNwYMJpw==",
+      "license": "ISC"
+    },
+    "node_modules/side-channel": {
+      "version": "1.1.1",
+      "resolved": "https://registry.npmjs.org/side-channel/-/side-channel-1.1.1.tgz",
+      "integrity": "sha512-6x6dK6zJdpTzF4sQeNYxwtvBzf6Eg4GtlesS94HOvTudUeyK2WXAaIfmDgsyslYrRBeFIlsi54AYsFGUuhmvrQ==",
+      "license": "MIT",
+      "dependencies": {
+        "es-errors": "^1.3.0",
+        "object-inspect": "^1.13.4",
+        "side-channel-list": "^1.0.1",
+        "side-channel-map": "^1.0.1",
+        "side-channel-weakmap": "^1.0.2"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/side-channel-list": {
+      "version": "1.0.1",
+      "resolved": "https://registry.npmjs.org/side-channel-list/-/side-channel-list-1.0.1.tgz",
+      "integrity": "sha512-mjn/0bi/oUURjc5Xl7IaWi/OJJJumuoJFQJfDDyO46+hBWsfaVM65TBHq2eoZBhzl9EchxOijpkbRC8SVBQU0w==",
+      "license": "MIT",
+      "dependencies": {
+        "es-errors": "^1.3.0",
+        "object-inspect": "^1.13.4"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/side-channel-map": {
+      "version": "1.0.1",
+      "resolved": "https://registry.npmjs.org/side-channel-map/-/side-channel-map-1.0.1.tgz",
+      "integrity": "sha512-VCjCNfgMsby3tTdo02nbjtM/ewra6jPHmpThenkTYh8pG9ucZ/1P8So4u4FGBek/BjpOVsDCMoLA/iuBKIFXRA==",
+      "license": "MIT",
+      "dependencies": {
+        "call-bound": "^1.0.2",
+        "es-errors": "^1.3.0",
+        "get-intrinsic": "^1.2.5",
+        "object-inspect": "^1.13.3"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/side-channel-weakmap": {
+      "version": "1.0.2",
+      "resolved": "https://registry.npmjs.org/side-channel-weakmap/-/side-channel-weakmap-1.0.2.tgz",
+      "integrity": "sha512-WPS/HvHQTYnHisLo9McqBHOJk2FkHO/tlpvldyrnem4aeQp4hai3gythswg6p01oSoTl58rcpiFAjF2br2Ak2A==",
+      "license": "MIT",
+      "dependencies": {
+        "call-bound": "^1.0.2",
+        "es-errors": "^1.3.0",
+        "get-intrinsic": "^1.2.5",
+        "object-inspect": "^1.13.3",
+        "side-channel-map": "^1.0.1"
+      },
+      "engines": {
+        "node": ">= 0.4"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/ljharb"
+      }
+    },
+    "node_modules/socket.io-client": {
+      "version": "4.8.3",
+      "resolved": "https://registry.npmjs.org/socket.io-client/-/socket.io-client-4.8.3.tgz",
+      "integrity": "sha512-uP0bpjWrjQmUt5DTHq9RuoCBdFJF10cdX9X+a368j/Ft0wmaVgxlrjvK3kjvgCODOMMOz9lcaRzxmso0bTWZ/g==",
+      "license": "MIT",
+      "dependencies": {
+        "@socket.io/component-emitter": "~3.1.0",
+        "debug": "~4.4.1",
+        "engine.io-client": "~6.6.1",
+        "socket.io-parser": "~4.2.4"
+      },
+      "engines": {
+        "node": ">=10.0.0"
+      }
+    },
+    "node_modules/socket.io-client/node_modules/debug": {
+      "version": "4.4.3",
+      "resolved": "https://registry.npmjs.org/debug/-/debug-4.4.3.tgz",
+      "integrity": "sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==",
+      "license": "MIT",
+      "dependencies": {
+        "ms": "^2.1.3"
+      },
+      "engines": {
+        "node": ">=6.0"
+      },
+      "peerDependenciesMeta": {
+        "supports-color": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/socket.io-client/node_modules/ms": {
+      "version": "2.1.3",
+      "resolved": "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz",
+      "integrity": "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==",
+      "license": "MIT"
+    },
+    "node_modules/socket.io-parser": {
+      "version": "4.2.7",
+      "resolved": "https://registry.npmjs.org/socket.io-parser/-/socket.io-parser-4.2.7.tgz",
+      "integrity": "sha512-IH/iSeO9T6gz1KkFleGDWkG9N3dl4jXVYUtMhIqH10Md0ttMer8nUNWiP1DKuNrybD2xBrixLJdCC9J6ECoYkg==",
+      "license": "MIT",
+      "dependencies": {
+        "@socket.io/component-emitter": "~3.1.0",
+        "debug": "~4.4.1"
+      },
+      "engines": {
+        "node": ">=10.0.0"
+      }
+    },
+    "node_modules/socket.io-parser/node_modules/debug": {
+      "version": "4.4.3",
+      "resolved": "https://registry.npmjs.org/debug/-/debug-4.4.3.tgz",
+      "integrity": "sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==",
+      "license": "MIT",
+      "dependencies": {
+        "ms": "^2.1.3"
+      },
+      "engines": {
+        "node": ">=6.0"
+      },
+      "peerDependenciesMeta": {
+        "supports-color": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/socket.io-parser/node_modules/ms": {
+      "version": "2.1.3",
+      "resolved": "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz",
+      "integrity": "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==",
+      "license": "MIT"
+    },
+    "node_modules/split2": {
+      "version": "4.2.0",
+      "resolved": "https://registry.npmjs.org/split2/-/split2-4.2.0.tgz",
+      "integrity": "sha512-UcjcJOWknrNkF6PLX83qcHM6KHgVKNkV62Y8a5uYDVv9ydGQVwAHMKqHdJje1VTWpljG0WYpCDhrCdAOYH4TWg==",
+      "license": "ISC",
+      "engines": {
+        "node": ">= 10.x"
+      }
+    },
+    "node_modules/statuses": {
+      "version": "2.0.2",
+      "resolved": "https://registry.npmjs.org/statuses/-/statuses-2.0.2.tgz",
+      "integrity": "sha512-DvEy55V3DB7uknRo+4iOGT5fP1slR8wQohVdknigZPMpMstaKJQWhwiYBACJE3Ul2pTnATihhBYnRhZQHGBiRw==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.8"
+      }
+    },
+    "node_modules/toidentifier": {
+      "version": "1.0.1",
+      "resolved": "https://registry.npmjs.org/toidentifier/-/toidentifier-1.0.1.tgz",
+      "integrity": "sha512-o5sSPKEkg/DIQNmH43V0/uerLrpzVedkUh8tGNvaeXpfpuwjKenlSox/2O/BTlZUtEe+JG7s5YhEz608PlAHRA==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=0.6"
+      }
+    },
+    "node_modules/type-is": {
+      "version": "1.6.18",
+      "resolved": "https://registry.npmjs.org/type-is/-/type-is-1.6.18.tgz",
+      "integrity": "sha512-TkRKr9sUTxEH8MdfuCSP7VizJyzRNMjj2J2do2Jr3Kym598JVdEksuzPQCnlFPW4ky9Q+iA+ma9BGm06XQBy8g==",
+      "license": "MIT",
+      "dependencies": {
+        "media-typer": "0.3.0",
+        "mime-types": "~2.1.24"
+      },
+      "engines": {
+        "node": ">= 0.6"
+      }
+    },
+    "node_modules/typescript": {
+      "version": "5.9.3",
+      "resolved": "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz",
+      "integrity": "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==",
+      "dev": true,
+      "license": "Apache-2.0",
+      "bin": {
+        "tsc": "bin/tsc",
+        "tsserver": "bin/tsserver"
+      },
+      "engines": {
+        "node": ">=14.17"
+      }
+    },
+    "node_modules/undici-types": {
+      "version": "6.21.0",
+      "resolved": "https://registry.npmjs.org/undici-types/-/undici-types-6.21.0.tgz",
+      "integrity": "sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==",
+      "dev": true,
+      "license": "MIT"
+    },
+    "node_modules/unpipe": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/unpipe/-/unpipe-1.0.0.tgz",
+      "integrity": "sha512-pjy2bYhSsufwWlKwPc+l3cN7+wuJlK6uz0YdJEOlQDbl6jo/YlPi4mb8agUkVC8BF7V8NuzeyPNqRksA3hztKQ==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.8"
+      }
+    },
+    "node_modules/utils-merge": {
+      "version": "1.0.1",
+      "resolved": "https://registry.npmjs.org/utils-merge/-/utils-merge-1.0.1.tgz",
+      "integrity": "sha512-pMZTvIkT1d+TFGvDOqodOclx0QWkkgi6Tdoa8gC8ffGAAqz9pzPTZWAybbsHHoED/ztMtkv/VoYTYyShUn81hA==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.4.0"
+      }
+    },
+    "node_modules/vary": {
+      "version": "1.1.2",
+      "resolved": "https://registry.npmjs.org/vary/-/vary-1.1.2.tgz",
+      "integrity": "sha512-BNGbWLfd0eUPabhkXUVm0j8uuvREyTh5ovRa/dyow/BqAbZJyC+5fU+IzQOzmAKzYqYRAISoRhdQr3eIZ/PXqg==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 0.8"
+      }
+    },
+    "node_modules/ws": {
+      "version": "8.21.3",
+      "resolved": "https://registry.npmjs.org/ws/-/ws-8.21.3.tgz",
+      "integrity": "sha512-201TZ/kPWxoPr/OKWjquZR1SWKXcvxdH+e1xrx89b3YbmzLMFCLfnaG1HFIgWzJOEWZ7MvpK++odZufgYR50Rw==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=10.0.0"
+      },
+      "peerDependencies": {
+        "bufferutil": "^4.0.1",
+        "utf-8-validate": ">=5.0.2"
+      },
+      "peerDependenciesMeta": {
+        "bufferutil": {
+          "optional": true
+        },
+        "utf-8-validate": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/xmlhttprequest-ssl": {
+      "version": "2.1.2",
+      "resolved": "https://registry.npmjs.org/xmlhttprequest-ssl/-/xmlhttprequest-ssl-2.1.2.tgz",
+      "integrity": "sha512-TEU+nJVUUnA4CYJFLvK5X9AOeH4KvDvhIfm0vV1GaQRtchnG0hgK5p8hw/xjv8cunWYCsiPCSDzObPyhEwq3KQ==",
+      "engines": {
+        "node": ">=0.4.0"
+      }
+    },
+    "node_modules/xtend": {
+      "version": "4.0.2",
+      "resolved": "https://registry.npmjs.org/xtend/-/xtend-4.0.2.tgz",
+      "integrity": "sha512-LKYU1iAXJXUgAXn9URjiu+MWhyUXHsvfp7mcuYm9dSUKK0/CjtrUwFAxD82/mCWbtLsGjFIad0wIsod4zrTAEQ==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=0.4"
+      }
+    }
+  }
+}
+AGENT_LOCK_EOF
+
+mkdir -p "$(dirname "$PLATFORM_DIR/dashboard/src/app/dashboard/projects/[slug]/deployments/page.tsx")"
+cat > "$PLATFORM_DIR/dashboard/src/app/dashboard/projects/[slug]/deployments/page.tsx" << 'DEPLOYPAGE_EOF'
+"use client";
+
+import { useEffect, useState, use, useCallback, useRef } from "react";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { useToast } from "@/components/Toast";
+import { useProject } from "@/components/ProjectContext";
+
+interface Deployment {
+  id: string;
+  commit_sha: string | null;
+  commit_message: string | null;
+  status: string;
+  container_name: string | null;
+  image_tag: string | null;
+  triggered_by: string;
+  created_at: string;
+  finished_at: string | null;
+}
+
+const ACTIVE_STATES = ["queued", "building", "healthchecking"];
+const CANCELLABLE_STATES = ["queued", "building", "healthchecking"];
+
+const STATUS_COLOR: Record<string, string> = {
+  queued: "var(--text-dim)",
+  building: "var(--accent)",
+  healthchecking: "var(--accent)",
+  deployed: "#2da44e",
+  failed: "var(--danger)",
+  rolled_back: "var(--text-dim)",
+  cancelled: "var(--text-faint)",
+};
+
+function duration(start: string, end: string | null): string {
+  const s = new Date(start).getTime();
+  const e = end ? new Date(end).getTime() : Date.now();
+  const secs = Math.max(0, Math.round((e - s) / 1000));
+  if (secs < 60) return `${secs}s`;
+  return `${Math.floor(secs / 60)}m ${secs % 60}s`;
+}
+
+// Nur fuer github.com-Repos - andere Provider (GitLab, Bitbucket, selbst-gehostet)
+// haben andere Commit-URL-Schemata, das lohnt sich hier nicht zu raten.
+function githubCommitUrl(repoUrl: string | null, sha: string | null): string | null {
+  if (!repoUrl || !sha) return null;
+  const m = repoUrl.match(/^https:\/\/github\.com\/([^/]+)\/([^/.]+)(\.git)?\/?$/);
+  if (!m) return null;
+  return `https://github.com/${m[1]}/${m[2]}/commit/${sha}`;
+}
+
+function LogViewer({ deployment }: { deployment: Deployment }) {
+  const [log, setLog] = useState("");
+  const [loaded, setLoaded] = useState(false);
+  const offsetRef = useRef(0);
+  const isActive = ACTIVE_STATES.includes(deployment.status);
+
+  const fetchDelta = useCallback(async () => {
+    const res = await fetch(`/api/deployments/single/${deployment.id}?logOffset=${offsetRef.current}`);
+    const data = await res.json();
+    if (data.error) return;
+    if (data.logDelta) {
+      setLog((prev) => prev + data.logDelta);
+    }
+    offsetRef.current = data.logTotalLength ?? offsetRef.current;
+    setLoaded(true);
+  }, [deployment.id]);
+
+  useEffect(() => {
+    fetchDelta();
+    if (!isActive) return;
+    // P3-2: Tab im Hintergrund pollt nicht mehr mit.
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") fetchDelta();
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [fetchDelta, isActive]);
+
+  return (
+    <pre
+      style={{
+        marginTop: 8,
+        maxHeight: 600,
+        overflowY: "auto",
+        fontFamily: "var(--font-mono)",
+        fontSize: 12,
+        background: "var(--bg)",
+        padding: 8,
+        borderRadius: 6,
+        whiteSpace: "pre-wrap",
+      }}
+    >
+      {loaded ? log || "(noch kein Log)" : "Lade…"}
+    </pre>
+  );
+}
+
+export default function DeploymentsPage({
+  params,
+}: {
+  params: Promise<{ slug: string }>;
+}) {
+  use(params);
+  const { project, error: projectError } = useProject();
+  const [deployments, setDeployments] = useState<Deployment[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [deploying, setDeploying] = useState(false);
+  const [openLogs, setOpenLogs] = useState<Set<string>>(new Set());
+  const [rollbackTarget, setRollbackTarget] = useState<string | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<string | null>(null);
+  const toast = useToast();
+
+  const loadDeployments = useCallback((projectId: string) => {
+    fetch(`/api/deployments/${projectId}`)
+      .then((r) => r.json())
+      // P2-7: 401/403 kam vorher als leere Liste an, nicht als Fehlermeldung.
+      .then((d) => (Array.isArray(d) ? setDeployments(d) : setError(d?.error || "Deployment-Historie konnte nicht geladen werden")))
+      .catch(() => setError("Deployment-Historie konnte nicht geladen werden"));
+  }, []);
+
+  useEffect(() => {
+    if (!project) return;
+    loadDeployments(project.id);
+    // P3-2: Tab im Hintergrund pollt nicht mehr mit.
+    const interval = setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      setDeployments((current) => {
+        if (current.some((d) => ACTIVE_STATES.includes(d.status))) {
+          loadDeployments(project.id);
+        }
+        return current;
+      });
+    }, 3000);
+    return () => clearInterval(interval);
+  }, [project, loadDeployments]);
+
+  function toggleLogs(id: string) {
+    setOpenLogs((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function downloadLog(d: Deployment) {
+    const res = await fetch(`/api/deployments/single/${d.id}`);
+    const data = await res.json();
+    const blob = new Blob([data.build_log || ""], { type: "text/plain" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `deploy-${d.id.slice(0, 8)}-${d.status}.log`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function handleDeploy() {
+    if (!project) return;
+    setDeploying(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/deployments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: project.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "Deploy fehlgeschlagen");
+        toast.error(data.error || "Deploy fehlgeschlagen");
+        return;
+      }
+      loadDeployments(project.id);
+    } catch {
+      setError("Verbindung zum Provisioning Agent fehlgeschlagen");
+      toast.error("Verbindung zum Provisioning Agent fehlgeschlagen");
+    } finally {
+      setDeploying(false);
+    }
+  }
+
+  async function handleRollback(deploymentId: string) {
+    if (!project) return;
+    setError(null);
+    try {
+      const res = await fetch(`/api/deployments/${deploymentId}/rollback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: project.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "Rollback fehlgeschlagen");
+        toast.error(data.error || "Rollback fehlgeschlagen");
+        return;
+      }
+      toast.success("Rollback gestartet.");
+      loadDeployments(project.id);
+    } catch {
+      setError("Verbindung zum Provisioning Agent fehlgeschlagen");
+      toast.error("Verbindung zum Provisioning Agent fehlgeschlagen");
+    }
+  }
+
+  async function handleCancel(deploymentId: string) {
+    if (!project) return;
+    try {
+      const res = await fetch(`/api/deployments/${deploymentId}/cancel`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || "Abbruch fehlgeschlagen");
+        return;
+      }
+      toast.success(data.status === "cancel_requested" ? "Abbruch angefordert." : "Deployment abgebrochen.");
+      loadDeployments(project.id);
+    } catch {
+      toast.error("Verbindung zum Provisioning Agent fehlgeschlagen");
+    }
+  }
+
+  if (!project) return <div className="empty-state">{error || projectError || "Lade…"}</div>;
+
+  return (
+    <div>
+      <div className="topbar" style={{ padding: 0, border: "none", marginBottom: 18 }}>
+        <h2 style={{ margin: 0, fontSize: 16 }}>Deployments</h2>
+        <button className="btn btn-primary" onClick={handleDeploy} disabled={deploying}>
+          {deploying ? "Löse aus…" : "Deploy"}
+        </button>
+      </div>
+
+      {error && <div className="error-box" style={{ marginBottom: 12 }}>{error}</div>}
+      {deployments.length === 0 && <div className="empty-state">Noch kein Deployment.</div>}
+      {deployments.map((d) => {
+        const logsOpen = openLogs.has(d.id);
+        const commitUrl = githubCommitUrl(project.repo_url, d.commit_sha);
+        // P2-4: nicht mehr "letztes in der Liste", sondern das tatsaechlich live
+        // geschaltete Deployment - bei einem fehlgeschlagenen letzten Deploy war
+        // der Rollback-Button vorher genau dann weg, wenn man ihn brauchte.
+        const canRollback = d.status === "deployed" && d.id !== project.active_deployment_id;
+        const canCancel = CANCELLABLE_STATES.includes(d.status);
+        return (
+          <div
+            key={d.id}
+            style={{
+              border: "1px solid var(--border)",
+              borderRadius: 8,
+              padding: 12,
+              marginBottom: 8,
+              background: "var(--panel)",
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span
+                  style={{
+                    display: "inline-block",
+                    width: 8,
+                    height: 8,
+                    borderRadius: "50%",
+                    background: STATUS_COLOR[d.status] || "var(--text-dim)",
+                  }}
+                />
+                <span className="pk-badge">{d.status}</span>
+                {d.id === project.active_deployment_id && (
+                  <span className="pk-badge" style={{ borderColor: "#2da44e", color: "#2da44e" }}>
+                    aktiv
+                  </span>
+                )}
+                <span style={{ color: "var(--text-dim)", fontSize: 12 }}>
+                  {commitUrl ? (
+                    <a href={commitUrl} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
+                      {d.commit_sha?.slice(0, 7)}
+                    </a>
+                  ) : (
+                    d.commit_sha?.slice(0, 7) || "—"
+                  )}
+                  {d.commit_message && <> — {d.commit_message}</>} · {d.triggered_by} ·{" "}
+                  {new Date(d.created_at).toLocaleString("de-DE")} ·{" "}
+                  {duration(d.created_at, d.finished_at)}
+                </span>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="btn" onClick={() => toggleLogs(d.id)}>
+                  {logsOpen ? "Logs verbergen" : "Logs anzeigen"}
+                </button>
+                <button className="btn" onClick={() => downloadLog(d)}>
+                  Herunterladen
+                </button>
+                {canCancel && (
+                  <button className="btn btn-danger" onClick={() => setCancelTarget(d.id)}>
+                    Abbrechen
+                  </button>
+                )}
+                {canRollback && (
+                  <button className="btn" onClick={() => setRollbackTarget(d.id)}>
+                    Rollback hierauf
+                  </button>
+                )}
+              </div>
+            </div>
+            {logsOpen && <LogViewer deployment={d} />}
+          </div>
+        );
+      })}
+
+      <ConfirmDialog
+        open={!!rollbackTarget}
+        onClose={() => setRollbackTarget(null)}
+        onConfirm={() => rollbackTarget && handleRollback(rollbackTarget)}
+        title="Zurückrollen"
+        description="Der zuletzt aktive Container wird gegen dieses Deployment getauscht."
+        confirmLabel="Zurückrollen"
+      />
+
+      <ConfirmDialog
+        open={!!cancelTarget}
+        onClose={() => setCancelTarget(null)}
+        onConfirm={() => cancelTarget && handleCancel(cancelTarget)}
+        title="Deployment abbrechen"
+        description="Der laufende Build/Healthcheck wird gestoppt, ein evtl. gestarteter Kandidat-Container entfernt. Bereits live geschaltete Deployments lassen sich nicht mehr abbrechen."
+        confirmLabel="Abbrechen"
+      />
+    </div>
+  );
+}
+DEPLOYPAGE_EOF
+
+mkdir -p "$(dirname "$PLATFORM_DIR/dashboard/src/app/dashboard/projects/[slug]/domains/page.tsx")"
+cat > "$PLATFORM_DIR/dashboard/src/app/dashboard/projects/[slug]/domains/page.tsx" << 'DOMAINSPAGE_EOF'
+"use client";
+
+import { useEffect, useState, useCallback } from "react";
+import { Modal, CopyValue } from "@/components/Modal";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { useToast } from "@/components/Toast";
+import { useProject } from "@/components/ProjectContext";
+
+interface Instruction {
+  type: "A" | "CNAME";
+  name: string;
+  value: string;
+  ttl: number;
+  note?: string;
+}
+
+interface Domain {
+  id: string;
+  hostname: string;
+  kind: string;
+  status: string;
+  dns_verified: boolean;
+  tls_issued: boolean;
+  last_check_at: string | null;
+  last_error: string | null;
+  verification_method: string | null;
+  is_primary: boolean;
+  created_at: string;
+  instructions: Instruction[];
+}
+
+// Antwort von POST /api/domains - deckt sowohl den Erfolgs- als auch den
+// Fehlerfall ab (error ist nur bei Fehlschlag gesetzt).
+interface AddDomainResult {
+  error?: string;
+  hostname?: string;
+  domainId?: string;
+  instructions?: Instruction[];
+  autoDns?: { ok: boolean; provider?: string };
+}
+
+const STATUS_META: Record<string, { label: string; color: string; dot: string }> = {
+  live:        { label: "Live",                  color: "var(--success, #16a34a)", dot: "#16a34a" },
+  tls_pending: { label: "Zertifikat wird ausgestellt", color: "#ca8a04",           dot: "#ca8a04" },
+  dns_ok:      { label: "DNS OK",                color: "#ca8a04",                 dot: "#ca8a04" },
+  pending_dns: { label: "Warte auf DNS",         color: "var(--text-muted)",       dot: "#9ca3af" },
+  failed:      { label: "Fehlgeschlagen",        color: "var(--danger, #dc2626)",  dot: "#dc2626" },
+};
+
+function relTime(iso: string | null): string {
+  if (!iso) return "noch nie geprüft";
+  const diff = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(diff / 60000);
+  if (m < 1) return "gerade eben";
+  if (m < 60) return `vor ${m} min`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `vor ${h} h`;
+  return `vor ${Math.floor(h / 24)} Tagen`;
+}
+
+function InstructionTable({ instructions }: { instructions: Instruction[] }) {
+  if (!instructions?.length) return null;
+  return (
+    <div>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+        <thead>
+          <tr style={{ textAlign: "left", color: "var(--text-muted)" }}>
+            <th style={{ padding: "6px 8px 6px 0", fontWeight: 500 }}>Typ</th>
+            <th style={{ padding: "6px 8px", fontWeight: 500 }}>Name</th>
+            <th style={{ padding: "6px 8px", fontWeight: 500 }}>Wert</th>
+            <th style={{ padding: "6px 0 6px 8px", fontWeight: 500 }}>TTL</th>
+          </tr>
+        </thead>
+        <tbody>
+          {instructions.map((r, i) => (
+            <tr key={i} style={{ borderTop: "1px solid var(--border)" }}>
+              <td style={{ padding: "8px 8px 8px 0" }}><strong>{r.type}</strong></td>
+              <td style={{ padding: "8px" }}><CopyValue value={r.name} /></td>
+              <td style={{ padding: "8px" }}><CopyValue value={r.value} /></td>
+              <td style={{ padding: "8px 0 8px 8px", color: "var(--text-muted)" }}>{r.ttl}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {instructions.some((r) => r.note) && (
+        <ul style={{ margin: "10px 0 0", paddingLeft: 18, fontSize: 12, color: "var(--text-muted)" }}>
+          {instructions.filter((r) => r.note).map((r, i) => (
+            <li key={i} style={{ marginBottom: 3 }}><strong>{r.type}:</strong> {r.note}</li>
+          ))}
+        </ul>
+      )}
+      <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 10, marginBottom: 0 }}>
+        Es genügt <strong>einer</strong> dieser Einträge. Nach dem Speichern beim Registrar
+        kann die Verbreitung wenige Minuten bis 24 Stunden dauern.
+      </p>
+    </div>
+  );
+}
+
+export default function DomainsPage() {
+  const { project, loading: projectLoading } = useProject();
+
+  const [domains, setDomains] = useState<Domain[]>([]);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [verifying, setVerifying] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Domain | null>(null);
+  const toastApi = useToast();
+
+  // Dialog-Zustand
+  const [modalOpen, setModalOpen] = useState(false);
+  const [newHost, setNewHost] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [addResult, setAddResult] = useState<AddDomainResult | null>(null);
+
+  const notify = (msg: string, kind: "ok" | "err" = "ok") => {
+    if (kind === "ok") toastApi.success(msg);
+    else toastApi.error(msg);
+  };
+
+  const loadDomains = useCallback(async (projectId: string) => {
+    const res = await fetch(`/api/domains?projectId=${projectId}`);
+    const data = await res.json();
+    setDomains(Array.isArray(data) ? data : []);
+  }, []);
+
+  useEffect(() => {
+    if (project) loadDomains(project.id);
+  }, [project, loadDomains]);
+
+  // Polling nur solange etwas offen ist — und nur bei sichtbarem Tab (P3-2).
+  useEffect(() => {
+    if (!project) return;
+    const pending = domains.some((d) => d.status !== "live" && d.status !== "failed");
+    if (!pending) return;
+    const iv = setInterval(() => {
+      if (document.visibilityState === "visible") loadDomains(project.id);
+    }, 15000);
+    return () => clearInterval(iv);
+  }, [project, domains, loadDomains]);
+
+  async function handleAdd() {
+    if (!project || !newHost.trim()) return;
+    setAdding(true);
+    setAddResult(null);
+    try {
+      const res = await fetch("/api/domains", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId: project.id, hostname: newHost.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAddResult({ error: data.error || "Fehler beim Anlegen." });
+      } else {
+        setAddResult(data);
+        await loadDomains(project.id);
+      }
+    } catch (err) {
+      setAddResult({ error: (err as Error).message });
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  async function handleVerify(domainId: string) {
+    setVerifying(domainId);
+    try {
+      const res = await fetch(`/api/domains/${domainId}/verify`, { method: "POST" });
+      const data = await res.json();
+      if (project) await loadDomains(project.id);
+      if (data.status === "live") notify("Domain ist live.", "ok");
+      else if (data.status === "tls_pending") notify("DNS stimmt. Zertifikat wird ausgestellt — in ~60 Sekunden erneut prüfen.", "ok");
+      else notify(data.error || "Noch nicht verifiziert.", "err");
+    } catch (err) {
+      notify((err as Error).message, "err");
+    } finally {
+      setVerifying(null);
+    }
+  }
+
+  async function handleSetPrimary(d: Domain) {
+    const res = await fetch(`/api/domains/${d.id}/primary`, { method: "POST" });
+    const data = await res.json();
+    if (res.ok) {
+      notify(`${d.hostname} ist jetzt Primärdomain. Alle anderen leiten per 301 dorthin um.`, "ok");
+      if (project) await loadDomains(project.id);
+    } else {
+      notify(data.error || "Fehlgeschlagen.", "err");
+    }
+  }
+
+  async function handleDelete(d: Domain) {
+    const res = await fetch(`/api/domains/${d.id}`, { method: "DELETE" });
+    const data = await res.json();
+    if (res.ok) {
+      notify(`${d.hostname} entfernt.`, "ok");
+      if (project) await loadDomains(project.id);
+    } else {
+      notify(data.error || "Löschen fehlgeschlagen.", "err");
+    }
+  }
+
+  if (projectLoading) return <p style={{ color: "var(--text-muted)" }}>Lade…</p>;
+  if (!project) return <p style={{ color: "var(--text-muted)" }}>Kein Projekt für diesen Tenant.</p>;
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20, gap: 12, flexWrap: "wrap" }}>
+        <h2 style={{ margin: 0, fontSize: 18 }}>Domains</h2>
+        <button className="btn btn-primary" onClick={() => { setNewHost(""); setAddResult(null); setModalOpen(true); }}>
+          Domain hinzufügen
+        </button>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {domains.map((d) => {
+          const meta = STATUS_META[d.status] || STATUS_META.pending_dns;
+          const isOpen = expanded === d.id;
+          return (
+            <div key={d.id} style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-card)" }}>
+              <div style={{ padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <span style={{ width: 8, height: 8, borderRadius: "50%", background: meta.dot, flexShrink: 0 }} />
+                    <a href={`https://${d.hostname}`} target="_blank" rel="noreferrer"
+                       style={{ fontWeight: 500, wordBreak: "break-all", color: "inherit" }}>
+                      {d.hostname}
+                    </a>
+                    {d.is_primary && (
+                      <span style={{ fontSize: 11, color: "#16a34a", border: "1px solid #16a34a",
+                                     borderRadius: 4, padding: "1px 5px" }}>
+                        Primär
+                      </span>
+                    )}
+                    {d.kind === "subdomain" && (
+                      <span style={{ fontSize: 11, color: "var(--text-muted)", border: "1px solid var(--border)", borderRadius: 4, padding: "1px 5px" }}>
+                        Preview
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 12, color: meta.color, marginTop: 4 }}>
+                    {meta.label}
+                    {d.verification_method && <span style={{ color: "var(--text-muted)" }}> · via {d.verification_method}</span>}
+                    {d.kind === "custom" && <span style={{ color: "var(--text-muted)" }}> · {relTime(d.last_check_at)}</span>}
+                    {d.kind === "custom" && !d.is_primary && domains.some((x) => x.is_primary) && (
+                      <span style={{ color: "var(--text-muted)" }}>
+                        {" "}· leitet weiter auf {domains.find((x) => x.is_primary)?.hostname}
+                      </span>
+                    )}
+                  </div>
+                  {d.last_error && d.status !== "live" && (
+                    <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6, lineHeight: 1.5 }}>
+                      {d.last_error}
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                  {d.kind === "custom" && (
+                    <>
+                      <button className="btn" onClick={() => setExpanded(isOpen ? null : d.id)}>
+                        {isOpen ? "Konfiguration ausblenden" : "DNS-Konfiguration"}
+                      </button>
+                      <button className="btn" onClick={() => handleVerify(d.id)} disabled={verifying === d.id}>
+                        {verifying === d.id ? "Prüfe…" : "Erneut prüfen"}
+                      </button>
+                      {!d.is_primary && (d.status === "live" || d.status === "tls_pending") && (
+                        <button className="btn" onClick={() => handleSetPrimary(d)}>Als Primär</button>
+                      )}
+                      <button className="btn btn-danger" onClick={() => setDeleteTarget(d)}>Entfernen</button>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {isOpen && (
+                <div style={{ borderTop: "1px solid var(--border)", padding: "14px 16px", background: "var(--bg-subtle, rgba(0,0,0,0.02))" }}>
+                  <InstructionTable instructions={d.instructions} />
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {domains.length === 0 && (
+          <p style={{ color: "var(--text-muted)", fontSize: 14 }}>Noch keine Domains.</p>
+        )}
+      </div>
+
+      <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="Domain hinzufügen">
+        {!addResult && (
+          <>
+            <p style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 0 }}>
+              Hostname eintragen, den der Kunde nutzen soll. Die nötigen DNS-Einträge
+              zeigen wir im nächsten Schritt — und dauerhaft in der Domain-Liste.
+            </p>
+            <input
+              value={newHost}
+              onChange={(e) => setNewHost(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleAdd()}
+              placeholder="kunde.at oder www.kunde.at"
+              style={{
+                width: "100%", padding: "10px 12px", borderRadius: 8,
+                border: "1px solid var(--border)", background: "var(--bg)",
+                color: "var(--text)", fontSize: 14, marginBottom: 14,
+              }}
+            />
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="btn" onClick={() => setModalOpen(false)}>Abbrechen</button>
+              <button className="btn btn-primary" onClick={handleAdd} disabled={adding || !newHost.trim()}>
+                {adding ? "Lege an…" : "Hinzufügen"}
+              </button>
+            </div>
+          </>
+        )}
+
+        {addResult?.error && (
+          <>
+            <div style={{ padding: "10px 14px", borderRadius: 8, border: "1px solid #dc2626",
+                          background: "rgba(220,38,38,0.08)", color: "#dc2626", fontSize: 13, marginBottom: 14 }}>
+              {addResult.error}
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="btn" onClick={() => setAddResult(null)}>Zurück</button>
+            </div>
+          </>
+        )}
+
+        {addResult && !addResult.error && (
+          <>
+            <p style={{ fontSize: 14, marginTop: 0 }}>
+              <strong>{addResult.hostname}</strong> ist angelegt.
+            </p>
+
+            {addResult.autoDns?.ok ? (
+              <div style={{ padding: "10px 14px", borderRadius: 8, border: "1px solid #16a34a",
+                            background: "rgba(22,163,74,0.08)", color: "#16a34a", fontSize: 13, marginBottom: 14 }}>
+                DNS-Eintrag automatisch über {addResult.autoDns.provider} gesetzt.
+                Die Prüfung läuft im Hintergrund.
+              </div>
+            ) : (
+              <div style={{ padding: "10px 14px", borderRadius: 8, border: "1px solid var(--border)",
+                            fontSize: 13, marginBottom: 14, color: "var(--text-muted)" }}>
+                Kein automatischer Eintrag möglich — bitte beim Registrar setzen:
+              </div>
+            )}
+
+            <InstructionTable instructions={addResult.instructions || []} />
+
+            {(() => {
+              const h: string = addResult.hostname || "";
+              // kunde.at und www.kunde.at gehoeren zusammen — Kunden erwarten, dass
+              // beide funktionieren. Wir schlagen die Gegenvariante direkt vor.
+              const partner = h.startsWith("www.") ? h.slice(4) : `www.${h}`;
+              const exists = domains.some((d) => d.hostname === partner);
+              if (exists || h.split(".").length > 3) return null;
+              return (
+                <div style={{ marginTop: 16, padding: "10px 14px", borderRadius: 8,
+                              border: "1px solid var(--border)", fontSize: 13 }}>
+                  <strong>{partner}</strong> gleich mitanlegen? Eine der beiden wird
+                  Primärdomain, die andere leitet per 301 dorthin um.
+                  <div style={{ marginTop: 8 }}>
+                    <button className="btn" onClick={() => { setNewHost(partner); setAddResult(null); }}>
+                      {partner} hinzufügen
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
+              <button className="btn" onClick={() => setModalOpen(false)}>Schließen</button>
+              <button className="btn btn-primary"
+                      onClick={async () => { if (addResult.domainId) await handleVerify(addResult.domainId); setModalOpen(false); }}>
+                Eintrag gesetzt — jetzt prüfen
+              </button>
+            </div>
+          </>
+        )}
+      </Modal>
+
+      <ConfirmDialog
+        open={!!deleteTarget}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => deleteTarget && handleDelete(deleteTarget)}
+        title={`${deleteTarget?.hostname ?? ""} entfernen`}
+        description="Der Traefik-Router wird gelöscht, die Domain ist danach nicht mehr erreichbar."
+        confirmLabel="Entfernen"
+      />
+    </div>
+  );
+}
+DOMAINSPAGE_EOF
+
+mkdir -p "$(dirname "$PLATFORM_DIR/dashboard/src/app/dashboard/projects/page.tsx")"
+cat > "$PLATFORM_DIR/dashboard/src/app/dashboard/projects/page.tsx" << 'PROJECTSPAGE_EOF'
+"use client";
+
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { EmptyState, StatusBadge } from "@/components/StatusBadge";
+import { useToast } from "@/components/Toast";
+
+interface Tenant {
+  id: string;
+  slug: string;
+  db_name: string;
+  tariff: string;
+  display_name: string | null;
+  contact_email: string | null;
+  status: string;
+  notes: string | null;
+  created_at: string;
+}
+
+interface Project {
+  slug: string;
+  tenant_slug: string;
+  repo_url: string | null;
+  active_container: string | null;
+}
+
+export default function ProjectsPage() {
+  const [tenants, setTenants] = useState<Tenant[] | null>(null);
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [slug, setSlug] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [contactEmail, setContactEmail] = useState("");
+  const [tariff, setTariff] = useState("starter");
+  const [creating, setCreating] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [deletingSlug, setDeletingSlug] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [confirmTarget, setConfirmTarget] = useState<Tenant | null>(null);
+  const [statusTarget, setStatusTarget] = useState<{ tenant: Tenant; next: string } | null>(null);
+  const [statusBusy, setStatusBusy] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [projectsError, setProjectsError] = useState<string | null>(null);
+  const toast = useToast();
+
+  function load() {
+    setTenants(null);
+    fetch("/api/tenants")
+      .then((r) => r.json())
+      .then((d) => (d.error ? setError(d.error) : setTenants(d.tenants)))
+      .catch(() => setError("Verbindung zum Dashboard fehlgeschlagen"));
+    fetch("/api/projects")
+      .then((r) => r.json())
+      // P2-7: 401/403 kam vorher als leere Liste an (Repo/Live-Badges fehlten
+      // dann kommentarlos) statt als sichtbarer Fehler.
+      .then((d) => (Array.isArray(d) ? setProjects(d) : setProjectsError(d?.error || "Projektdaten konnten nicht geladen werden")))
+      .catch(() => setProjectsError("Verbindung zum Provisioning Agent fehlgeschlagen"));
+  }
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const filteredTenants = useMemo(() => {
+    if (!tenants) return null;
+    const q = search.trim().toLowerCase();
+    if (!q) return tenants;
+    // P2-6: Suche ueber Name UND Slug - bei fuenfzig Kunden ist der Slug allein
+    // nicht mehr die zuverlaessigste Art, jemanden wiederzufinden.
+    return tenants.filter(
+      (t) => t.slug.toLowerCase().includes(q) || (t.display_name || "").toLowerCase().includes(q)
+    );
+  }, [tenants, search]);
+
+  async function handleCreate(e: React.FormEvent) {
+    e.preventDefault();
+    if (!/^[a-z0-9-]+$/.test(slug)) {
+      setFormError("Slug: nur a-z, 0-9, - erlaubt");
+      return;
+    }
+    setCreating(true);
+    setFormError(null);
+    try {
+      const res = await fetch("/api/provision-tenant", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tenantSlug: slug,
+          tariff,
+          displayName: displayName.trim() || undefined,
+          contactEmail: contactEmail.trim() || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setFormError(data.error || "Provisioning fehlgeschlagen");
+        return;
+      }
+      setSlug("");
+      setDisplayName("");
+      setContactEmail("");
+      setShowForm(false);
+      load();
+    } catch {
+      setFormError("Verbindung zum Provisioning Agent fehlgeschlagen");
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function handleDelete(s: string) {
+    setDeletingSlug(s);
+    setDeleteError(null);
+    try {
+      const res = await fetch(`/api/tenants/${s}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) {
+        setDeleteError(data.error || "Löschen fehlgeschlagen");
+        toast.error(data.error || "Löschen fehlgeschlagen");
+        return;
+      }
+      toast.success(`"${s}" wurde entfernt.`);
+      load();
+    } catch {
+      setDeleteError("Verbindung zum Provisioning Agent fehlgeschlagen");
+      toast.error("Verbindung zum Provisioning Agent fehlgeschlagen");
+    } finally {
+      setDeletingSlug(null);
+    }
+  }
+
+  async function handleStatusChange(t: Tenant, next: string) {
+    setStatusBusy(t.slug);
+    try {
+      const res = await fetch(`/api/tenants/${t.slug}/status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: next }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || "Status-Änderung fehlgeschlagen");
+        return;
+      }
+      if (data.warnings?.length) {
+        toast.error(`Mit Warnungen: ${data.warnings.join("; ")}`);
+      } else {
+        toast.success(next === "suspended" ? `"${t.slug}" gesperrt.` : `"${t.slug}" reaktiviert.`);
+      }
+      load();
+    } catch {
+      toast.error("Verbindung zum Provisioning Agent fehlgeschlagen");
+    } finally {
+      setStatusBusy(null);
+    }
+  }
+
+  return (
+    <div className="content">
+      <div className="topbar" style={{ padding: 0, border: "none", marginBottom: 18 }}>
+        <h2 style={{ margin: 0, fontSize: 16 }}>Projekte</h2>
+        <button className="btn btn-primary" onClick={() => setShowForm((v) => !v)}>
+          {showForm ? "Abbrechen" : "+ Neues Projekt"}
+        </button>
+      </div>
+
+      {showForm && (
+        <form
+          onSubmit={handleCreate}
+          style={{
+            display: "flex",
+            gap: 10,
+            alignItems: "center",
+            marginBottom: 18,
+            padding: 14,
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            background: "var(--panel)",
+            flexWrap: "wrap",
+          }}
+        >
+          <input
+            placeholder="slug (z.B. gutshof)"
+            value={slug}
+            onChange={(e) => setSlug(e.target.value.toLowerCase())}
+            required
+          />
+          <input
+            placeholder="Anzeigename (optional, sonst Slug)"
+            value={displayName}
+            onChange={(e) => setDisplayName(e.target.value)}
+          />
+          <input
+            type="email"
+            placeholder="Kontakt-E-Mail (optional)"
+            value={contactEmail}
+            onChange={(e) => setContactEmail(e.target.value)}
+          />
+          <select value={tariff} onChange={(e) => setTariff(e.target.value)}>
+            <option value="starter">Starter</option>
+            <option value="business">Business</option>
+            <option value="premium">Premium</option>
+          </select>
+          <button className="btn btn-primary" type="submit" disabled={creating}>
+            {creating ? "Provisioniere… (~10-15s)" : "Anlegen"}
+          </button>
+          {formError && <span style={{ color: "var(--danger)" }}>{formError}</span>}
+        </form>
+      )}
+
+      {tenants && tenants.length > 0 && (
+        <input
+          placeholder="Suche nach Name oder Slug…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          style={{ marginBottom: 14, maxWidth: 320 }}
+        />
+      )}
+
+      {error && <div className="error-box">{error}</div>}
+      {deleteError && <div className="error-box" style={{ marginBottom: 12 }}>{deleteError}</div>}
+      {projectsError && <div className="error-box" style={{ marginBottom: 12 }}>{projectsError}</div>}
+      {!tenants && !error && <div className="empty-state">Lade Projekte…</div>}
+      {tenants && tenants.length === 0 && (
+        <EmptyState
+          title="Noch keine Projekte angelegt."
+          hint="Ein Projekt legt eine eigene Datenbank, Auth-Instanz und einen MinIO-Bucket an."
+          action={
+            <button className="btn btn-primary" onClick={() => setShowForm(true)}>
+              + Neues Projekt
+            </button>
+          }
+        />
+      )}
+      {filteredTenants && tenants && tenants.length > 0 && filteredTenants.length === 0 && (
+        <div className="empty-state">Keine Treffer für &quot;{search}&quot;.</div>
+      )}
+
+      <div className="card-grid">
+        {filteredTenants?.map((t) => {
+          const project = projects.find((p) => p.tenant_slug === t.slug);
+          const suspended = t.status === "suspended";
+          return (
+            <div key={t.id} className="card" style={{ position: "relative", opacity: suspended ? 0.7 : 1 }}>
+              <Link href={`/dashboard/projects/${t.slug}`}>
+                <div className="card-title">{t.display_name || t.slug}</div>
+                {t.display_name && t.display_name !== t.slug && (
+                  <div style={{ fontSize: 11, color: "var(--text-faint)" }}>{t.slug}</div>
+                )}
+                <div className="card-sub">
+                  {project ? project.repo_url || "Repo nicht gesetzt" : "Kein Projekt verbunden"}
+                </div>
+                {t.contact_email && (
+                  <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 2 }}>{t.contact_email}</div>
+                )}
+                <div style={{ marginTop: 10, display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                  <span className="pk-badge">{t.tariff}</span>
+                  <StatusBadge
+                    label={suspended ? "gesperrt" : "aktiv"}
+                    color={suspended ? "warn" : "success"}
+                  />
+                  {project?.active_container && !suspended && (
+                    <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                      <span
+                        style={{
+                          display: "inline-block",
+                          width: 7,
+                          height: 7,
+                          borderRadius: "50%",
+                          background: "#2da44e",
+                        }}
+                      />
+                      <span className="pk-badge">live</span>
+                    </span>
+                  )}
+                </div>
+              </Link>
+              <div style={{ position: "absolute", top: 10, right: 10, display: "flex", gap: 6 }}>
+                <button
+                  className="btn"
+                  style={{ fontSize: 12 }}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setStatusTarget({ tenant: t, next: suspended ? "active" : "suspended" });
+                  }}
+                  disabled={statusBusy === t.slug}
+                >
+                  {statusBusy === t.slug ? "…" : suspended ? "Reaktivieren" : "Sperren"}
+                </button>
+                <button
+                  className="btn"
+                  style={{ color: "var(--danger)" }}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setConfirmTarget(t);
+                  }}
+                  disabled={deletingSlug === t.slug}
+                >
+                  {deletingSlug === t.slug ? "…" : "Löschen"}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <ConfirmDialog
+        open={!!confirmTarget}
+        onClose={() => setConfirmTarget(null)}
+        onConfirm={() => confirmTarget && handleDelete(confirmTarget.slug)}
+        title={`Projekt "${confirmTarget?.slug ?? ""}" löschen`}
+        description="Dieser Vorgang ist nicht rückgängig zu machen."
+        level="destructive"
+        confirmText={confirmTarget?.slug}
+        confirmLabel="Endgültig löschen"
+        resources={[
+          `Datenbank kunde_${confirmTarget?.slug ?? ""}`,
+          "Alle Docker-Container (App, Auth, API)",
+          "MinIO-Bucket und IAM-Policy",
+          "Traefik-Router aller verbundenen Domains",
+          "Projekt- und Deployment-Einträge",
+        ]}
+      />
+
+      <ConfirmDialog
+        open={!!statusTarget}
+        onClose={() => setStatusTarget(null)}
+        onConfirm={() => statusTarget && handleStatusChange(statusTarget.tenant, statusTarget.next)}
+        title={statusTarget?.next === "suspended" ? "Kunde sperren" : "Kunde reaktivieren"}
+        description={
+          statusTarget?.next === "suspended"
+            ? "Container werden gestoppt und die Traefik-Router entfernt. Datenbank, Secrets und alle Einstellungen bleiben erhalten — jederzeit reaktivierbar."
+            : "Container werden wieder gestartet und die Domains erneut geroutet."
+        }
+        confirmLabel={statusTarget?.next === "suspended" ? "Sperren" : "Reaktivieren"}
+      />
+    </div>
+  );
+}
+PROJECTSPAGE_EOF
+
+
+echo "== Rebuild + Neustart Provisioning-Agent =="
+cd "$PLATFORM_DIR/provisioning-agent"
+docker compose --env-file ../.env build
+docker compose --env-file ../.env up -d
+
+echo "== Rebuild + Neustart Dashboard =="
+cd "$PLATFORM_DIR/dashboard"
+docker compose --env-file ../.env build
+docker compose --env-file ../.env up -d
+
+echo ""
+echo "Fertig. Backup liegt in: $BACKUP_DIR"
+echo "Rollback bei Bedarf: $0 --rollback $BACKUP_DIR"
+echo ""
+echo "Hinweis: Der CI-Workflow greift ab dem naechsten Push nach GitHub."
+

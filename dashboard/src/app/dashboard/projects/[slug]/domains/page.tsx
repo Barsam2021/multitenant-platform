@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { useParams } from "next/navigation";
 import { Modal, CopyValue } from "@/components/Modal";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { useToast } from "@/components/Toast";
@@ -28,6 +27,16 @@ interface Domain {
   is_primary: boolean;
   created_at: string;
   instructions: Instruction[];
+}
+
+// Antwort von POST /api/domains - deckt sowohl den Erfolgs- als auch den
+// Fehlerfall ab (error ist nur bei Fehlschlag gesetzt).
+interface AddDomainResult {
+  error?: string;
+  hostname?: string;
+  domainId?: string;
+  instructions?: Instruction[];
+  autoDns?: { ok: boolean; provider?: string };
 }
 
 const STATUS_META: Record<string, { label: string; color: string; dot: string }> = {
@@ -89,8 +98,6 @@ function InstructionTable({ instructions }: { instructions: Instruction[] }) {
 }
 
 export default function DomainsPage() {
-  const params = useParams();
-  const slug = params.slug as string;
   const { project, loading: projectLoading } = useProject();
 
   const [domains, setDomains] = useState<Domain[]>([]);
@@ -103,7 +110,7 @@ export default function DomainsPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [newHost, setNewHost] = useState("");
   const [adding, setAdding] = useState(false);
-  const [addResult, setAddResult] = useState<any>(null);
+  const [addResult, setAddResult] = useState<AddDomainResult | null>(null);
 
   const notify = (msg: string, kind: "ok" | "err" = "ok") => {
     if (kind === "ok") toastApi.success(msg);
@@ -363,7 +370,7 @@ export default function DomainsPage() {
             <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 18 }}>
               <button className="btn" onClick={() => setModalOpen(false)}>Schließen</button>
               <button className="btn btn-primary"
-                      onClick={async () => { await handleVerify(addResult.domainId); setModalOpen(false); }}>
+                      onClick={async () => { if (addResult.domainId) await handleVerify(addResult.domainId); setModalOpen(false); }}>
                 Eintrag gesetzt — jetzt prüfen
               </button>
             </div>
