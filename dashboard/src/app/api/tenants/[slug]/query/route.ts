@@ -2,6 +2,16 @@ import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { getTenantBySlug } from "@/lib/adminDb";
 import { runSql } from "@/lib/tenantDb";
+import { logAudit } from "@/lib/audit";
+
+const SQL_LOG_PREVIEW_LEN = 300;
+
+function requestMeta(req: Request) {
+  return {
+    ip: req.headers.get("cf-connecting-ip") || req.headers.get("x-forwarded-for"),
+    userAgent: req.headers.get("user-agent"),
+  };
+}
 
 export async function POST(
   req: Request,
@@ -23,10 +33,29 @@ export async function POST(
     return NextResponse.json({ error: "sql required" }, { status: 400 });
   }
 
+  const actor = session.user?.email || "unknown";
+  const meta = requestMeta(req);
+  // P3-5: Query gekuerzt geloggt (nie der Ergebnisinhalt) - reicht, um im
+  // Nachhinein nachzuvollziehen was gelaufen ist, ohne potenziell sensible
+  // Zeilendaten ins Audit-Log zu kopieren.
+  const sqlPreview = sql.length > SQL_LOG_PREVIEW_LEN ? sql.slice(0, SQL_LOG_PREVIEW_LEN) + "…" : sql;
+
   try {
     const result = await runSql(tenant.db_name, sql, { readOnly: readOnly !== false });
+    await logAudit(actor, "sql.execute", slug, {
+      sqlPreview,
+      readOnly: readOnly !== false,
+      rowCount: result.rowCount,
+      durationMs: result.durationMs,
+      truncated: result.truncated,
+    }, meta);
     return NextResponse.json(result);
   } catch (err) {
+    await logAudit(actor, "sql.execute", slug, {
+      sqlPreview,
+      readOnly: readOnly !== false,
+      error: (err as Error).message,
+    }, meta);
     return NextResponse.json({ error: (err as Error).message }, { status: 400 });
   }
 }

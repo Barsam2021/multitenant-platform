@@ -18,6 +18,7 @@ import { auditRouter } from './routes/audit';
 import { statsRouter } from './routes/stats';
 import { encrypt } from './lib/crypto';
 import { signTenantJwt } from './lib/jwt';
+import { actorStorage } from './lib/actorContext';
 import { logAudit } from './lib/audit';
 import { deleteMonitor, isMonitoringConfigured } from './lib/monitoring';
 import { removeAllRoutersForProject } from './lib/traefikDynamic';
@@ -77,6 +78,20 @@ app.use((req, res, next) => {
     return res.status(401).json({ error: 'unauthorized' });
   }
   next();
+});
+// P3-5: actor/IP/User-Agent fuer's Audit-Log aus den vom Dashboard gesetzten
+// Headern (siehe dashboard/src/lib/agent.ts) fuer die Dauer dieses Requests
+// verfuegbar machen - logAudit() liest das ueber actorContext.ts, ohne dass
+// jede der ~20 bestehenden Aufrufstellen angefasst werden musste.
+app.use((req, res, next) => {
+  actorStorage.run(
+    {
+      actor: (req.headers['x-actor'] as string) || 'admin',
+      ip: (req.headers['x-actor-ip'] as string) || null,
+      userAgent: (req.headers['x-actor-ua'] as string) || null,
+    },
+    next
+  );
 });
 
 // P0-4: geteilte Aufraeumlogik fuer einen Tenant — wird sowohl fuer den echten

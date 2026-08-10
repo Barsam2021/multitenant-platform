@@ -34,7 +34,7 @@ auditRouter.get('/audit-logs', async (req, res) => {
   await db.connect();
   try {
     const { rows } = await db.query(
-      `SELECT id, actor, action, target, meta, created_at
+      `SELECT id, actor, action, target, meta, created_at, ip_address, user_agent
        FROM audit_logs ${whereSql} ORDER BY created_at DESC LIMIT $${i} OFFSET $${i + 1}`,
       [...vals, limit, offset]
     );

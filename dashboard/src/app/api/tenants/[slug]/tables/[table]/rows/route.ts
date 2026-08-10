@@ -2,8 +2,16 @@ import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { getTenantBySlug } from "@/lib/adminDb";
 import { getRows, insertRow } from "@/lib/tenantDb";
+import { logAudit } from "@/lib/audit";
 
 const TABLE_NAME_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+function requestMeta(req: Request) {
+  return {
+    ip: req.headers.get("cf-connecting-ip") || req.headers.get("x-forwarded-for"),
+    userAgent: req.headers.get("user-agent"),
+  };
+}
 
 export async function GET(
   req: Request,
@@ -76,11 +84,17 @@ export async function POST(
   }
 
   const values = await req.json();
+  const actor = session.user?.email || "unknown";
+  const meta = requestMeta(req);
   try {
     const row = await insertRow(tenant.db_name, table, values);
+    // P3-5: Spaltennamen ja, Werte nein - values koennen beliebige Kundendaten
+    // enthalten, die nicht routinemaessig ins Audit-Log sollen.
+    await logAudit(actor, "table.row_insert", `${slug}/${table}`, { columns: Object.keys(values) }, meta);
     return NextResponse.json({ row }, { status: 201 });
   } catch (err) {
     console.error("Failed to insert row:", (err as Error).message);
+    await logAudit(actor, "table.row_insert", `${slug}/${table}`, { error: (err as Error).message }, meta);
     return NextResponse.json({ error: (err as Error).message }, { status: 400 });
   }
 }

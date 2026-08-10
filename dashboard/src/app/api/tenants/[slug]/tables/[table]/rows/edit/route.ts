@@ -2,8 +2,16 @@ import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { getTenantBySlug } from "@/lib/adminDb";
 import { updateRow, deleteRow } from "@/lib/tenantDb";
+import { logAudit } from "@/lib/audit";
 
 const TABLE_NAME_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+function requestMeta(req: Request) {
+  return {
+    ip: req.headers.get("cf-connecting-ip") || req.headers.get("x-forwarded-for"),
+    userAgent: req.headers.get("user-agent"),
+  };
+}
 
 export async function PATCH(
   req: Request,
@@ -26,11 +34,21 @@ export async function PATCH(
     return NextResponse.json({ error: "pkColumn, pkValue, values required" }, { status: 400 });
   }
 
+  const actor = session.user?.email || "unknown";
+  const meta = requestMeta(req);
   try {
     const row = await updateRow(tenant.db_name, table, pkColumn, pkValue, values);
+    await logAudit(
+      actor,
+      "table.row_update",
+      `${slug}/${table}`,
+      { pkColumn, pkValue, columns: Object.keys(values) },
+      meta
+    );
     return NextResponse.json({ row });
   } catch (err) {
     console.error("Failed to update row:", (err as Error).message);
+    await logAudit(actor, "table.row_update", `${slug}/${table}`, { pkColumn, pkValue, error: (err as Error).message }, meta);
     return NextResponse.json({ error: (err as Error).message }, { status: 400 });
   }
 }
@@ -56,11 +74,15 @@ export async function DELETE(
     return NextResponse.json({ error: "pkColumn, pkValue required" }, { status: 400 });
   }
 
+  const actor = session.user?.email || "unknown";
+  const meta = requestMeta(req);
   try {
     await deleteRow(tenant.db_name, table, pkColumn, pkValue);
+    await logAudit(actor, "table.row_delete", `${slug}/${table}`, { pkColumn, pkValue }, meta);
     return NextResponse.json({ status: "ok" });
   } catch (err) {
     console.error("Failed to delete row:", (err as Error).message);
+    await logAudit(actor, "table.row_delete", `${slug}/${table}`, { pkColumn, pkValue, error: (err as Error).message }, meta);
     return NextResponse.json({ error: (err as Error).message }, { status: 400 });
   }
 }

@@ -9,6 +9,8 @@ interface AuditLog {
   target: string | null;
   meta: Record<string, unknown>;
   created_at: string;
+  ip_address: string | null;
+  user_agent: string | null;
 }
 
 const PAGE_SIZE = 50;
@@ -18,9 +20,13 @@ function toCsv(logs: AuditLog[]): string {
     const s = v === null || v === undefined ? "" : typeof v === "object" ? JSON.stringify(v) : String(v);
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
-  const lines = ["created_at,actor,action,target,meta"];
+  const lines = ["created_at,actor,action,target,ip_address,user_agent,meta"];
   for (const l of logs) {
-    lines.push([l.created_at, l.actor, l.action, l.target ?? "", JSON.stringify(l.meta ?? {})].map(esc).join(","));
+    lines.push(
+      [l.created_at, l.actor, l.action, l.target ?? "", l.ip_address ?? "", l.user_agent ?? "", JSON.stringify(l.meta ?? {})]
+        .map(esc)
+        .join(",")
+    );
   }
   return lines.join("\n");
 }
@@ -161,12 +167,14 @@ export default function AuditLogPage() {
             fontSize: 13,
           }}
         >
-          <div style={{ display: "flex", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 6 }}>
             <span>
               <span className="pk-badge">{l.action}</span>{" "}
-              {l.target && <span style={{ color: "var(--text-dim)" }}>{l.target}</span>}
+              <span style={{ color: "var(--text-dim)" }}>{l.actor}</span>{" "}
+              {l.target && <span style={{ color: "var(--text-dim)" }}>· {l.target}</span>}
             </span>
             <span style={{ color: "var(--text-faint)", fontSize: 12 }}>
+              {l.ip_address && <span style={{ marginRight: 8 }}>{l.ip_address}</span>}
               {new Date(l.created_at).toLocaleString("de-DE")}
             </span>
           </div>
