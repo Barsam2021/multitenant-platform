@@ -1,0 +1,9 @@
+# Taegliches Plattform-Backup. Wird von sprint21-06-p0-5-backups.sh nach
+# /etc/cron.d/multitenant-backup kopiert.
+#
+# P0-5: vorher gab es KEINEN Scheduler im Repo — bootstrap.sh hat dem Betreiber
+# gesagt, er solle das selbst einrichten. Damit war das RPO "seit dem letzten
+# manuellen Klick im Dashboard".
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+0 3 * * * root /opt/multitenant-platform/backups/backup-script.sh >> /var/log/mt-backup.log 2>&1

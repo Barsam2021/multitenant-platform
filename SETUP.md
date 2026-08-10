@@ -106,15 +106,34 @@ Container neu starten. Login unter `https://admin.<PLATFORM_DOMAIN>`.
 rclone config    # Remote für deinen Object-Storage-Anbieter anlegen
 ```
 
-Danach `backups/backup-script.sh` als Cron einrichten (empfohlen: täglich).
+Der tägliche Cron wird von `bootstrap.sh` automatisch nach
+`/etc/cron.d/multitenant-backup` installiert (03:00, Log unter
+`/var/log/mt-backup.log`). Gesichert werden Postgres-Globals, alle Datenbanken
+(`-Fc`), MinIO und die Konfiguration inklusive `.env`.
+
 Verschlüsselung läuft über `age` — den Public Key in `BACKUP_AGE_PUBLIC_KEY`
 eintragen, den privaten Identity-File **niemals** ins Repo committen (ist über
 `.gitignore` bereits ausgeschlossen: `backups/age-identity.txt`).
 
-Restore einmal testen:
+> **Ohne Off-Site-Kopie des age-Keys und der `.env` gibt es kein
+> wiederherstellbares Backup.** Beide liegen sonst ausschließlich auf genau dem
+> Server, gegen dessen Verlust gesichert wird — die Dateien im Object Storage
+> sind dann unlesbare Bytes. `sprint21-06-p0-5-backups.sh` erzeugt dafür ein
+> passphrasenverschlüsseltes DR-Bundle; das gehört in einen Passwort-Manager
+> oder auf ein verschlüsseltes Offline-Medium, **nicht** in dasselbe
+> rclone-Remote.
+
+Restore einmal testen (Dateiname aus `./backups/restore-script.sh list`):
 
 ```bash
-./backups/restore-test-script.sh
+./backups/restore-test-script.sh kunde_beispiel_20260810-030000.dump.age
+```
+
+Echter Restore (überschreibt Daten, Reihenfolge beachten):
+
+```bash
+./backups/restore-script.sh globals
+./backups/restore-script.sh db kunde_beispiel_20260810-030000.dump.age
 ```
 
 ## Schritt 7 — Uptime Kuma initialisieren

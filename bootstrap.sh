@@ -73,6 +73,15 @@ if [ -f "$ROOT/dashboard/docker-compose.yml" ]; then
   (cd "$ROOT/dashboard" && docker compose --env-file "$ROOT/.env" up -d --build)
 fi
 
+# P0-5: Backup-Cron gehoert ins Setup, nicht in die Doku. Ein Backup, das
+# niemand einrichtet, ist kein Backup.
+if [ -f "$ROOT/backups/cron.d-multitenant-backup" ]; then
+  echo "==> Backup-Cron installieren"
+  install -m 0644 "$ROOT/backups/cron.d-multitenant-backup" /etc/cron.d/multitenant-backup
+  touch /var/log/mt-backup.log
+  systemctl reload cron 2>/dev/null || service cron reload 2>/dev/null || true
+fi
+
 echo ""
 echo "=================================================================="
 echo "Bootstrap abgeschlossen. Health-Check:"
@@ -82,5 +91,5 @@ echo "Falls noch nicht geschehen:"
 echo "  - Cloudflare Tunnel Ingress-Rules für admin.<domain> / status.<domain> einrichten"
 echo "  - 01_roles.sql prüfen (core-postgres/init-scripts/)"
 echo "  - Rclone-Remote für dein Backup-Storage konfigurieren (rclone config)"
-echo "  - Backup-Cron einrichten (siehe SETUP.md Schritt 6)"
+echo "  - DR-Bundle (age-Key + .env) OFF-SITE kopieren — ohne das ist kein Restore moeglich"
 echo "=================================================================="
