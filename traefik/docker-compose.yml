@@ -4,6 +4,8 @@ services:
     restart: unless-stopped
     container_name: global-traefik
     command:
+      - --metrics.prometheus=true
+      - --metrics.prometheus.addEntryPointsLabels=true
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
       - --providers.file.directory=/dynamic
@@ -33,6 +35,14 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./letsencrypt:/letsencrypt
       - ./dynamic:/dynamic
+    # Audit §11: Traefik hatte kein mem_limit. Auf 8 GB zaehlt jedes Limit,
+    # das den OOM-Killer davon abhaelt, sich Postgres auszusuchen.
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     networks:
       - traefik-net
 networks:

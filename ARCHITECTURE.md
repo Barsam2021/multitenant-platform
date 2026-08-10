@@ -53,8 +53,11 @@ Provisioning Agent (POST /webhooks/github/:projectId)
    ├─ Signatur gegen rohen Body verifizieren (express.raw, nicht express.json!)
    ├─ Nur reagieren, wenn Ziel-Branch == default_branch
    ├─ Repo klonen, Nixpacks-Build ausführen
-   ├─ Blue-Green: neuen Container hochfahren, Healthcheck abwarten,
-   │  Traefik-Routing umschalten, alten Container stoppen
+   ├─ Deploy-Swap: Kandidatencontainer hochfahren, Healthcheck abwarten,
+   │  alten Container parken, neuen mit öffentlichem Namen + Labels starten,
+   │  erneut Healthcheck; bei Fehlschlag den geparkten wiederherstellen.
+   │  (Bewusst NICHT als Blue-Green bezeichnet — es gibt eine kurze Downtime
+   │  zwischen Umbenennen und Gesundwerden, siehe Audit §10.)
    └─ Deployment-Log live ins Dashboard (Polling) + Rollback-Option
 ```
 

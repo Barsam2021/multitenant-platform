@@ -5,16 +5,55 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${MASTER_DB_PASSWORD}
+    # Audit §11: die alten Werte (shared_buffers=1GB, max_connections=150,
+    # work_mem=32MB) stammen aus einem Blueprint fuer einen 16-GB-Server; die
+    # .env sagt das seit unbekannter Zeit selbst ("TODO: Werte fuer 8GB-VPS neu
+    # kalkulieren"). Auf 8 GB belegt Postgres damit 1,4-3 GB und ist der
+    # groesste Prozess auf der Maschine — genau den nimmt der Kernel-OOM-Killer,
+    # wenn ein nixpacks-Build 2 GB anfordert. Ergebnis: ein Deploy eines Kunden
+    # nimmt die Datenbank aller Kunden offline.
+    #
+    # Rechnung fuer die neuen Werte: shared_buffers 512MB + 60 Backends x ~7MB
+    # (~420MB) + work_mem-Peak (realistisch ~100MB) -> unter 1,5 GB statt bis
+    # zu 3 GB. Gewinn ~1 GB, das sind zwei zusaetzliche Tenants.
     command:
       - postgres
       - -c
-      - shared_buffers=1GB
+      - shared_buffers=512MB
       - -c
-      - max_connections=150
+      - max_connections=60
       - -c
-      - work_mem=32MB
+      - work_mem=4MB
       - -c
-      - maintenance_work_mem=512MB
+      - maintenance_work_mem=128MB
+      - -c
+      - effective_cache_size=2GB
+      - -c
+      - wal_compression=on
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=200
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - log_min_duration_statement=1000
+      - -c
+      - track_io_timing=on
+      # Raeumt die Verbindungen auf, die P1-5 auf jedem Fehlerpfad in
+      # cleanupTenantResources() leakt. Default ist AUS, die Leaks blieben
+      # deshalb bis zum Container-Neustart bestehen.
+      - -c
+      - idle_session_timeout=600000
+      - -c
+      - idle_in_transaction_session_timeout=60000
+      # Audit §15: Cross-Tenant-Zugriffe wurden nirgends geloggt.
+      - -c
+      - log_connections=on
+      - -c
+      - log_disconnections=off
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./init-scripts:/docker-entrypoint-initdb.d:ro
@@ -25,8 +64,15 @@ services:
       retries: 5
       start_period: 15s
     restart: unless-stopped
+    mem_limit: 2g
+    memswap_limit: 2g
     networks:
       - traefik-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   pgbouncer:
     image: edoburu/pgbouncer:v1.25.2-p0
@@ -40,13 +86,42 @@ services:
       AUTH_TYPE: scram-sha-256
       IGNORE_STARTUP_PARAMETERS: search_path
       POOL_MODE: transaction
-      MAX_CLIENT_CONN: 1000
+      # Audit §5: DEFAULT_POOL_SIZE war nicht gesetzt -> Upstream-Default 20
+      # Server-Verbindungen pro (User, Datenbank)-Paar. Bei zwei Pool-Schluesseln
+      # pro Tenant sind das 40 gewuenschte Server-Verbindungen pro Tenant, gegen
+      # jetzt 60 verfuegbare insgesamt. MAX_CLIENT_CONN=1000 war dazu sinnlos hoch.
+      DEFAULT_POOL_SIZE: 5
+      MIN_POOL_SIZE: 0
+      RESERVE_POOL_SIZE: 2
+      RESERVE_POOL_TIMEOUT: 3
+      MAX_DB_CONNECTIONS: 20
+      MAX_USER_CONNECTIONS: 15
+      MAX_CLIENT_CONN: 500
+      SERVER_IDLE_TIMEOUT: 120
+      # Ohne das haengen Requests unbegrenzt in der Queue, statt mit einem
+      # Fehler zurueckzukommen, den die App behandeln kann.
+      QUERY_WAIT_TIMEOUT: 15
+      # Audit §5, wichtigster unverifizierter Befund: das Image erzeugt
+      # userlist.txt aus DB_USER/DB_PASSWORD — also nur `postgres`. Die Rollen
+      # authenticator_<slug> stehen dort nicht. Mit AUTH_QUERY authentifiziert
+      # PgBouncer sie direkt gegen pg_shadow, statt sie stillschweigend auf
+      # postgres zu mappen (was PostgREST in jeder Tenant-DB zum Superuser
+      # machen und RLS ueberall aushebeln wuerde).
+      AUTH_USER: pgbouncer_auth
+      DB_PASSWORD_AUTH: ${PGBOUNCER_AUTH_PASSWORD}
+      AUTH_QUERY: "SELECT usename, passwd FROM pgbouncer_auth.user_lookup($1)"
     depends_on:
       core-postgres:
         condition: service_healthy
     restart: unless-stopped
+    mem_limit: 128m
     networks:
       - traefik-net
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   pgdata:

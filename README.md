@@ -18,11 +18,14 @@ Jeder Tenant (Kunde) bekommt automatisiert:
 - eigene PostgREST- und GoTrue-Instanz (Auth), analog zu Supabase
 - eigenen MinIO-Bucket mit eigenen IAM-Credentials (S3-kompatibler Storage)
 - eine eigene Deployment-Pipeline: GitHub-Repo verbinden → Push löst automatisch
-  einen Build (Nixpacks) und Blue-Green-Deploy auf einer eigenen Subdomain aus,
-  inkl. Rollback-Funktion
+  einen Build (Nixpacks) und einen Deploy auf einer eigenen Subdomain aus,
+  inkl. abgesicherter Rollback-Funktion. Kein echtes Blue-Green: zwischen dem
+  Umschalten des alten und dem Gesundwerden des neuen Containers liegen
+  typischerweise 3–15 Sekunden Downtime
 - automatisches TLS über Traefik + Let's Encrypt (DNS-01 via Cloudflare)
-- Uptime-Monitoring (Uptime Kuma) und verschlüsselte, automatisierte Backups
-  (age-Verschlüsselung → Object Storage via rclone)
+- Uptime-Monitoring (Uptime Kuma) und täglich per Cron laufende, age-verschlüsselte
+  Backups nach Object Storage (rclone) — inklusive Postgres-Globals, aller
+  Datenbanken, MinIO und der Konfiguration; Restore ist skriptiert und getestet
 
 Verwaltet wird alles über ein zentrales Next.js-Dashboard mit Tenant-Verwaltung,
 Table-/SQL-Editor, Deployment-Historie mit Live-Logs, Domain- und
@@ -68,10 +71,17 @@ Variable stehen kommentiert direkt in [`.env.example`](./.env.example).
 
 ## Sicherheitsdesign (kurz)
 
-- Kein direkter Docker-Socket-Zugriff für den Provisioning Agent — läuft über einen
-  eingeschränkten `docker-socket-proxy` (nur benötigte API-Gruppen freigeschaltet).
-- Alle Secrets (JWT, MinIO-Keys, Webhook-Secrets) werden mit AES-256-GCM
-  verschlüsselt in der Datenbank abgelegt, nie im Klartext.
+- Der Provisioning Agent spricht nicht direkt mit dem Docker-Socket, sondern über
+  einen `docker-socket-proxy` in einem eigenen `internal`-Netzwerk, zu dem nur der
+  Agent Zugriff hat. `EXEC` und `VOLUMES` sind abgeschaltet. Zur ehrlichen
+  Einordnung: die API-Gruppen-Flags des Proxys filtern nur Pfad und Methode, nicht
+  den Request-Body — `POST` + `CONTAINERS` ist für sich genommen root-äquivalent.
+  Die wirksame Grenze ist die Netzwerktrennung, nicht die Flags.
+- `kunden.minio_secret_key_encrypted` und `project_env_vars.value_encrypted` werden
+  mit AES-256-GCM verschlüsselt in der Datenbank abgelegt. **Nicht** verschlüsselt
+  sind derzeit `kunden.gotrue_jwt_secret`, `kunden.authenticator_password`,
+  `kunden.anon_jwt`, `kunden.service_role_jwt` und `projects.webhook_secret` — diese
+  stehen im Klartext in der Datenbank (offener Punkt, siehe unten).
 - GitHub-Webhooks werden per HMAC-SHA256-Signatur gegen den rohen Request-Body
   verifiziert.
 - Rate-Limiting auf drei Stufen (global, Webhooks, sensible Operationen).
@@ -89,3 +99,29 @@ Punkten.
 Alle Rechte vorbehalten — siehe [LICENSE](./LICENSE). Der Code ist zu
 Demonstrationszwecken öffentlich einsehbar, aber nicht zur Wiederverwendung,
 Modifikation oder Weiterverbreitung freigegeben.
+
+
+## Ehrlicher Sicherheitsstand
+
+Dieses Repository wurde am 10.08.2026 auf Commit `0430f9c` einem vollständigen
+Production-Readiness-Audit unterzogen. Die dort gefundenen P0-Befunde sind in
+Sprint 21 behoben: Netzwerk-Isolation des Socket-Proxys und der Kundencontainer,
+Tenant-Isolation auf Datenbankebene (`REVOKE CONNECT` plus Rollen pro Tenant),
+Advisory Lock beim Provisioning, wertbasierte Secret-Maskierung und
+wiederherstellbare Backups.
+
+Offen, und hier bewusst dokumentiert statt beschönigt:
+
+- Es existiert **keine Testsuite**. Sieben der elf schwersten Audit-Befunde wären
+  von vier Integrationstests gefunden worden (Tenant-Isolation, Backup-Restore,
+  Deploy-Concurrency, Route-Vertrag).
+- `kunden.gotrue_jwt_secret`, `kunden.authenticator_password` und
+  `projects.webhook_secret` liegen im Klartext in der Datenbank.
+- Der Tabellen-Editor im Dashboard behandelt zusammengesetzte Primärschlüssel
+  noch nicht korrekt (offener Punkt P1-2).
+- Die Plattform ist für 5–10 Tenants auf einem 8-GB-VPS ausgelegt. Darüber
+  braucht es mehr RAM oder eine zweite Maschine.
+- `next-auth` läuft als Beta mit Caret-Range.
+
+Wer das Repo als Referenz liest: die Architektur-Entscheidungen sind in
+[ARCHITECTURE.md](./ARCHITECTURE.md) begründet, die bekannten Grenzen stehen hier.
