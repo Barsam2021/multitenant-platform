@@ -29,6 +29,20 @@ interface ProjectStat {
   kumaUrl: string | null;
 }
 
+interface DiskUsage {
+  totalBytes: number;
+  usedBytes: number;
+  availableBytes: number;
+  usedPercent: number;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1e12) return `${(bytes / 1e12).toFixed(1)} TB`;
+  if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
+  if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(0)} MB`;
+  return `${bytes} B`;
+}
+
 // Gleiche Konvention wie projects/[slug]/deployments/page.tsx.
 const STATUS_COLOR: Record<string, string> = {
   queued: "var(--text-dim)",
@@ -60,13 +74,43 @@ function timeAgo(iso: string | null): string {
 
 export default function PlatformOverviewPage() {
   const [data, setData] = useState<Overview | null>(null);
+  const [disk, setDisk] = useState<DiskUsage | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [cleaning, setCleaning] = useState(false);
+  const [cleanupNote, setCleanupNote] = useState<string | null>(null);
 
   function load() {
     fetch("/api/stats/overview")
       .then((r) => r.json())
       .then((d) => (d.error ? setError(d.error) : setData(d)))
       .catch(() => setError("Verbindung zum Provisioning Agent fehlgeschlagen"));
+    // P3-6: eigener, leichtgewichtiger Request statt Teil von /stats/overview -
+    // df blockiert diesen sonst mit.
+    fetch("/api/stats/disk")
+      .then((r) => r.json())
+      .then((d) => !d.error && setDisk(d))
+      .catch(() => {});
+  }
+
+  async function handleCleanupNow() {
+    setCleaning(true);
+    setCleanupNote(null);
+    try {
+      const res = await fetch("/api/cleanup/run", { method: "POST" });
+      const d = await res.json();
+      if (!res.ok) {
+        setCleanupNote(d.error || "Aufräumen fehlgeschlagen");
+        return;
+      }
+      setCleanupNote(
+        `${d.snapshots?.removed?.length ?? 0} Build-Snapshots, ${d.images?.removed?.length ?? 0} Docker-Images entfernt (${formatBytes(d.snapshots?.freedBytes ?? 0)} freigegeben).`
+      );
+      load();
+    } catch {
+      setCleanupNote("Verbindung zum Provisioning Agent fehlgeschlagen");
+    } finally {
+      setCleaning(false);
+    }
   }
 
   useEffect(() => {
@@ -109,6 +153,46 @@ export default function PlatformOverviewPage() {
           </div>
         </div>
       </div>
+
+      {disk && (
+        <div
+          style={{
+            border: `1px solid ${disk.usedPercent >= 80 ? "var(--danger)" : "var(--border)"}`,
+            borderRadius: 8,
+            padding: 14,
+            marginBottom: 24,
+            background: "var(--panel)",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>
+              Plattenbelegung (/opt)
+              {disk.usedPercent >= 80 && (
+                <span style={{ color: "var(--danger)", marginLeft: 8 }}>
+                  ⚠ {disk.usedPercent}% belegt — Build-Snapshots/Docker-Images aufräumen
+                </span>
+              )}
+            </span>
+            <button className="btn" onClick={handleCleanupNow} disabled={cleaning}>
+              {cleaning ? "Räume auf…" : "Jetzt aufräumen"}
+            </button>
+          </div>
+          <div style={{ height: 8, borderRadius: 4, background: "var(--panel-raised)", overflow: "hidden" }}>
+            <div
+              style={{
+                height: "100%",
+                width: `${Math.min(100, disk.usedPercent)}%`,
+                background: disk.usedPercent >= 80 ? "var(--danger)" : disk.usedPercent >= 60 ? "#e0a340" : "#2da44e",
+              }}
+            />
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 6 }}>
+            {formatBytes(disk.usedBytes)} von {formatBytes(disk.totalBytes)} belegt ({disk.usedPercent}%) ·{" "}
+            {formatBytes(disk.availableBytes)} frei
+          </div>
+          {cleanupNote && <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 6 }}>{cleanupNote}</div>}
+        </div>
+      )}
 
       {projects.length === 0 && <div className="empty-state">Noch keine Projekte angelegt.</div>}
 

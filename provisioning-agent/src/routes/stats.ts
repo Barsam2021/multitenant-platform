@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { Client as PGClient } from 'pg';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { getDiskUsage } from '../lib/cleanup';
 
 const execFileP = promisify(execFile);
 const PGBOUNCER_HOST = process.env.PGBOUNCER_HOST || 'pgbouncer';
@@ -36,6 +37,15 @@ async function readDockerStats(): Promise<Record<string, DockerStatsLine>> {
 }
 
 export const statsRouter = Router();
+
+// GET /stats/disk — P3-6: Plattenbelegung fuer die Uebersichtsseite. Getrennt
+// von /stats/overview, damit ein df-Aufruf nicht jeden Overview-Request
+// mitbremst - die Uebersichtsseite ruft beide parallel ab.
+statsRouter.get('/stats/disk', async (_req, res) => {
+  const disk = await getDiskUsage();
+  if (!disk) return res.status(500).json({ error: 'df fehlgeschlagen' });
+  res.json(disk);
+});
 
 // GET /stats — rohe docker-stats + DB-Connections. Unveraendertes Verhalten,
 // nur aus index.ts hierher verschoben (siehe /stats/overview fuer die

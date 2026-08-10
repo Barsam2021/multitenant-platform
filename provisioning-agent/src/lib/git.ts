@@ -4,7 +4,7 @@ import { existsSync } from 'fs';
 
 const execFileP = promisify(execFile);
 
-const BUILDS_ROOT = '/opt/multitenant-platform/deployments/builds';
+export const BUILDS_ROOT = '/opt/multitenant-platform/deployments/builds';
 const GITHUB_PAT = process.env.GITHUB_PAT;
 const ASKPASS_SCRIPT = '/app/scripts/git-askpass.sh';
 

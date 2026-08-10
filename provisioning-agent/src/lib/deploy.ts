@@ -6,6 +6,7 @@ import { nixpacksBuild } from './nixpacks';
 import { buildEnvVars } from './secrets';
 import { maskSecrets } from './crypto';
 import { detectBuildErrorHint } from './buildErrorHints';
+import { truncateBuildLog } from './cleanup';
 
 const execFileP = promisify(execFile);
 
@@ -83,7 +84,7 @@ async function updateDeployment(
   const vals: any[] = [];
   let i = 1;
   if (fields.status !== undefined) { sets.push(`status = $${i++}`); vals.push(fields.status); }
-  if (fields.build_log !== undefined) { sets.push(`build_log = $${i++}`); vals.push(fields.build_log); }
+  if (fields.build_log !== undefined) { sets.push(`build_log = $${i++}`); vals.push(truncateBuildLog(fields.build_log)); }
   if (fields.container_name !== undefined) { sets.push(`container_name = $${i++}`); vals.push(fields.container_name); }
   if (fields.image_tag !== undefined) { sets.push(`image_tag = $${i++}`); vals.push(fields.image_tag); }
   if (fields.commit_message !== undefined) { sets.push(`commit_message = $${i++}`); vals.push(fields.commit_message); }

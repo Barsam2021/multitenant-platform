@@ -16,6 +16,8 @@ import { backupsRouter } from './routes/backups';
 import { secretsRouter } from './routes/secrets';
 import { auditRouter } from './routes/audit';
 import { statsRouter } from './routes/stats';
+import { cleanupRouter } from './routes/cleanup';
+import { runCleanup } from './lib/cleanup';
 import { encrypt } from './lib/crypto';
 import { signTenantJwt } from './lib/jwt';
 import { actorStorage } from './lib/actorContext';
@@ -407,6 +409,7 @@ app.use(backupsRouter);
 app.use(secretsRouter); // rate-limitet sich selbst, siehe routes/secrets.ts
 app.use(auditRouter);
 app.use(statsRouter); // P1-8: /stats + /stats/overview, siehe routes/stats.ts
+app.use(cleanupRouter); // P3-6: /cleanup/run
 
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
@@ -419,4 +422,18 @@ app.listen(3001, () => {
     .catch((err) => console.error('healMissingRouters fehlgeschlagen:', err.message))
     .then(() => resumePendingDomainChecks())
     .catch((err) => console.error('resumePendingDomainChecks fehlgeschlagen:', err.message));
+
+  // P3-6: taeglicher Aufraeum-Lauf (Build-Snapshots, Docker-Images) - ohne das
+  // laeuft die VPS-Platte bei taeglichen Deployments innerhalb von Wochen voll.
+  // Kein node-cron noetig fuer ein einzelnes taegliches Intervall. Erster Lauf
+  // schon 5 Minuten nach Start (nicht erst nach 24h) - ein frisch
+  // durchgestarteter Agent soll nicht erst einen vollen Tag warten, falls
+  // vorher schon Platz knapp war.
+  const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+  setTimeout(() => {
+    runCleanup().catch((err) => console.error('Initialer Cleanup-Lauf fehlgeschlagen:', err.message));
+  }, 5 * 60 * 1000);
+  setInterval(() => {
+    runCleanup().catch((err) => console.error('Taeglicher Cleanup-Lauf fehlgeschlagen:', err.message));
+  }, ONE_DAY_MS);
 });
