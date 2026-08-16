@@ -98,6 +98,15 @@ export async function nixpacksBuild(
       maxBuffer: 1024 * 1024 * 32, // 32MB — Build-Logs können lang werden
       timeout: 10 * 60 * 1000, // 10 Minuten Hard-Timeout pro Build
       signal,
+      // Nixpacks baut mit `--docker-output type=docker`, das erzwingt BuildKit/buildx.
+      // BuildKit braucht dafuer eine rohe, bidirektionale Session zum Docker-Daemon
+      // (HTTP-Upgrade auf einen gRPC-Stream) — das kann der tecnativa/docker-socket-proxy
+      // (HAProxy-ACL nach Pfad+Methode, kein echtes Protokoll-Upgrade) strukturell nicht
+      // durchreichen und antwortet mit "unable to upgrade to tcp, received 403". Nur fuer
+      // den Build-Prozess deshalb der rohe Socket statt DOCKER_HOST=tcp://docker-socket-proxy:2375
+      // (Env-Default aus dem Container) — alle anderen Docker-Aufrufe (deploy.ts, cleanup.ts,
+      // traefikDynamic.ts) laufen unveraendert ueber den Proxy.
+      env: { ...process.env, DOCKER_HOST: 'unix:///var/run/docker.sock' },
     });
     const secretValues = Object.values(envVars || {});
     return { imageTag, log: skipNote + maskSecrets(stdout + '\n' + stderr, secretValues) };

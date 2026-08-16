@@ -95,6 +95,13 @@ services:
       UPTIME_KUMA_PASSWORD: ${UPTIME_KUMA_PASSWORD}
     volumes:
       - /opt/multitenant-platform:/opt/multitenant-platform
+      # Nur fuer nixpacks/BuildKit-Builds (siehe lib/nixpacks.ts) — der Proxy kann das
+      # BuildKit-Session-Upgrade nicht durchreichen (403). Alle anderen Docker-Aufrufe
+      # (Container run/rm/rename, Image-Prune, Netzwerke) laufen weiterhin ueber
+      # DOCKER_HOST=tcp://docker-socket-proxy:2375, unveraendert. Kein zusaetzliches
+      # Risiko: CONTAINERS+POST am Proxy sind bereits root-aequivalent (siehe Kommentar
+      # oben in dieser Datei), der Agent hat also ohnehin schon effektiv vollen Zugriff.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       - docker-socket-proxy
     networks:
