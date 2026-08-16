@@ -110,6 +110,15 @@ services:
       AUTH_USER: pgbouncer_auth
       DB_PASSWORD_AUTH: ${PGBOUNCER_AUTH_PASSWORD}
       AUTH_QUERY: "SELECT usename, passwd FROM pgbouncer_auth.user_lookup($1)"
+      # Ohne AUTH_DBNAME fuehrt PgBouncer die AUTH_QUERY gegen die Ziel-Datenbank
+      # der jeweiligen Verbindung aus (hier: kunde_<slug>). pgbouncer_auth.user_lookup
+      # existiert aber nur in der Datenbank "postgres" (18_pgbouncer_auth.sql), da
+      # pg_shadow/pg_authid clusterweit gelten und die Funktion nicht pro Tenant-DB
+      # dupliziert werden muss. Ohne dieses Flag schlaegt AUTH_QUERY fuer JEDE
+      # Tenant-DB mit "schema pgbouncer_auth does not exist" fehl — GoTrue/PostgREST
+      # koennen sich nie verbinden (beobachtet: Tenant-Provisioning bricht nach 90s
+      # Healthcheck-Timeout auf auth-<slug> ab, siehe pgbouncer-Log).
+      AUTH_DBNAME: postgres
     depends_on:
       core-postgres:
         condition: service_healthy
