@@ -24,6 +24,7 @@ export interface TenantSecrets {
   minioSecretKey: string;
   anonJwt: string;
   serviceRoleJwt: string;
+  postgrestPublicEnabled: boolean;
 }
 
 /**
@@ -35,7 +36,7 @@ export async function getTenantSecrets(tenantSlug: string): Promise<TenantSecret
   await db.connect();
   try {
     const { rows } = await db.query(
-      `SELECT gotrue_jwt_secret, minio_access_key, minio_secret_key_encrypted, anon_jwt, service_role_jwt
+      `SELECT gotrue_jwt_secret, minio_access_key, minio_secret_key_encrypted, anon_jwt, service_role_jwt, postgrest_public_enabled
        FROM kunden WHERE slug = $1`,
       [tenantSlug]
     );
@@ -47,6 +48,7 @@ export async function getTenantSecrets(tenantSlug: string): Promise<TenantSecret
       minioSecretKey: row.minio_secret_key_encrypted ? decrypt(row.minio_secret_key_encrypted) : '',
       anonJwt: row.anon_jwt || '',
       serviceRoleJwt: row.service_role_jwt || '',
+      postgrestPublicEnabled: !!row.postgrest_public_enabled,
     };
   } finally {
     await db.end();
@@ -84,6 +86,25 @@ export async function buildEnvVars(
 ): Promise<Record<string, string>> {
   const tenant = await getTenantSecrets(tenantSlug);
   const projectVars = await getProjectEnvVars(projectId);
+  const platformDomain = process.env.PLATFORM_DOMAIN;
+
+  // @supabase/ssr (createBrowserClient/createServerClient) erwartet zwingend die
+  // NEXT_PUBLIC_-praefixierten Namen — nur so nimmt Next.js sie ins Client-Bundle
+  // auf. Die interne SUPABASE_URL (http://api-<slug>:3000) ist dafuer unbrauchbar,
+  // ein Browser kann den Docker-Hostnamen nicht aufloesen — hier muss die oeffentliche
+  // PostgREST-URL rein, und die existiert nur, wenn der Tenant das per
+  // POST /tenants/:slug/public-access explizit freigegeben hat (siehe RLS-Warnung
+  // dort: ohne RLS-Policies ist die DB dann fuer jeden mit dem Anon-Key lese-/
+  // schreibbar). Deshalb bewusst kein Fallback auf die interne URL — ohne Freigabe
+  // bleiben die NEXT_PUBLIC_-Vars weg, damit der App-seitige Fehler ("Missing
+  // NEXT_PUBLIC_SUPABASE_URL") auf die eigentliche Ursache zeigt statt auf eine
+  // unerreichbare interne Adresse.
+  const publicSupabaseVars: Record<string, string> = tenant.postgrestPublicEnabled && platformDomain
+    ? {
+        NEXT_PUBLIC_SUPABASE_URL: `https://${tenantSlug}-api.${platformDomain}`,
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: tenant.anonJwt,
+      }
+    : {};
 
   return {
     MINIO_ENDPOINT: 'http://core-minio:9000',
@@ -96,6 +117,7 @@ export async function buildEnvVars(
     SUPABASE_URL: `http://api-${tenantSlug}:3000`, // Alias, falls Kunden-App Supabase-SDK nutzt
     SUPABASE_ANON_KEY: tenant.anonJwt,
     SUPABASE_SERVICE_ROLE_KEY: tenant.serviceRoleJwt,
+    ...publicSupabaseVars,
     ...projectVars,
   };
 }
