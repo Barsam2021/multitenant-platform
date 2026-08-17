@@ -176,7 +176,85 @@ docker exec provisioning-agent wget -qO- --post-data='' \
 Rotation übernimmt der Agent selbst (ab 200 MB, per SIGUSR1 an Traefik) — es
 braucht **kein** logrotate.
 
-## Schritt 9 — Health-Check
+## Schritt 9 — CMS-Modul einrichten (optional)
+
+Nur nötig, wenn Endkunden ihre Inhalte selbst pflegen sollen. Ohne diese Schritte
+läuft alles andere unverändert weiter.
+
+**1. Migrationen und Schlüssel**
+
+```bash
+cd /opt/multitenant-platform && ./scripts/migrate.sh   # 21_cms.sql, 22_cms_config_role.sql
+
+# Zwei getrennte Geheimnisse erzeugen und in die .env eintragen:
+openssl rand -hex 32   # -> CMS_ENCRYPTION_KEY
+openssl rand -hex 32   # -> CMS_SESSION_SECRET
+```
+
+`CMS_ENCRYPTION_KEY` ist bewusst **nicht** `ENCRYPTION_MASTER_KEY`: der CMS-Dienst
+steht offen im Internet und soll bei einer Kompromittierung keine MinIO- und
+JWT-Secrets der Tenants entschlüsseln können.
+
+**2. Passwort der Konfigurationsrolle setzen**
+
+Migration 22 legt die Rolle `cms_config` an, aber ohne Passwort — bis hier kann
+sie sich nicht anmelden:
+
+```bash
+CMS_DB_PW=$(openssl rand -hex 24)
+docker exec -i core-postgres psql -U postgres -d admin_dashboard \
+  -c "ALTER ROLE cms_config WITH PASSWORD '$CMS_DB_PW';"
+echo "CMS_DATABASE_URL=postgres://cms_config:$CMS_DB_PW@core-postgres:5432/admin_dashboard"
+```
+
+Die ausgegebene Zeile in die `.env` übernehmen.
+
+**3. Medien-Auslieferung**
+
+Hochgeladene Bilder liegen im MinIO-Bucket des Kunden, der von außen nicht
+erreichbar ist. Dafür braucht es einen Traefik-Router auf MinIO — als Datei unter
+`traefik/dynamic/media.yml`:
+
+```yaml
+http:
+  routers:
+    media:
+      rule: "Host(`media.example.com`)"          # an PLATFORM_DOMAIN anpassen
+      entryPoints: [websecure]
+      service: media-svc
+      tls:
+        certResolver: myresolver
+  services:
+    media-svc:
+      loadBalancer:
+        servers:
+          - url: "http://core-minio:9000"
+```
+
+Dazu `MEDIA_PUBLIC_BASE_URL=https://media.example.com` in die `.env`, und pro
+Kunde das Präfix `public/` öffentlich lesbar machen — **nur** dieses Präfix:
+
+```bash
+docker exec provisioning-agent mc anonymous set download \
+  localminio/kunde-<slug>-storage/public
+```
+
+**4. Dienst starten**
+
+```bash
+cd /opt/multitenant-platform/cms && docker compose --env-file ../.env up -d --build
+```
+
+DNS: `cms.<PLATFORM_DOMAIN>` und `media.<PLATFORM_DOMAIN>` zeigen auf die VPS-IP
+(der Wildcard-A-Record aus Schritt 3 deckt beides ab).
+
+**5. Pro Kunde freischalten**
+
+Im Dashboard unter Projekt → **CMS**: aktivieren, Tabellen als Sammlungen
+freigeben, Felder beschriften, Zugang für den Kunden anlegen. Der Kunde meldet
+sich dann unter `https://cms.<PLATFORM_DOMAIN>/<slug>` an.
+
+## Schritt 10 — Health-Check
 
 ```bash
 docker exec provisioning-agent wget -qO- \

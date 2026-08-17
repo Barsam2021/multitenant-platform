@@ -18,6 +18,7 @@ import { auditRouter } from './routes/audit';
 import { statsRouter } from './routes/stats';
 import { cleanupRouter } from './routes/cleanup';
 import { analyticsRouter } from './routes/analytics';
+import { cmsRouter } from './routes/cms';
 import { runCleanup } from './lib/cleanup';
 import { ingestAccessLog } from './lib/analytics';
 import { provisionTenantDatabase } from './lib/tenantDatabase';
@@ -167,6 +168,10 @@ async function cleanupTenantResources(slug: string): Promise<{ warnings: string[
     await master.query('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1', [dbName]);
     await master.query(format('DROP DATABASE IF EXISTS %I;', dbName));
     await master.query(format('DROP ROLE IF EXISTS %I;', `authenticator_${slug}`));
+    // Migration 21: die CMS-Rolle haengt an derselben Datenbank. Nach dem DROP
+    // DATABASE besitzt sie nichts mehr, laesst sich also direkt entfernen —
+    // ohne das bliebe pro geloeschtem Tenant eine Login-Rolle im Cluster zurueck.
+    await master.query(format('DROP ROLE IF EXISTS %I;', `cms_${slug}`));
     await master.end();
   } catch (e: any) {
     warnings.push(`DB/Rolle löschen fehlgeschlagen: ${e.message}`);
@@ -436,7 +441,7 @@ app.delete('/tenants/:slug', sensitiveOpLimiter, async (req, res) => {
 // als unhandledRejection den Prozess zu beenden.
 for (const r of [projectsRouter, tenantsRouter, deploymentsRouter, domainsRouter,
                  githubRouter, backupsRouter, secretsRouter, auditRouter,
-                 statsRouter, cleanupRouter, analyticsRouter, webhooksRouter]) {
+                 statsRouter, cleanupRouter, analyticsRouter, cmsRouter, webhooksRouter]) {
   wrapRouterAsync(r);
 }
 
@@ -451,6 +456,7 @@ app.use(auditRouter);
 app.use(statsRouter); // P1-8: /stats + /stats/overview, siehe routes/stats.ts
 app.use(cleanupRouter); // P3-6: /cleanup/run
 app.use(analyticsRouter); // Besucherstatistik, siehe lib/analytics.ts
+app.use(cmsRouter); // CMS-Rolle + Tabellenrechte, siehe lib/cms.ts
 
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));

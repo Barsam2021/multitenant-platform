@@ -28,6 +28,8 @@ export interface Tenant {
   db_enabled: boolean;
   /** Migration 19: existiert ueberhaupt eine Datenbank (dann liegen dort Daten)? */
   db_provisioned: boolean;
+  /** Migration 21: CMS-Modul fuer diesen Kunden freigeschaltet? */
+  cms_enabled: boolean;
   created_at: string;
 }
 
@@ -47,7 +49,7 @@ export const NO_TENANT_DATABASE_ERROR =
   "Für diesen Kunden wurde nie eine Datenbank angelegt. Im Tab „Übersicht“ unter „Datenbank & Auth“ einschalten.";
 
 const TENANT_COLUMNS =
-  "id, slug, db_name, tariff, display_name, contact_email, status, notes, db_enabled, db_provisioned, created_at";
+  "id, slug, db_name, tariff, display_name, contact_email, status, notes, db_enabled, db_provisioned, cms_enabled, created_at";
 
 export async function listTenants(): Promise<Tenant[]> {
   const pool = getAdminPool();

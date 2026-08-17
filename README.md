@@ -36,16 +36,22 @@ Verwaltet wird alles über ein zentrales Next.js-Dashboard mit Tenant-Verwaltung
 Table-/SQL-Editor, Deployment-Historie mit Live-Logs, Besucherstatistik, Domain-
 und Environment-Variable-Verwaltung sowie Audit-Log.
 
-In Planung: ein CMS-Modul, mit dem **Endkunden** ihre Inhalte selbst pflegen
-(Blogbeiträge, Bilder-Uploads) — schemagetrieben, weil jedes Kundenprojekt anders
-aussieht. Der ausgearbeitete Umsetzungsplan steht in
-[docs/CMS-PLAN.md](./docs/CMS-PLAN.md).
+Dazu kommt ein **CMS für die Endkunden** (`cms/`): der Kunde meldet sich unter
+`cms.<domain>/<slug>` an und pflegt seine Inhalte selbst — Beiträge schreiben,
+Bilder hochladen. Schemagetrieben, weil jedes Kundenprojekt anders aussieht: der
+Betreiber gibt im Dashboard einzelne Tabellen als Sammlungen frei, die Felder
+werden aus dem Postgres-Schema vorbelegt und lassen sich danach beschriften,
+ausblenden und im Typ hochstufen. Zugriff hat der Kunde ausschließlich auf die
+freigegebenen Tabellen — das ist auf Datenbankebene erzwungen (eigene, pro
+Tabelle berechtigte Rolle), nicht nur in der Oberfläche. Entwurf und offene
+Punkte: [docs/CMS-PLAN.md](./docs/CMS-PLAN.md).
 
 ## Tech-Stack
 
 | Bereich | Technologie |
 |---|---|
 | Dashboard | Next.js 15 (App Router), React 19, TypeScript, NextAuth v5 |
+| CMS (Endkunden) | Next.js 15, eigene Session (JWT-Cookie), sharp + MinIO für Uploads |
 | Provisioning Agent | Node.js/TypeScript, Express, direkte Docker-API-Steuerung |
 | Datenbank | PostgreSQL (zentral) + PgBouncer, pro Tenant eigene DB |
 | Auth (pro Tenant) | GoTrue |

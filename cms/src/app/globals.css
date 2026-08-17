@@ -1,0 +1,349 @@
+/* Eigenes, bewusst kleines Stylesheet — nicht das des Dashboards.
+   Zwei Gruende: der CMS-Dienst ist ein getrenntes Image ohne gemeinsames
+   node_modules, und die Zielgruppe ist eine andere. Ein Redakteur, der einmal
+   pro Woche einen Beitrag schreibt, braucht grosse Klickflaechen und wenig
+   Bildschirm-Dichte — das Gegenteil der Betreiber-Konsole.
+   Die Farbtokens sind absichtlich dieselben Namen wie im Dashboard, damit
+   Anpassungen dort ohne Nachdenken uebertragbar sind. */
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --panel-raised: #f0f1f4;
+  --border: #dde1e7;
+  --text: #1a1d22;
+  --text-dim: #5a6270;
+  --text-faint: #9aa1ac;
+  --accent: #3f5fc9;
+  --accent-dim: #dce3fb;
+  --danger: #d1373c;
+  --success: #2f9970;
+  --font-ui: -apple-system, "Segoe UI", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+:root[data-theme="dark"] {
+  --bg: #0f1216;
+  --panel: #171b21;
+  --panel-raised: #1d222a;
+  --border: #2a3038;
+  --text: #e4e7eb;
+  --text-dim: #99a2af;
+  --text-faint: #666f7c;
+  --accent: #7d9bf2;
+  --accent-dim: #2a3a66;
+  --danger: #e5484d;
+  --success: #3fb88a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+a {
+  color: var(--accent);
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+/* --- Rahmen --- */
+
+.shell {
+  display: flex;
+  min-height: 100vh;
+}
+
+.sidebar {
+  width: 240px;
+  flex-shrink: 0;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  padding: 20px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.brand {
+  font-weight: 600;
+  font-size: 15px;
+  padding: 0 8px 14px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
+}
+
+.brand span {
+  display: block;
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.nav-link {
+  display: block;
+  padding: 9px 10px;
+  border-radius: 6px;
+  color: var(--text-dim);
+  text-decoration: none;
+  font-size: 14px;
+}
+
+.nav-link:hover {
+  background: var(--panel-raised);
+  color: var(--text);
+}
+
+.nav-link.active {
+  background: var(--accent-dim);
+  color: var(--text);
+}
+
+.main {
+  flex: 1;
+  padding: 28px 32px 60px;
+  max-width: 1100px;
+}
+
+@media (max-width: 720px) {
+  .shell {
+    flex-direction: column;
+  }
+  .sidebar {
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 12px;
+  }
+  .brand {
+    border-bottom: none;
+    margin-bottom: 0;
+    padding-bottom: 0;
+    width: 100%;
+  }
+  .main {
+    padding: 20px 16px 40px;
+  }
+}
+
+/* --- Bausteine --- */
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 18px;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 14px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--panel-raised);
+  color: var(--text);
+  font-size: 14px;
+  font-family: inherit;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.btn:hover {
+  border-color: var(--accent);
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.btn-danger {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: transparent;
+}
+
+input,
+textarea,
+select {
+  width: 100%;
+  padding: 9px 11px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+}
+
+input[type="checkbox"] {
+  width: auto;
+}
+
+input:focus,
+textarea:focus,
+select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+label.field {
+  display: block;
+  margin-bottom: 16px;
+}
+
+label.field > span.label {
+  display: block;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 5px;
+}
+
+label.field > span.help {
+  display: block;
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+
+.required-mark {
+  color: var(--danger);
+  margin-left: 3px;
+}
+
+table.rows {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+table.rows th {
+  text-align: left;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-dim);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+table.rows td {
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+table.rows tr:hover td {
+  background: var(--panel-raised);
+}
+
+.muted {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.error-box {
+  border: 1px solid var(--danger);
+  border-left-width: 3px;
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: var(--danger);
+  font-size: 14px;
+  background: var(--panel);
+  margin-bottom: 16px;
+}
+
+.success-box {
+  border: 1px solid var(--success);
+  border-left-width: 3px;
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: var(--success);
+  font-size: 14px;
+  background: var(--panel);
+  margin-bottom: 16px;
+}
+
+.empty-state {
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  padding: 32px;
+  text-align: center;
+  color: var(--text-dim);
+}
+
+.page-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.page-head h1 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.media-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.media-tile {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--panel);
+}
+
+.media-tile img {
+  width: 100%;
+  height: 110px;
+  object-fit: cover;
+  display: block;
+}
+
+.media-tile .meta {
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  word-break: break-all;
+}
+
+.login-wrap {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 380px;
+}
