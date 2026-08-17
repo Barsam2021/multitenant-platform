@@ -26,6 +26,23 @@ services:
       - --certificatesresolvers.httpresolver.acme.storage=/letsencrypt/acme-http.json
       - --certificatesresolvers.httpresolver.acme.httpchallenge=true
       - --certificatesresolvers.httpresolver.acme.httpchallenge.entrypoint=web
+      # Besucher-Analytics: JSON-Accesslog in eine Datei, die der Provisioning
+      # Agent inkrementell einliest (provisioning-agent/src/lib/analytics.ts).
+      # Bewusst hier statt eines Tracking-Scripts in jeder Kunden-App — der
+      # Proxy sieht ohnehin jeden Request, und nichts davon laesst sich per
+      # Adblocker abschalten.
+      - --accesslog=true
+      - --accesslog.filepath=/logs/access.log
+      - --accesslog.format=json
+      # Headers werden per Default NICHT geloggt. Ohne diese beiden Zeilen gibt
+      # es weder Bot-Erkennung noch Besucher-Unterscheidung (beides braucht den
+      # User-Agent) und keine Herkunft.
+      - --accesslog.fields.headers.names.User-Agent=keep
+      - --accesslog.fields.headers.names.Referer=keep
+      # Nur die Anfragen, die auch ausgeliefert wurden. Spart einen erheblichen
+      # Teil des Volumens (Scanner-Traffic auf /wp-admin & Co.), und gezaehlt
+      # werden ohnehin nur Antworten unter 400.
+      - --accesslog.filters.statuscodes=100-399
     environment:
       CF_DNS_API_TOKEN: ${CF_DNS_API_TOKEN}
     ports:
@@ -35,6 +52,10 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./letsencrypt:/letsencrypt
       - ./dynamic:/dynamic
+      # Der Provisioning Agent liest hier mit (er mountet /opt/multitenant-platform
+      # komplett) und rotiert die Datei, wenn sie zu gross wird — per SIGUSR1,
+      # dem von Traefik dafuer vorgesehenen Weg.
+      - ./logs:/logs
     # Audit §11: Traefik hatte kein mem_limit. Auf 8 GB zaehlt jedes Limit,
     # das den OOM-Killer davon abhaelt, sich Postgres auszusuchen.
     mem_limit: 256m

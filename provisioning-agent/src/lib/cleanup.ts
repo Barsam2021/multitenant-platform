@@ -184,9 +184,59 @@ export async function pruneOldDockerImages(): Promise<{ removed: string[]; error
   return { removed, errors };
 }
 
+/**
+ * Analytics-Retention. Drei unterschiedliche Fristen, weil die drei Tabellen
+ * unterschiedlich schnell wachsen und unterschiedlich lange interessant sind:
+ *
+ *  - analytics_visitors: eine Zeile pro Besucher UND Tag UND Domain, mit
+ *    Abstand die groesste Tabelle. Die Tages-Uniques stehen nach dem Ingest
+ *    ohnehin als Zahl in analytics_daily — die Hashes selbst braucht danach
+ *    niemand mehr. Kurze Frist, auch aus Datenschutzgruenden.
+ *  - analytics_page_views / _referrers: pro Pfad bzw. Herkunft und Tag.
+ *  - analytics_daily: eine Zeile pro Domain und Tag. Bleibt lange, das ist der
+ *    Jahresvergleich und kostet fast nichts.
+ */
+const ANALYTICS_VISITOR_RETENTION_DAYS = Number(process.env.ANALYTICS_VISITOR_RETENTION_DAYS || 90);
+const ANALYTICS_DETAIL_RETENTION_DAYS = Number(process.env.ANALYTICS_DETAIL_RETENTION_DAYS || 180);
+const ANALYTICS_DAILY_RETENTION_DAYS = Number(process.env.ANALYTICS_DAILY_RETENTION_DAYS || 730);
+
+export async function pruneAnalytics(): Promise<{ deleted: Record<string, number>; errors: string[] }> {
+  const deleted: Record<string, number> = {};
+  const errors: string[] = [];
+  const db = adminClient();
+  await db.connect();
+  try {
+    const targets: [string, string, number][] = [
+      ['analytics_visitors', 'visitors', ANALYTICS_VISITOR_RETENTION_DAYS],
+      ['analytics_page_views', 'pageViews', ANALYTICS_DETAIL_RETENTION_DAYS],
+      ['analytics_referrers', 'referrers', ANALYTICS_DETAIL_RETENTION_DAYS],
+      ['analytics_daily', 'daily', ANALYTICS_DAILY_RETENTION_DAYS],
+    ];
+    for (const [table, key, days] of targets) {
+      try {
+        // Tabellenname kommt aus dieser Konstante, nie aus einem Request —
+        // trotzdem keine Interpolation von Nutzereingaben (CLAUDE.md § 2.3).
+        const { rowCount } = await db.query(
+          `DELETE FROM ${table} WHERE day < (CURRENT_DATE - $1::int)`,
+          [days]
+        );
+        deleted[key] = rowCount || 0;
+      } catch (e: any) {
+        // Migration 20 noch nicht gelaufen: kein Grund, den ganzen Cleanup
+        // abzubrechen.
+        errors.push(`${table}: ${e.message}`);
+      }
+    }
+  } finally {
+    await db.end();
+  }
+  return { deleted, errors };
+}
+
 export interface CleanupResult {
   snapshots: { removed: string[]; freedBytes: number; errors: string[] };
   images: { removed: string[]; errors: string[] };
+  analytics: { deleted: Record<string, number>; errors: string[] };
 }
 
 /**
@@ -197,13 +247,15 @@ export interface CleanupResult {
 export async function runCleanup(): Promise<CleanupResult> {
   const snapshots = await pruneOldBuildSnapshots();
   const images = await pruneOldDockerImages();
+  const analytics = await pruneAnalytics();
   await logAudit('cleanup.run', null, {
     snapshotsRemoved: snapshots.removed.length,
     freedBytes: snapshots.freedBytes,
     imagesRemoved: images.removed.length,
-    errors: [...snapshots.errors, ...images.errors],
+    analyticsDeleted: analytics.deleted,
+    errors: [...snapshots.errors, ...images.errors, ...analytics.errors],
   });
-  return { snapshots, images };
+  return { snapshots, images, analytics };
 }
 
 export async function getDiskUsage(): Promise<{ totalBytes: number; usedBytes: number; availableBytes: number; usedPercent: number } | null> {

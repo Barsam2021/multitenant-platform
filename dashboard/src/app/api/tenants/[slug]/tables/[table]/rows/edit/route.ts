@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
-import { getTenantBySlug } from "@/lib/adminDb";
+import { getTenantBySlug, hasTenantDatabase, NO_TENANT_DATABASE_ERROR } from "@/lib/adminDb";
 import { updateRow, deleteRow } from "@/lib/tenantDb";
 import { logAudit } from "@/lib/audit";
 
@@ -27,6 +27,9 @@ export async function PATCH(
   const tenant = await getTenantBySlug(slug);
   if (!tenant) {
     return NextResponse.json({ error: "tenant not found" }, { status: 404 });
+  }
+  if (!hasTenantDatabase(tenant)) {
+    return NextResponse.json({ error: NO_TENANT_DATABASE_ERROR }, { status: 409 });
   }
 
   const { pkColumn, pkValue, values } = await req.json();
@@ -67,6 +70,9 @@ export async function DELETE(
   const tenant = await getTenantBySlug(slug);
   if (!tenant) {
     return NextResponse.json({ error: "tenant not found" }, { status: 404 });
+  }
+  if (!hasTenantDatabase(tenant)) {
+    return NextResponse.json({ error: NO_TENANT_DATABASE_ERROR }, { status: 409 });
   }
 
   const { pkColumn, pkValue } = await req.json();

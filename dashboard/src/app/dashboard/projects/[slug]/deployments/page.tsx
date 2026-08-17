@@ -17,6 +17,15 @@ interface Deployment {
   finished_at: string | null;
 }
 
+interface WebhookStatus {
+  ok: boolean;
+  webhookUrl?: string;
+  active?: boolean;
+  events?: string[];
+  lastResponse?: { code: number | null; status: string | null; message: string | null };
+  reason?: string;
+}
+
 const ACTIVE_STATES = ["queued", "building", "healthchecking"];
 const CANCELLABLE_STATES = ["queued", "building", "healthchecking"];
 
@@ -106,7 +115,35 @@ export default function DeploymentsPage({
   const [openLogs, setOpenLogs] = useState<Set<string>>(new Set());
   const [rollbackTarget, setRollbackTarget] = useState<string | null>(null);
   const [cancelTarget, setCancelTarget] = useState<string | null>(null);
+  const [webhook, setWebhook] = useState<WebhookStatus | null>(null);
+  const [repairing, setRepairing] = useState(false);
   const toast = useToast();
+
+  const loadWebhook = useCallback((projectId: string) => {
+    fetch(`/api/projects/${projectId}/webhook`)
+      .then((r) => r.json())
+      .then((d) => setWebhook(d?.error ? { ok: false, reason: d.error } : d))
+      .catch(() => setWebhook({ ok: false, reason: "Webhook-Status nicht abrufbar" }));
+  }, []);
+
+  async function handleRepairWebhook() {
+    if (!project) return;
+    setRepairing(true);
+    try {
+      const res = await fetch(`/api/projects/${project.id}/webhook/repair`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || "Webhook-Reparatur fehlgeschlagen");
+        return;
+      }
+      toast.success("Webhook registriert — der nächste Push baut automatisch neu.");
+      loadWebhook(project.id);
+    } catch {
+      toast.error("Verbindung zum Provisioning Agent fehlgeschlagen");
+    } finally {
+      setRepairing(false);
+    }
+  }
 
   const loadDeployments = useCallback((projectId: string) => {
     fetch(`/api/deployments/${projectId}`)
@@ -119,6 +156,7 @@ export default function DeploymentsPage({
   useEffect(() => {
     if (!project) return;
     loadDeployments(project.id);
+    loadWebhook(project.id);
     // P3-2: Tab im Hintergrund pollt nicht mehr mit.
     const interval = setInterval(() => {
       if (document.visibilityState !== "visible") return;
@@ -130,7 +168,7 @@ export default function DeploymentsPage({
       });
     }, 3000);
     return () => clearInterval(interval);
-  }, [project, loadDeployments]);
+  }, [project, loadDeployments, loadWebhook]);
 
   function toggleLogs(id: string) {
     setOpenLogs((prev) => {
@@ -229,6 +267,49 @@ export default function DeploymentsPage({
       </div>
 
       {error && <div className="error-box" style={{ marginBottom: 12 }}>{error}</div>}
+
+      {/* Push-to-Deploy-Status. Ohne diese Zeile ist "Push loest kein Deployment
+          aus" ein stiller Zustand: das Projekt sieht verbunden aus, GitHub
+          liefert aber ins Leere. */}
+      {webhook && (
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: 8,
+            border: "1px solid var(--border)",
+            borderLeft: `3px solid ${webhook.ok ? "#2da44e" : "var(--danger)"}`,
+            borderRadius: 8,
+            padding: "10px 12px",
+            marginBottom: 12,
+            background: "var(--panel)",
+            fontSize: 13,
+          }}
+        >
+          <div>
+            <strong>{webhook.ok ? "Auto-Deploy aktiv" : "Auto-Deploy inaktiv"}</strong>
+            <div style={{ color: "var(--text-dim)", marginTop: 2 }}>
+              {webhook.ok
+                ? "Ein Push auf den Default-Branch baut und deployt automatisch."
+                : webhook.reason || "Webhook-Status unbekannt."}
+              {webhook.webhookUrl && (
+                <>
+                  <br />
+                  <code style={{ fontSize: 11 }}>{webhook.webhookUrl}</code>
+                </>
+              )}
+            </div>
+          </div>
+          {!webhook.ok && (
+            <button className="btn" onClick={handleRepairWebhook} disabled={repairing}>
+              {repairing ? "Registriere…" : "Webhook reparieren"}
+            </button>
+          )}
+        </div>
+      )}
+
       {deployments.length === 0 && <div className="empty-state">Noch kein Deployment.</div>}
       {deployments.map((d) => {
         const logsOpen = openLogs.has(d.id);

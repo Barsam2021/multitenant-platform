@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
-import { getTenantBySlug } from "@/lib/adminDb";
+import { getTenantBySlug, hasTenantDatabase, NO_TENANT_DATABASE_ERROR } from "@/lib/adminDb";
 import { getRows, insertRow } from "@/lib/tenantDb";
 import { logAudit } from "@/lib/audit";
 
@@ -27,6 +27,9 @@ export async function GET(
   const tenant = await getTenantBySlug(slug);
   if (!tenant) {
     return NextResponse.json({ error: "tenant not found" }, { status: 404 });
+  }
+  if (!hasTenantDatabase(tenant)) {
+    return NextResponse.json({ error: NO_TENANT_DATABASE_ERROR }, { status: 409 });
   }
 
   const url = new URL(req.url);
@@ -81,6 +84,9 @@ export async function POST(
   const tenant = await getTenantBySlug(slug);
   if (!tenant) {
     return NextResponse.json({ error: "tenant not found" }, { status: 404 });
+  }
+  if (!hasTenantDatabase(tenant)) {
+    return NextResponse.json({ error: NO_TENANT_DATABASE_ERROR }, { status: 409 });
   }
 
   const values = await req.json();

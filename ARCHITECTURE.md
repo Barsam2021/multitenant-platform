@@ -19,8 +19,12 @@ multitenant-platform/
 │                           init-scripts/ = versionierte SQL-Migrationen (Rollen,
 │                           Admin-Schema, Audit-Logs, Backups, Monitoring, Previews)
 │
+├── docs/CMS-PLAN.md        Umsetzungsplan für das geplante CMS-Modul (Endkunden
+│                           pflegen ihre Inhalte selbst) — noch nicht gebaut
+│
 ├── minio/                  S3-kompatibler Object Storage, ein Bucket pro Tenant
 ├── traefik/                Reverse Proxy + automatisches TLS (Let's Encrypt, DNS-01)
+│                           logs/access.log = JSON-Accesslog, Quelle der Analytics
 ├── cloudflared/             Cloudflare Tunnel für Admin-Zugriff ohne offenen Port
 ├── monitoring/uptime-kuma/  Uptime-Monitoring pro Projekt/Tenant
 ├── backups/                 Backup- und Restore-Test-Skripte (age + rclone)
@@ -34,14 +38,23 @@ multitenant-platform/
 Dashboard (POST /api/provision-tenant)
    │  X-Agent-Secret
    ▼
-Provisioning Agent (POST /tenants)
-   ├─ CREATE DATABASE kunde_<slug>          (core-postgres, via PgBouncer)
-   ├─ CREATE ROLE authenticator_<slug>       (eingeschränkte Rolle für PostgREST/GoTrue)
-   ├─ MinIO: Bucket + IAM-User + Policy anlegen
-   ├─ AES-256-GCM: Secrets (JWT, MinIO-Key) verschlüsselt in `kunden`-Tabelle ablegen
-   └─ Docker: Container für GoTrue + PostgREST starten
-       (Ressourcen-Limits nach Tarif, Healthchecks, eigenes Compose-Template)
+Provisioning Agent (POST /tenants)   { withDatabase: true | false }
+   ├─ nur wenn withDatabase (lib/tenantDatabase.ts):
+   │   ├─ CREATE DATABASE kunde_<slug>       (core-postgres, via PgBouncer)
+   │   ├─ CREATE ROLE authenticator_<slug>   (eingeschränkte Rolle für PostgREST/GoTrue)
+   │   └─ Docker: Container für GoTrue + PostgREST starten
+   │       (Ressourcen-Limits nach Tarif, Healthchecks, eigenes Compose-Template)
+   ├─ MinIO: Bucket + IAM-User + Policy anlegen   (immer — kostet keinen Container)
+   └─ AES-256-GCM: Secrets (JWT, MinIO-Key) verschlüsselt in `kunden`-Tabelle ablegen
 ```
+
+Die Datenbank-Ebene ist optional und nachträglich schaltbar
+(`POST /tenants/:slug/database`, Migration 19). Zwei Flags in `kunden`:
+`db_provisioned` (Datenbank existiert — wird nie wieder false, solange der Tenant
+existiert) und `db_enabled` (Container sollen laufen). Abschalten ist ein
+`docker compose down`: RAM frei, Daten unangetastet, Tabellen- und SQL-Editor im
+Dashboard funktionieren weiter (die verbinden direkt über PgBouncer, nicht über
+PostgREST).
 
 ## Datenfluss: Deployment (Push-to-Deploy)
 
@@ -50,6 +63,10 @@ GitHub Push
    │  HMAC-SHA256-signierter Webhook
    ▼
 Provisioning Agent (POST /webhooks/github/:projectId)
+   │  Router wird unter dem Prefix '/webhooks' gemountet, die Route darin heisst
+   │  deshalb '/github/:projectId'. Stand dort der volle Pfad, lag der Endpunkt
+   │  effektiv unter /webhooks/webhooks/... und GitHub bekam 401 — Push loeste
+   │  dann nie ein Deployment aus.
    ├─ Signatur gegen rohen Body verifizieren (express.raw, nicht express.json!)
    ├─ Nur reagieren, wenn Ziel-Branch == default_branch
    ├─ Repo klonen, Nixpacks-Build ausführen
@@ -60,6 +77,36 @@ Provisioning Agent (POST /webhooks/github/:projectId)
    │  zwischen Umbenennen und Gesundwerden, siehe Audit §10.)
    └─ Deployment-Log live ins Dashboard (Polling) + Rollback-Option
 ```
+
+## Datenfluss: Besucher-Analytics
+
+```
+Besucher  ──▶  Traefik  ──▶  Kunden-Container
+                  │
+                  └─ schreibt JSON-Zeile nach traefik/logs/access.log
+                         │
+                         ▼
+              Provisioning Agent (lib/analytics.ts, jede Minute)
+                 ├─ liest ab gemerktem Byte-Offset (analytics_ingest_state)
+                 ├─ verwirft Assets, Bots und die eigene Uptime-Überwachung
+                 ├─ ordnet RequestHost über `domains` einem Projekt zu
+                 ├─ Besucher = HMAC(Tages-Salt, IP + User-Agent + Host)
+                 └─ schreibt Aggregate: analytics_daily / _page_views /
+                    _referrers / _visitors
+                         │
+                         ▼
+              Dashboard-Tab „Besucher" (GET /analytics/:projectId)
+```
+
+Bewusst am Proxy statt per Tracking-Script in der Kunden-App: kein Eingriff in
+Kundencode, nicht durch Adblocker abschaltbar, funktioniert auch für rein
+statische Seiten. Der Preis ist, dass clientseitige Navigation (SPA-Routenwechsel
+ohne neuen Request) nicht gezählt wird.
+
+Datenschutz: keine IP, kein User-Agent wird gespeichert. Das Salt des
+Besucher-Hashes wechselt täglich, ein Besucher ist also innerhalb eines Tages
+wiedererkennbar und darüber hinaus nicht. Entsprechend ist „Besucher" über einen
+Zeitraum die Summe der Tageswerte, nicht die Zahl unterschiedlicher Personen.
 
 ## Docker-Sicherheitsmodell
 

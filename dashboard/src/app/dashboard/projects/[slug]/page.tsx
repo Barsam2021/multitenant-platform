@@ -13,6 +13,8 @@ interface Tenant {
   contact_email: string | null;
   notes: string | null;
   status: string;
+  db_enabled: boolean;
+  db_provisioned: boolean;
 }
 
 interface GithubRepo {
@@ -49,7 +51,37 @@ export default function ProjectOverviewPage({
   const [editingCustomer, setEditingCustomer] = useState(false);
   const [customerForm, setCustomerForm] = useState({ displayName: "", contactEmail: "", notes: "" });
   const [savingCustomer, setSavingCustomer] = useState(false);
+  const [dbBusy, setDbBusy] = useState(false);
+  const [dbTarget, setDbTarget] = useState<boolean | null>(null);
   const toast = useToast();
+
+  // Datenbank + Auth pro Kunde an-/abschalten (Migration 19). Aus ist der
+  // Normalfall fuer reine Landingpages: spart zwei dauerhaft laufende Container.
+  async function handleDatabaseToggle(enabled: boolean) {
+    setDbBusy(true);
+    try {
+      const res = await fetch(`/api/tenants/${slug}/database`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || "Umschalten fehlgeschlagen");
+        return;
+      }
+      setTenant((prev) => (prev ? { ...prev, db_enabled: enabled, db_provisioned: prev.db_provisioned || enabled } : prev));
+      toast.success(
+        enabled
+          ? "Datenbank aktiv — PostgREST und Auth laufen."
+          : "Datenbank abgeschaltet — Container gestoppt, Daten bleiben erhalten."
+      );
+    } catch {
+      toast.error("Verbindung zum Provisioning Agent fehlgeschlagen");
+    } finally {
+      setDbBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (project?.preview_hostname) setPreviewHostname(project.preview_hostname);
@@ -202,12 +234,62 @@ export default function ProjectOverviewPage({
       <h2 style={{ marginTop: 0, fontSize: 16 }}>{tenant?.display_name || slug}</h2>
       {tenant && (
         <div style={{ fontSize: 13, color: "var(--text-dim)", marginBottom: 12 }}>
-          {slug} · {tenant.db_name} · Tarif {tenant.tariff}
+          {slug} · {tenant.db_enabled ? tenant.db_name : "ohne Datenbank"} · Tarif {tenant.tariff}
           {tenant.status === "suspended" && (
             <span style={{ color: "#e0a340", marginLeft: 8 }}>gesperrt</span>
           )}
         </div>
       )}
+
+      {tenant && (
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: 8,
+            border: "1px solid var(--border)",
+            borderRadius: 8,
+            padding: 14,
+            marginBottom: 20,
+            background: "var(--panel)",
+          }}
+        >
+          <div>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>
+              Datenbank &amp; Auth {tenant.db_enabled ? "aktiv" : "abgeschaltet"}
+            </span>
+            <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 4, maxWidth: 620 }}>
+              {tenant.db_enabled
+                ? "PostgREST und GoTrue laufen für diesen Kunden (zusammen ca. 200 MB RAM). Wer nur eine Landingpage betreibt, braucht das nicht."
+                : tenant.db_provisioned
+                  ? "Keine laufenden Container. Die Datenbank samt Inhalt ist noch da und ist beim Einschalten sofort wieder verfügbar."
+                  : "Für diesen Kunden wurde nie eine Datenbank angelegt. Einschalten legt sie an (dauert ca. eine Minute)."}
+            </div>
+          </div>
+          <button
+            className={tenant.db_enabled ? "btn" : "btn btn-primary"}
+            onClick={() => setDbTarget(!tenant.db_enabled)}
+            disabled={dbBusy || tenant.status === "suspended"}
+          >
+            {dbBusy ? "Moment…" : tenant.db_enabled ? "Abschalten" : "Einschalten"}
+          </button>
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={dbTarget !== null}
+        onClose={() => setDbTarget(null)}
+        onConfirm={() => dbTarget !== null && handleDatabaseToggle(dbTarget)}
+        title={dbTarget ? "Datenbank einschalten" : "Datenbank abschalten"}
+        description={
+          dbTarget
+            ? `Für "${slug}" werden PostgREST und GoTrue gestartet${tenant?.db_provisioned ? "" : " und die Datenbank neu angelegt"}.`
+            : `Für "${slug}" werden PostgREST und GoTrue entfernt. Die Datenbank und alle Daten darin BLEIBEN erhalten und sind im Tabellen- und SQL-Editor weiter erreichbar — aber Apps, die die REST-API oder Auth nutzen, fallen aus.`
+        }
+        confirmLabel={dbTarget ? "Einschalten" : "Abschalten"}
+      />
 
       {tenant && (
         <div

@@ -23,10 +23,22 @@ function adminClient(): PGClient {
 export const webhooksRouter = Router();
 
 // POST /webhooks/github/:projectId
-// WICHTIG: dieser Router wird in index.ts mit express.raw() statt express.json()
-// gemountet, weil die HMAC-Signatur über den EXAKTEN rohen Body berechnet wird —
-// ein bereits geparster/re-serialisierter JSON-Body würde die Signatur invalidieren.
-webhooksRouter.post('/webhooks/github/:projectId', async (req, res) => {
+//
+// WICHTIG: dieser Router wird in index.ts UNTER dem Prefix '/webhooks' gemountet
+// (`app.use('/webhooks', ..., webhooksRouter)`). Der Pfad hier ist deshalb
+// RELATIV — '/github/:projectId', nicht '/webhooks/github/:projectId'.
+//
+// Genau das war der Grund, warum ein Push nie ein Deployment ausgeloest hat:
+// mit dem vollen Pfad im Router lag der Endpunkt effektiv unter
+// /webhooks/webhooks/github/<id>. GitHub postete auf die registrierte URL
+// /webhooks/github/<id>, fand dort keine Route, fiel durch auf die
+// X-Agent-Secret-Middleware und bekam 401 — sichtbar nur in "Recent Deliveries"
+// im GitHub-Repo, nirgends im Dashboard. Das Projekt sah aus wie verbunden.
+//
+// Ebenfalls wichtig: express.raw() statt express.json(), weil die HMAC-Signatur
+// über den EXAKTEN rohen Body berechnet wird — ein bereits geparster/
+// re-serialisierter JSON-Body würde die Signatur invalidieren.
+webhooksRouter.post('/github/:projectId', async (req, res) => {
   const { projectId } = req.params;
   const rawBody: Buffer = req.body; // Buffer dank express.raw()
   const signature = req.header('X-Hub-Signature-256');

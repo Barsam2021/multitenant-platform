@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
-import { getTenantBySlug } from "@/lib/adminDb";
+import { getTenantBySlug, hasTenantDatabase, NO_TENANT_DATABASE_ERROR } from "@/lib/adminDb";
 import { listTables } from "@/lib/tenantDb";
 
 export async function GET(
@@ -14,6 +14,9 @@ export async function GET(
   const tenant = await getTenantBySlug(slug);
   if (!tenant) {
     return NextResponse.json({ error: "tenant not found" }, { status: 404 });
+  }
+  if (!hasTenantDatabase(tenant)) {
+    return NextResponse.json({ error: NO_TENANT_DATABASE_ERROR }, { status: 409 });
   }
   try {
     const tables = await listTables(tenant.db_name);

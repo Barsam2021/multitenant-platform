@@ -4,7 +4,7 @@ import { Client } from 'pg';
 import format from 'pg-format';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { readFile, writeFile, mkdir } from 'fs/promises';
+import { writeFile } from 'fs/promises';
 import crypto from 'crypto';
 import { projectsRouter } from './routes/projects';
 import { tenantsRouter } from './routes/tenants';
@@ -17,7 +17,10 @@ import { secretsRouter } from './routes/secrets';
 import { auditRouter } from './routes/audit';
 import { statsRouter } from './routes/stats';
 import { cleanupRouter } from './routes/cleanup';
+import { analyticsRouter } from './routes/analytics';
 import { runCleanup } from './lib/cleanup';
+import { ingestAccessLog } from './lib/analytics';
+import { provisionTenantDatabase } from './lib/tenantDatabase';
 import { encrypt } from './lib/crypto';
 import { signTenantJwt } from './lib/jwt';
 import { actorStorage } from './lib/actorContext';
@@ -219,8 +222,13 @@ async function cleanupTenantResources(slug: string): Promise<{ warnings: string[
 }
 
 app.post('/tenants', sensitiveOpLimiter, async (req, res) => {
-  const { tenantSlug, tariff, displayName, contactEmail, notes } = req.body;
+  const { tenantSlug, tariff, displayName, contactEmail, notes, withDatabase } = req.body;
   const tenantTariff = ['starter','business','premium'].includes(tariff) ? tariff : 'starter';
+  // Datenbank ist optional (Migration 19), aber Default bleibt "ja": ein
+  // Aufrufer, der das Feld nicht kennt (aeltere Dashboard-Version, Skript),
+  // soll denselben Tenant bekommen wie bisher. Nur ein explizites false
+  // ueberspringt DB, Rollen und die beiden Tenant-Container.
+  const wantsDatabase = withDatabase !== false;
 
   if (!tenantSlug || !/^[a-z0-9-]+$/.test(tenantSlug)) {
     return res.status(400).json({ error: 'invalid slug' });
@@ -296,114 +304,25 @@ app.post('/tenants', sensitiveOpLimiter, async (req, res) => {
   const anonJwt = signTenantJwt(jwtSecret, 'anon', tenantSlug);
   const serviceRoleJwt = signTenantJwt(jwtSecret, 'service_role', tenantSlug);
   const authenticatorPw = crypto.randomBytes(16).toString('hex');
-  const authenticatorRole = `authenticator_${tenantSlug}`;
-  const anonRole = `anon_${tenantSlug}`;
-  const authenticatedRole = `authenticated_${tenantSlug}`;
-  const serviceRole = `service_role_${tenantSlug}`;
 
   try {
-    const master = new Client({
-      connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/postgres`,
-    });
-    master.on('error', (e) => console.error('pg client error (master):', e.message));
-    await master.connect();
-    await master.query(format('CREATE DATABASE %I;', dbName));
-    // P0-2a (Audit 0430f9c): Postgres vergibt CONNECT auf jede neue Datenbank
-    // standardmaessig an PUBLIC. Ohne dieses REVOKE kann sich JEDE Login-Rolle
-    // im Cluster — also jeder authenticator_<fremder-slug> — auf diese Tenant-DB
-    // verbinden. Zusammen mit den clusterweiten Rollen anon/authenticated/
-    // service_role (BYPASSRLS) bedeutet das vollen Lese- und Schreibzugriff auf
-    // fremde Tenants. Muss VOR dem Rollen-Template stehen, damit zwischen
-    // CREATE DATABASE und REVOKE kein Fenster offen ist.
-    await master.query(format('REVOKE ALL ON DATABASE %I FROM PUBLIC;', dbName));
-    await master.end();
-
-    const tenant = new Client({
-      connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/${dbName}`,
-    });
-    tenant.on('error', (e) => console.error('pg client error (tenant):', e.message));
-    await tenant.connect();
-    const rolesSql = await readFile(
-      '/opt/multitenant-platform/core-postgres/templates/authenticator-role.sql.template',
-      'utf8'
-    );
-    await tenant.query(
-      rolesSql
-        .replace(/__AUTH_ROLE__/g, authenticatorRole)
-        .replace(/__ANON_ROLE__/g, anonRole)
-        .replace(/__AUTHENTICATED_ROLE__/g, authenticatedRole)
-        .replace(/__SERVICE_ROLE__/g, serviceRole)
-        .replace(/CHANGE_ME/g, authenticatorPw)
-    );
-    await tenant.query(format('CREATE SCHEMA IF NOT EXISTS auth AUTHORIZATION %I;', authenticatorRole));
-    await tenant.query(format('GRANT ALL ON SCHEMA auth TO %I;', authenticatorRole));
-    await tenant.query(format('ALTER ROLE %I IN DATABASE %I SET search_path = auth, public;', authenticatorRole, dbName));
-    // P0-2a: Gegenstueck zum REVOKE oben — genau diese eine Rolle darf rein.
-    // TEMPORARY ist session-lokal und damit kein Isolationsrisiko.
-    await tenant.query(format('GRANT CONNECT, TEMPORARY ON DATABASE %I TO %I;', dbName, authenticatorRole));
-    await tenant.end();
-
-    const tierPrefix = tenantTariff.toUpperCase();
-    const postgrestMem = process.env[`${tierPrefix}_POSTGREST_MEM`] || '64m';
-    const postgrestCpus = process.env[`${tierPrefix}_POSTGREST_CPUS`] || '0.25';
-    const gotrueMem = process.env[`${tierPrefix}_GOTRUE_MEM`] || '128m';
-    const gotrueCpus = process.env[`${tierPrefix}_GOTRUE_CPUS`] || '0.25';
-
-    const template = await readFile('/app/templates/tenant-compose.yml', 'utf8');
-    const compose = template
-      .replace(/\$\{SLUG\}/g, tenantSlug)
-      .replace(/\$\{JWT_SECRET\}/g, jwtSecret)
-      .replace(/\$\{AUTH_PW\}/g, authenticatorPw)
-      .replace(/\$\{AUTH_ROLE\}/g, authenticatorRole)
-      .replace(/\$\{PLATFORM_DOMAIN\}/g, process.env.PLATFORM_DOMAIN as string)
-      .replace(/\$\{POSTGREST_MEM\}/g, postgrestMem)
-      .replace(/\$\{POSTGREST_CPUS\}/g, postgrestCpus)
-      .replace(/\$\{GOTRUE_MEM\}/g, gotrueMem)
-      .replace(/\$\{GOTRUE_CPUS\}/g, gotrueCpus)
-      // P1-7: hier stand bisher hart '' — RESEND_API_KEY wurde nie tatsächlich
-      // durchgereicht, GOTRUE_SMTP_PASS war deshalb bei JEDEM Tenant leer und
-      // GoTrue konnte nie eine Bestätigungsmail verschicken (bei
-      // GOTRUE_MAILER_AUTOCONFIRM=false heisst das: kein Tenant-User konnte sich
-      // je registrieren). RESEND_API_KEY ist eine globale Plattform-Variable
-      // (.env.example), keine pro-Tenant-Einstellung — resend_api_key_encrypted
-      // in kunden bleibt bewusst ungenutzt (siehe routes/secrets.ts Kommentar).
-      .replace(/\$\{RESEND_API_KEY\}/g, process.env.RESEND_API_KEY || '')
-      .replace(/\$\{TENANT_NAME\}/g, tenantSlug);
-
-    if (!process.env.RESEND_API_KEY) {
-      console.warn(
-        `RESEND_API_KEY nicht gesetzt — GoTrue-Bestätigungsmails für Tenant "${tenantSlug}" ` +
-        `werden fehlschlagen, kein User kann sich registrieren, bis .env ergänzt und ` +
-        `der auth-Container neu gestartet wird.`
-      );
+    // Secrets werden IMMER erzeugt und gespeichert, auch ohne Datenbank: sie
+    // kosten nichts, und wenn der Kunde spaeter doch eine DB bekommt, laeuft das
+    // Nachprovisionieren mit exakt denselben Werten (die anon/service_role-JWTs
+    // muessen zum gotrue_jwt_secret passen, sonst sind bereits ausgelieferte
+    // Keys ungueltig).
+    if (wantsDatabase) {
+      await provisionTenantDatabase({
+        slug: tenantSlug,
+        tariff: tenantTariff,
+        jwtSecret,
+        authenticatorPassword: authenticatorPw,
+      });
     }
 
-    const tenantDir = `/opt/multitenant-platform/kunden-instances/${tenantSlug}`;
-    await mkdir(tenantDir, { recursive: true });
-    await writeFile(`${tenantDir}/docker-compose.yml`, compose);
-
-    await execFileP('docker', ['compose', '-f', `${tenantDir}/docker-compose.yml`, 'up', '-d', 'auth']);
-
-    // P2-1: vorher hart `setTimeout(8000)`. Auf einer belasteten VPS ist GoTrue
-    // nach 8s noch nicht durch seine DB-Migrationen — das Provisioning scheiterte
-    // dann und loeste (vor P0-3) das destruktive Rollback aus. Jetzt echter
-    // Readiness-Poll gegen /health, mit demselben 8s-Wert als Untergrenze fuer
-    // schnelle Maschinen und 90s Obergrenze fuer langsame.
-    {
-      const deadline = Date.now() + 90_000;
-      let ready = false;
-      while (Date.now() < deadline) {
-        try {
-          const r = await fetch(`http://auth-${tenantSlug}:9999/health`, { signal: AbortSignal.timeout(3000) });
-          if (r.ok) { ready = true; break; }
-        } catch { /* Container startet noch */ }
-        await new Promise((r) => setTimeout(r, 2000));
-      }
-      if (!ready) {
-        throw new Error(`GoTrue (auth-${tenantSlug}) wurde in 90s nicht bereit — docker logs auth-${tenantSlug} pruefen`);
-      }
-    }
-
+    // MinIO haengt NICHT an der Datenbank-Entscheidung: ein Bucket kostet keinen
+    // laufenden Container, und Datei-Uploads sind auch fuer eine reine
+    // Landingpage (Bilder, PDFs) der Normalfall.
     await execFileP('mc', ['alias', 'set', 'localminio', 'http://core-minio:9000', process.env.MINIO_ROOT_USER!, process.env.MINIO_ROOT_PASSWORD!]);
     try {
       await execFileP('mc', ['mb', `localminio/kunde-${tenantSlug}-storage`]);
@@ -432,17 +351,16 @@ app.post('/tenants', sensitiveOpLimiter, async (req, res) => {
     // P2-17: lag vorher dauerhaft im Container-tmp, mit der MinIO-Policy im Klartext.
     await execFileP('rm', ['-f', policyPath]).catch(() => {});
 
-    await execFileP('docker', ['compose', '-f', `${tenantDir}/docker-compose.yml`, 'up', '-d', 'api']);
-
     const admin = new Client({
       connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
     });
     admin.on('error', (e) => console.error('pg client error (admin):', e.message));
     await admin.connect();
     await admin.query(
-      'INSERT INTO kunden (slug, db_name, tariff, gotrue_jwt_secret, authenticator_password, minio_access_key, minio_secret_key_encrypted, anon_jwt, service_role_jwt, display_name, contact_email, notes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)',
+      'INSERT INTO kunden (slug, db_name, tariff, gotrue_jwt_secret, authenticator_password, minio_access_key, minio_secret_key_encrypted, anon_jwt, service_role_jwt, db_enabled, db_provisioned, display_name, contact_email, notes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)',
       [
         tenantSlug, dbName, tenantTariff, jwtSecret, authenticatorPw, minioAccessKey, encrypt(minioSecretKey), anonJwt, serviceRoleJwt,
+        wantsDatabase, wantsDatabase,
         // P2-6: display_name faellt auf den Slug zurueck statt leer zu bleiben -
         // die Projektliste braucht immer einen anzeigbaren Namen.
         (typeof displayName === 'string' && displayName.trim()) || tenantSlug,
@@ -452,9 +370,9 @@ app.post('/tenants', sensitiveOpLimiter, async (req, res) => {
     );
     await admin.end();
 
-    await logAudit('tenant.create', tenantSlug, { tariff: tenantTariff, dbName });
+    await logAudit('tenant.create', tenantSlug, { tariff: tenantTariff, dbName, withDatabase: wantsDatabase });
     await releaseLock();
-    res.json({ status: 'ok', slug: tenantSlug, dbName });
+    res.json({ status: 'ok', slug: tenantSlug, dbName: wantsDatabase ? dbName : null, withDatabase: wantsDatabase });
   } catch (err: any) {
     console.error('Provisioning failed:', err.message);
 
@@ -518,7 +436,7 @@ app.delete('/tenants/:slug', sensitiveOpLimiter, async (req, res) => {
 // als unhandledRejection den Prozess zu beenden.
 for (const r of [projectsRouter, tenantsRouter, deploymentsRouter, domainsRouter,
                  githubRouter, backupsRouter, secretsRouter, auditRouter,
-                 statsRouter, cleanupRouter, webhooksRouter]) {
+                 statsRouter, cleanupRouter, analyticsRouter, webhooksRouter]) {
   wrapRouterAsync(r);
 }
 
@@ -532,6 +450,7 @@ app.use(secretsRouter); // rate-limitet sich selbst, siehe routes/secrets.ts
 app.use(auditRouter);
 app.use(statsRouter); // P1-8: /stats + /stats/overview, siehe routes/stats.ts
 app.use(cleanupRouter); // P3-6: /cleanup/run
+app.use(analyticsRouter); // Besucherstatistik, siehe lib/analytics.ts
 
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));
@@ -595,4 +514,24 @@ app.listen(3001, () => {
   setInterval(() => {
     runCleanup().catch((err) => console.error('Taeglicher Cleanup-Lauf fehlgeschlagen:', err.message));
   }, ONE_DAY_MS);
+
+  // Analytics: Traefik-Accesslog einlesen. Jede Minute, weil die Auswertung
+  // "wie viele waren heute da" sonst spuerbar hinterherhinkt — der Lauf selbst
+  // ist billig (er liest nur das, was seit dem letzten Mal dazugekommen ist,
+  // und macht bei leerem Zuwachs genau eine Query).
+  //
+  // Kein setInterval mit ueberlappenden Laeufen: bei einem langen Lauf (grosser
+  // Rueckstand nach Agent-Ausfall) wuerde sich sonst ein zweiter daraufsetzen
+  // und dieselben Zeilen ein zweites Mal zaehlen.
+  const ANALYTICS_INTERVAL_MS = Number(process.env.ANALYTICS_INTERVAL_MS || 60_000);
+  let analyticsRunning = false;
+  const runIngest = () => {
+    if (analyticsRunning) return;
+    analyticsRunning = true;
+    ingestAccessLog()
+      .catch((err) => console.error('Analytics-Ingest fehlgeschlagen:', err.message))
+      .finally(() => { analyticsRunning = false; });
+  };
+  setTimeout(runIngest, 30_000);
+  setInterval(runIngest, ANALYTICS_INTERVAL_MS);
 });
