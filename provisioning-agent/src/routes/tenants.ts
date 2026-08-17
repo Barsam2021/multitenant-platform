@@ -5,6 +5,13 @@ import { promisify } from 'util';
 import { logAudit } from '../lib/audit';
 import { writeTenantServiceRouter, removeTenantServiceRouter, removeAllRoutersForProject } from '../lib/traefikDynamic';
 import { syncProjectRouters } from './domains';
+import {
+  provisionTenantDatabase,
+  startTenantServices,
+  stopTenantServices,
+  tenantComposeExists,
+  tenantComposeFile,
+} from '../lib/tenantDatabase';
 
 const execFileP = promisify(execFile);
 const PGBOUNCER_HOST = process.env.PGBOUNCER_HOST || 'pgbouncer';
@@ -112,6 +119,102 @@ tenantsRouter.post('/tenants/:slug/public-access', async (req, res) => {
   }
 });
 
+// POST /tenants/:slug/database  { enabled: boolean }
+//
+// Die Datenbank-Ebene eines Tenants an- und abschalten (Migration 19). Drei
+// Faelle, die bewusst unterschiedlich viel tun:
+//
+//   enabled=true,  noch nie provisioniert -> CREATE DATABASE + Rollen +
+//                                            Container (~30-90s)
+//   enabled=true,  schon mal provisioniert -> nur `docker compose up -d` (~5s),
+//                                            alle Daten sind noch da
+//   enabled=false                          -> `docker compose down`.
+//                                            RAM frei, DATENBANK BLEIBT.
+//
+// Abschalten loescht bewusst NICHTS: der Kunde, der heute keine Daten braucht,
+// kann naechsten Monat wieder welche brauchen. Wirklich weg ist die Datenbank
+// erst mit DELETE /tenants/:slug (der ganze Tenant).
+tenantsRouter.post('/tenants/:slug/database', async (req, res) => {
+  const { slug } = req.params;
+  const { enabled } = req.body;
+  if (!slug || !/^[a-z0-9-]+$/.test(slug)) return res.status(400).json({ error: 'invalid slug' });
+  if (typeof enabled !== 'boolean') return res.status(400).json({ error: 'enabled must be boolean' });
+
+  const db = adminClient();
+  await db.connect();
+  try {
+    const { rows } = await db.query(
+      `SELECT slug, db_name, tariff, status, db_enabled, db_provisioned, gotrue_jwt_secret, authenticator_password,
+              postgrest_public_enabled, auth_public_enabled
+       FROM kunden WHERE slug = $1`,
+      [slug]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'tenant not found' });
+    const tenant = rows[0];
+
+    if (tenant.db_enabled === enabled && (!enabled || tenant.db_provisioned)) {
+      return res.json({ enabled, unchanged: true });
+    }
+    if (enabled && tenant.status === 'suspended') {
+      return res.status(423).json({ error: `Tenant "${slug}" ist gesperrt — erst reaktivieren.` });
+    }
+
+    if (enabled) {
+      if (!tenant.db_provisioned) {
+        if (!tenant.gotrue_jwt_secret || !tenant.authenticator_password) {
+          // Kann nur bei von Hand manipulierten Zeilen passieren — ohne die
+          // beiden Secrets waeren die bereits ausgelieferten anon/service_role-
+          // JWTs nach dem Provisioning wertlos, also lieber abbrechen als
+          // stillschweigend neue erzeugen.
+          return res.status(409).json({
+            error: `Tenant "${slug}" hat keine gespeicherten DB-Secrets — Datenbank kann nicht nachtraeglich angelegt werden.`,
+          });
+        }
+        await provisionTenantDatabase({
+          slug,
+          tariff: tenant.tariff || 'starter',
+          jwtSecret: tenant.gotrue_jwt_secret,
+          authenticatorPassword: tenant.authenticator_password,
+        });
+        await db.query('UPDATE kunden SET db_provisioned = true, db_enabled = true WHERE slug = $1', [slug]);
+      } else {
+        await startTenantServices(slug);
+        await db.query('UPDATE kunden SET db_enabled = true WHERE slug = $1', [slug]);
+      }
+      // Beim Abschalten wurden die oeffentlichen Router entfernt, die Schalter
+      // in der DB aber behalten — hier den Stand von vorher wiederherstellen,
+      // sonst ist die API nach dem Einschalten still nicht mehr erreichbar.
+      if (tenant.postgrest_public_enabled) {
+        await writeTenantServiceRouter('postgrest', slug, `${slug}-api.${PLATFORM_DOMAIN}`).catch((e: any) =>
+          console.error(`PostgREST-Router fuer ${slug} wiederherstellen fehlgeschlagen:`, e.message)
+        );
+      }
+      if (tenant.auth_public_enabled) {
+        await writeTenantServiceRouter('auth', slug, `${slug}-auth.${PLATFORM_DOMAIN}`).catch((e: any) =>
+          console.error(`GoTrue-Router fuer ${slug} wiederherstellen fehlgeschlagen:`, e.message)
+        );
+      }
+    } else {
+      await stopTenantServices(slug);
+      // Oeffentliche Router auf api-/auth-Container muessen mit weg, sonst
+      // zeigt Traefik auf einen Container, den es nicht mehr gibt (502 statt
+      // "nicht vorhanden"). Die Schalter selbst bleiben gespeichert, damit ein
+      // spaeteres Einschalten den Zustand von vorher wiederherstellen kann.
+      await removeTenantServiceRouter('postgrest', slug).catch(() => {});
+      await removeTenantServiceRouter('auth', slug).catch(() => {});
+      await db.query('UPDATE kunden SET db_enabled = false WHERE slug = $1', [slug]);
+    }
+
+    await logAudit('tenant.database.set', slug, { enabled, provisioned: enabled || tenant.db_provisioned });
+    res.json({ status: 'ok', enabled, provisioned: enabled ? true : tenant.db_provisioned });
+  } catch (err: any) {
+    console.error(`Datenbank-Umschaltung fuer "${slug}" fehlgeschlagen:`, err.message);
+    res.status(500).json({ error: err.message });
+  } finally {
+    await db.end();
+  }
+});
+
 // GET /tenants/:slug — Stammdaten fuer die Bearbeiten-Ansicht (P2-6).
 tenantsRouter.get('/tenants/:slug', async (req, res) => {
   const { slug } = req.params;
@@ -121,7 +224,8 @@ tenantsRouter.get('/tenants/:slug', async (req, res) => {
   await db.connect();
   try {
     const { rows } = await db.query(
-      `SELECT id, slug, db_name, tariff, display_name, contact_email, notes, status, created_at
+      `SELECT id, slug, db_name, tariff, display_name, contact_email, notes, status,
+              db_enabled, db_provisioned, created_at
        FROM kunden WHERE slug = $1`,
       [slug]
     );
@@ -185,12 +289,14 @@ tenantsRouter.post('/tenants/:slug/status', async (req, res) => {
     return res.status(400).json({ error: "status must be 'active' or 'suspended'" });
   }
 
-  const tenantDir = `/opt/multitenant-platform/kunden-instances/${slug}`;
   const db = adminClient();
   await db.connect();
   const warnings: string[] = [];
   try {
-    const { rows: tenantRows } = await db.query('SELECT slug, status FROM kunden WHERE slug = $1', [slug]);
+    const { rows: tenantRows } = await db.query(
+      'SELECT slug, status, db_enabled, db_provisioned FROM kunden WHERE slug = $1',
+      [slug]
+    );
     if (tenantRows.length === 0) return res.status(404).json({ error: 'tenant not found' });
     if (tenantRows[0].status === status) {
       return res.json({ status, unchanged: true });
@@ -201,12 +307,19 @@ tenantsRouter.post('/tenants/:slug/status', async (req, res) => {
       [slug]
     );
 
+    // Migration 19: ein Tenant ohne Datenbank hat gar keine docker-compose.yml.
+    // Ohne diese Pruefung scheitert jedes Sperren/Entsperren solcher Tenants mit
+    // einer Compose-Fehlermeldung ueber eine nicht existierende Datei.
+    const hasTenantServices = tenantRows[0].db_provisioned && tenantComposeExists(slug);
+
     if (status === 'suspended') {
       // Tenant-Instanz (auth/api) stoppen - 'stop' statt 'down', damit 'start'
       // beim Reaktivieren reicht und keine Container-IDs/Volumes neu entstehen.
-      await execFileP('docker', ['compose', '-f', `${tenantDir}/docker-compose.yml`, 'stop']).catch((e: any) =>
-        warnings.push(`Tenant-Container stoppen fehlgeschlagen: ${e.message}`)
-      );
+      if (hasTenantServices) {
+        await execFileP('docker', ['compose', '-f', tenantComposeFile(slug), 'stop']).catch((e: any) =>
+          warnings.push(`Tenant-Container stoppen fehlgeschlagen: ${e.message}`)
+        );
+      }
       for (const p of projects) {
         if (p.active_container) {
           await execFileP('docker', ['stop', p.active_container]).catch((e: any) =>
@@ -222,9 +335,14 @@ tenantsRouter.post('/tenants/:slug/status', async (req, res) => {
       // syncProjectRouters braucht den aktuellen Domain-Stand aus der DB, nicht
       // den Container-Status, daher Reihenfolge hier unkritisch, aber Container
       // zuerst ist die intuitivere Lesart im Log.
-      await execFileP('docker', ['compose', '-f', `${tenantDir}/docker-compose.yml`, 'start']).catch((e: any) =>
-        warnings.push(`Tenant-Container starten fehlgeschlagen: ${e.message}`)
-      );
+      // Nur wieder hochfahren, was vor dem Sperren auch lief: ein Tenant mit
+      // db_enabled=false hat seine Container bewusst abgeschaltet, das Entsperren
+      // darf sie nicht ungefragt zurueckbringen.
+      if (hasTenantServices && tenantRows[0].db_enabled) {
+        await execFileP('docker', ['compose', '-f', tenantComposeFile(slug), 'start']).catch((e: any) =>
+          warnings.push(`Tenant-Container starten fehlgeschlagen: ${e.message}`)
+        );
+      }
       for (const p of projects) {
         if (p.active_container) {
           await execFileP('docker', ['start', p.active_container]).catch((e: any) =>

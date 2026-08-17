@@ -25,6 +25,8 @@ export interface TenantSecrets {
   anonJwt: string;
   serviceRoleJwt: string;
   postgrestPublicEnabled: boolean;
+  /** Migration 19: false = es laufen keine api-/auth-Container fuer diesen Tenant. */
+  dbEnabled: boolean;
 }
 
 /**
@@ -36,7 +38,8 @@ export async function getTenantSecrets(tenantSlug: string): Promise<TenantSecret
   await db.connect();
   try {
     const { rows } = await db.query(
-      `SELECT gotrue_jwt_secret, minio_access_key, minio_secret_key_encrypted, anon_jwt, service_role_jwt, postgrest_public_enabled
+      `SELECT gotrue_jwt_secret, minio_access_key, minio_secret_key_encrypted, anon_jwt, service_role_jwt,
+              postgrest_public_enabled, db_enabled
        FROM kunden WHERE slug = $1`,
       [tenantSlug]
     );
@@ -49,6 +52,7 @@ export async function getTenantSecrets(tenantSlug: string): Promise<TenantSecret
       anonJwt: row.anon_jwt || '',
       serviceRoleJwt: row.service_role_jwt || '',
       postgrestPublicEnabled: !!row.postgrest_public_enabled,
+      dbEnabled: row.db_enabled !== false,
     };
   } finally {
     await db.end();
@@ -106,18 +110,29 @@ export async function buildEnvVars(
       }
     : {};
 
+  // Migration 19: hat der Tenant keine Datenbank-Ebene, wird KEINE der
+  // DB-/Auth-Variablen gesetzt. Sie auf nicht existierende Container zeigen zu
+  // lassen waere die schlechtere Variante: der Supabase-Client wuerde beim
+  // ersten Aufruf mit einem DNS-Fehler auf api-<slug> abbrechen statt beim
+  // Start mit "Missing SUPABASE_URL" — der Fehler zeigt dann auf die Ursache.
+  const databaseVars: Record<string, string> = tenant.dbEnabled
+    ? {
+        GOTRUE_URL: `http://auth-${tenantSlug}:9999`,
+        JWT_SECRET: tenant.gotrueJwtSecret,
+        POSTGREST_URL: `http://api-${tenantSlug}:3000`,
+        SUPABASE_URL: `http://api-${tenantSlug}:3000`, // Alias, falls Kunden-App Supabase-SDK nutzt
+        SUPABASE_ANON_KEY: tenant.anonJwt,
+        SUPABASE_SERVICE_ROLE_KEY: tenant.serviceRoleJwt,
+        ...publicSupabaseVars,
+      }
+    : {};
+
   return {
     MINIO_ENDPOINT: 'http://core-minio:9000',
     MINIO_ACCESS_KEY: tenant.minioAccessKey,
     MINIO_SECRET_KEY: tenant.minioSecretKey,
     S3_BUCKET_NAME: `kunde-${tenantSlug}-storage`,
-    GOTRUE_URL: `http://auth-${tenantSlug}:9999`,
-    JWT_SECRET: tenant.gotrueJwtSecret,
-    POSTGREST_URL: `http://api-${tenantSlug}:3000`,
-    SUPABASE_URL: `http://api-${tenantSlug}:3000`, // Alias, falls Kunden-App Supabase-SDK nutzt
-    SUPABASE_ANON_KEY: tenant.anonJwt,
-    SUPABASE_SERVICE_ROLE_KEY: tenant.serviceRoleJwt,
-    ...publicSupabaseVars,
+    ...databaseVars,
     ...projectVars,
   };
 }

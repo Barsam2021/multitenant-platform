@@ -14,8 +14,10 @@ einzigen VPS — inklusive eigenem Verwaltungs-Dashboard, automatisiertem Deploy
 
 Jeder Tenant (Kunde) bekommt automatisiert:
 
-- eine eigene PostgreSQL-Datenbank (über zentralen PgBouncer-Pool)
-- eigene PostgREST- und GoTrue-Instanz (Auth), analog zu Supabase
+- **optional** eine eigene PostgreSQL-Datenbank (über zentralen PgBouncer-Pool)
+  samt PostgREST- und GoTrue-Instanz. Wer nur eine Landingpage betreibt, bekommt
+  keine — das spart pro Kunde zwei dauerhaft laufende Container (~200 MB RAM)
+  und ist jederzeit nachrüstbar, ohne den Tenant neu anzulegen
 - eigenen MinIO-Bucket mit eigenen IAM-Credentials (S3-kompatibler Storage)
 - eine eigene Deployment-Pipeline: GitHub-Repo verbinden → Push löst automatisch
   einen Build (Nixpacks) und einen Deploy auf einer eigenen Subdomain aus,
@@ -23,13 +25,21 @@ Jeder Tenant (Kunde) bekommt automatisiert:
   Umschalten des alten und dem Gesundwerden des neuen Containers liegen
   typischerweise 3–15 Sekunden Downtime
 - automatisches TLS über Traefik + Let's Encrypt (DNS-01 via Cloudflare)
+- Besucher-Analytics pro Domain: Aufrufe, Besucher, meistbesuchte Seiten und
+  Herkunft — gezählt aus dem Traefik-Accesslog, ohne Cookies, ohne
+  Tracking-Script in der Kunden-App und ohne gespeicherte IP-Adressen
 - Uptime-Monitoring (Uptime Kuma) und täglich per Cron laufende, age-verschlüsselte
   Backups nach Object Storage (rclone) — inklusive Postgres-Globals, aller
   Datenbanken, MinIO und der Konfiguration; Restore ist skriptiert und getestet
 
 Verwaltet wird alles über ein zentrales Next.js-Dashboard mit Tenant-Verwaltung,
-Table-/SQL-Editor, Deployment-Historie mit Live-Logs, Domain- und
-Environment-Variable-Verwaltung sowie Audit-Log.
+Table-/SQL-Editor, Deployment-Historie mit Live-Logs, Besucherstatistik, Domain-
+und Environment-Variable-Verwaltung sowie Audit-Log.
+
+In Planung: ein CMS-Modul, mit dem **Endkunden** ihre Inhalte selbst pflegen
+(Blogbeiträge, Bilder-Uploads) — schemagetrieben, weil jedes Kundenprojekt anders
+aussieht. Der ausgearbeitete Umsetzungsplan steht in
+[docs/CMS-PLAN.md](./docs/CMS-PLAN.md).
 
 ## Tech-Stack
 

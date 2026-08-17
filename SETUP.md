@@ -147,7 +147,36 @@ initialisiert werden:
   aus der `.env` entsprechen, sonst kann der Provisioning Agent keine Monitore
   automatisch anlegen
 
-## Schritt 8 — Health-Check
+## Schritt 8 — Besucher-Analytics aktivieren
+
+Die Analytics lesen den Accesslog von Traefik. Auf einer **bestehenden**
+Installation muss Traefik dafür einmal mit der neuen Konfiguration neu gestartet
+werden (bei einer Neuinstallation ist das schon erledigt):
+
+```bash
+mkdir -p /opt/multitenant-platform/traefik/logs
+cd /opt/multitenant-platform/traefik && docker compose up -d
+
+# Migrationen nachziehen (19_optional_database.sql, 20_analytics.sql)
+cd /opt/multitenant-platform && ./scripts/migrate.sh
+
+# Prüfen, dass Zeilen ankommen:
+tail -1 /opt/multitenant-platform/traefik/logs/access.log
+```
+
+Der Provisioning Agent liest die Datei jede Minute selbstständig ein; für einen
+sofortigen Lauf:
+
+```bash
+docker exec provisioning-agent wget -qO- --post-data='' \
+  --header="X-Agent-Secret: $PROVISIONING_AGENT_SECRET" \
+  http://localhost:3001/analytics/ingest
+```
+
+Rotation übernimmt der Agent selbst (ab 200 MB, per SIGUSR1 an Traefik) — es
+braucht **kein** logrotate.
+
+## Schritt 9 — Health-Check
 
 ```bash
 docker exec provisioning-agent wget -qO- \

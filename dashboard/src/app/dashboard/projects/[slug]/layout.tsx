@@ -9,6 +9,7 @@ const TABS = [
   { href: "/tables", label: "Tabellen" },
   { href: "/sql", label: "SQL" },
   { href: "/deployments", label: "Deployments" },
+  { href: "/analytics", label: "Besucher" },
   { href: "/env", label: "Env-Vars" },
   { href: "/domains", label: "Domains" },
 ];

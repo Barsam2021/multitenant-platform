@@ -15,6 +15,8 @@ interface Tenant {
   contact_email: string | null;
   status: string;
   notes: string | null;
+  db_enabled: boolean;
+  db_provisioned: boolean;
   created_at: string;
 }
 
@@ -34,6 +36,7 @@ export default function ProjectsPage() {
   const [displayName, setDisplayName] = useState("");
   const [contactEmail, setContactEmail] = useState("");
   const [tariff, setTariff] = useState("starter");
+  const [withDatabase, setWithDatabase] = useState(true);
   const [creating, setCreating] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [deletingSlug, setDeletingSlug] = useState<string | null>(null);
@@ -89,6 +92,7 @@ export default function ProjectsPage() {
         body: JSON.stringify({
           tenantSlug: slug,
           tariff,
+          withDatabase,
           displayName: displayName.trim() || undefined,
           contactEmail: contactEmail.trim() || undefined,
         }),
@@ -203,9 +207,26 @@ export default function ProjectsPage() {
             <option value="business">Business</option>
             <option value="premium">Premium</option>
           </select>
+          {/* Migration 19: unabhaengig vom Tarif. Auch ein Premium-Kunde kann
+              eine reine Landingpage betreiben — dann laufen zwei Container
+              weniger. Nachtraeglich einschaltbar, ohne den Tenant neu anzulegen. */}
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+            <input
+              type="checkbox"
+              checked={withDatabase}
+              onChange={(e) => setWithDatabase(e.target.checked)}
+              style={{ width: "auto" }}
+            />
+            Datenbank &amp; Auth
+          </label>
           <button className="btn btn-primary" type="submit" disabled={creating}>
-            {creating ? "Provisioniere… (~10-15s)" : "Anlegen"}
+            {creating ? (withDatabase ? "Provisioniere… (~10-15s)" : "Provisioniere…") : "Anlegen"}
           </button>
+          <span style={{ fontSize: 12, color: "var(--text-dim)", flexBasis: "100%" }}>
+            {withDatabase
+              ? "Mit eigener Postgres-Datenbank, PostgREST-API und Auth (GoTrue)."
+              : "Ohne Datenbank: nur Hosting, Domains und Storage. Spart ca. 200 MB RAM pro Kunde — jederzeit nachrüstbar."}
+          </span>
           {formError && <span style={{ color: "var(--danger)" }}>{formError}</span>}
         </form>
       )}
@@ -261,6 +282,7 @@ export default function ProjectsPage() {
                     label={suspended ? "gesperrt" : "aktiv"}
                     color={suspended ? "warn" : "success"}
                   />
+                  {!t.db_enabled && <span className="pk-badge">ohne DB</span>}
                   {project?.active_container && !suspended && (
                     <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
                       <span

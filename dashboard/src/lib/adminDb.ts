@@ -24,13 +24,35 @@ export interface Tenant {
   contact_email: string | null;
   status: string;
   notes: string | null;
+  /** Migration 19: laufen api-/auth-Container fuer diesen Tenant? */
+  db_enabled: boolean;
+  /** Migration 19: existiert ueberhaupt eine Datenbank (dann liegen dort Daten)? */
+  db_provisioned: boolean;
   created_at: string;
 }
+
+/**
+ * Migration 19: Tabellen-/SQL-Editor brauchen eine EXISTIERENDE Datenbank,
+ * nicht laufende Container. Das Dashboard verbindet sich als postgres-Superuser
+ * direkt ueber PgBouncer (siehe lib/tenantDb.ts) — PostgREST und GoTrue sind
+ * daran unbeteiligt. Ein Kunde mit db_provisioned=true, db_enabled=false kann
+ * seine Daten hier also weiterhin einsehen und bearbeiten; nur seine App kommt
+ * nicht mehr an die API.
+ */
+export function hasTenantDatabase(tenant: Tenant): boolean {
+  return tenant.db_provisioned;
+}
+
+export const NO_TENANT_DATABASE_ERROR =
+  "Für diesen Kunden wurde nie eine Datenbank angelegt. Im Tab „Übersicht“ unter „Datenbank & Auth“ einschalten.";
+
+const TENANT_COLUMNS =
+  "id, slug, db_name, tariff, display_name, contact_email, status, notes, db_enabled, db_provisioned, created_at";
 
 export async function listTenants(): Promise<Tenant[]> {
   const pool = getAdminPool();
   const { rows } = await pool.query<Tenant>(
-    "SELECT id, slug, db_name, tariff, display_name, contact_email, status, notes, created_at FROM kunden ORDER BY created_at DESC"
+    `SELECT ${TENANT_COLUMNS} FROM kunden ORDER BY created_at DESC`
   );
   return rows;
 }
@@ -38,7 +60,7 @@ export async function listTenants(): Promise<Tenant[]> {
 export async function getTenantBySlug(slug: string): Promise<Tenant | null> {
   const pool = getAdminPool();
   const { rows } = await pool.query<Tenant>(
-    "SELECT id, slug, db_name, tariff, display_name, contact_email, status, notes, created_at FROM kunden WHERE slug = $1",
+    `SELECT ${TENANT_COLUMNS} FROM kunden WHERE slug = $1`,
     [slug]
   );
   return rows[0] ?? null;

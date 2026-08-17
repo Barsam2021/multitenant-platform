@@ -23,3 +23,6 @@ diagnose-*.log
 .env.bak-*
 *.bak-*
 *.bak2
+traefik/logs/*
+!traefik/logs/.gitkeep
+*.tsbuildinfo
