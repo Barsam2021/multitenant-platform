@@ -25,4 +25,10 @@ COPY --from=builder /app/node_modules/sharp ./node_modules/sharp
 COPY --from=builder /app/node_modules/@img ./node_modules/@img
 EXPOSE 3002
 ENV PORT=3002
+# Next bindet im standalone-Modus an process.env.HOSTNAME — und Docker setzt
+# diese Variable automatisch auf die Container-ID. Ohne das hier lauscht der
+# Server nur auf der Container-IP: Traefik kommt durch, ein Healthcheck von
+# innen gegen 127.0.0.1 aber nicht, und der Container gilt dauerhaft als
+# unhealthy, obwohl er einwandfrei arbeitet.
+ENV HOSTNAME=0.0.0.0
 CMD ["node", "server.js"]
