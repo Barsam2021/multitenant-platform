@@ -78,6 +78,15 @@ const PGBOUNCER_HOST = process.env.PGBOUNCER_HOST || 'pgbouncer';
 
 app.use('/webhooks', webhookLimiter, express.raw({ type: 'application/json', limit: '5mb' }), webhooksRouter);
 
+// MUSS vor der Secret-Middleware stehen. Der Docker-Healthcheck kennt das
+// Secret nicht (es steht in der .env des Compose-Stacks, nicht im Container-
+// Kommando) — stand /health hinter der Pruefung, kam dort 401 zurueck und der
+// Container galt dauerhaft als "unhealthy", obwohl er einwandfrei lief. Das
+// verdeckt echte Ausfaelle und macht depends_on: service_healthy unbrauchbar.
+// Preisgegeben wird nichts: die Antwort ist eine Konstante, und von aussen ist
+// der Pfad nicht erreichbar — der Traefik-Router nimmt nur /webhooks.
+app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+
 app.use(globalLimiter);
 app.use(express.json());
 app.use((req, res, next) => {
@@ -445,8 +454,6 @@ app.use(cleanupRouter); // P3-6: /cleanup/run
 app.use(analyticsRouter); // Besucherstatistik, siehe lib/analytics.ts
 app.use(cmsRouter); // CMS-Rolle + Tabellenrechte, siehe lib/cms.ts
 
-
-app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
 // Die direkt auf `app` registrierten Handler (POST/DELETE /tenants) haengen im
 // app-eigenen Stack, nicht in einem der Router oben.

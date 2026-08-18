@@ -35,6 +35,9 @@ export function MediaPicker({
       const res = await fetch(`/api/${tenantSlug}/media`, { method: "POST", body });
       const data = await res.json();
       if (!res.ok) {
+        // Bei 401 nicht wegnavigieren: im Formular haengen ungespeicherte
+        // Eingaben, die dabei verloren gingen. Der Hinweis reicht — die
+        // Anmeldung laesst sich in einem zweiten Tab erneuern.
         setError(data.error || "Upload fehlgeschlagen");
         return;
       }

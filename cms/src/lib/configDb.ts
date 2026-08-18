@@ -128,6 +128,37 @@ export async function findUser(tenantSlug: string, email: string): Promise<CmsUs
 }
 
 /**
+ * Nutzer einer bestehenden Sitzung nachschlagen.
+ *
+ * Das Sitzungs-Cookie ist acht Stunden gueltig und traegt die Nutzer-ID in
+ * sich. Ob es diesen Nutzer noch GIBT, weiss es nicht — wird er im Dashboard
+ * geloescht (oder der ganze Tenant neu angelegt), bleibt das Cookie bis zum
+ * Ablauf gueltig und zeigt auf eine ID, die es nicht mehr gibt. Genau daran
+ * ist frueher der Bild-Upload zerbrochen: cms_media.uploaded_by verweist als
+ * einzige Schreiboperation auf cms_users, alles andere lief weiter.
+ */
+export async function getSessionUser(
+  tenantSlug: string,
+  userId: string
+): Promise<{ id: string; email: string; display_name: string | null; role: string; disabled: boolean } | null> {
+  // Eine ID aus einem aelteren Cookie-Format ist keine UUID — die Abfrage
+  // wuerde mit 22P02 abbrechen, gemeint ist aber schlicht "nicht angemeldet".
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(userId)) return null;
+  const { rows } = await getPool().query<{
+    id: string;
+    email: string;
+    display_name: string | null;
+    role: string;
+    disabled: boolean;
+  }>(
+    `SELECT id, email, display_name, role, disabled
+     FROM cms_users WHERE id = $1 AND tenant_slug = $2`,
+    [userId, tenantSlug]
+  );
+  return rows[0] ?? null;
+}
+
+/**
  * Fehlversuche zaehlen und ab einer Schwelle sperren. Der CMS-Login steht im
  * offenen Internet — ohne diese Bremse ist ein Passwort mit 12 Zeichen nur so
  * gut wie die Geduld des Angreifers.
@@ -186,10 +217,18 @@ export async function insertMedia(entry: {
   height: number | null;
   uploadedBy: string;
 }): Promise<MediaRow> {
+  // uploaded_by kommt NICHT direkt aus der Sitzung in die Spalte, sondern ueber
+  // einen Subselect: existiert der Nutzer nicht mehr (im Dashboard geloescht,
+  // waehrend seine Sitzung noch lief), wird NULL eingetragen statt die
+  // Fremdschluesselbedingung cms_media_uploaded_by_fkey zu verletzen. NULL ist
+  // dort ohnehin der vorgesehene Zustand — die Bedingung ist ON DELETE SET
+  // NULL. Eine hochgeladene Datei geht so nie verloren, nur weil das Konto des
+  // Hochladenden inzwischen weg ist.
   const { rows } = await getPool().query<MediaRow>(
     `INSERT INTO cms_media (tenant_slug, object_key, public_url, original_name, content_type,
                             size_bytes, width, height, uploaded_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+             (SELECT id FROM cms_users WHERE id = $9 AND tenant_slug = $1))
      RETURNING id, object_key, public_url, original_name, content_type, size_bytes, width, height, created_at`,
     [
       entry.tenantSlug,

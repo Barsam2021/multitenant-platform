@@ -19,6 +19,12 @@ export function MediaUploader({ tenantSlug }: { tenantSlug: string }) {
         body.append("file", file);
         const res = await fetch(`/api/${tenantSlug}/media`, { method: "POST", body });
         const data = await res.json();
+        if (res.status === 401) {
+          // Sitzung abgelaufen oder Konto entfernt: zurueck zur Anmeldung,
+          // sonst probiert der Redakteur denselben Upload noch dreimal.
+          router.push(`/${tenantSlug}/login`);
+          return;
+        }
         if (!res.ok) {
           setError(`${file.name}: ${data.error || "Upload fehlgeschlagen"}`);
           break;

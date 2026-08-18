@@ -1,5 +1,6 @@
 import { cookies } from "next/headers";
 import { SignJWT, jwtVerify } from "jose";
+import { getSessionUser } from "@/lib/configDb";
 
 /**
  * Sitzung eines Redakteurs.
@@ -79,10 +80,52 @@ export async function destroySession(): Promise<void> {
  * ist ODER die Sitzung zu einem anderen Kunden gehoert — der zweite Fall ist
  * die eigentliche Mandantengrenze und wird an genau dieser einen Stelle
  * geprueft, damit sie nicht in jeder Route neu erfunden wird.
+ *
+ * Zusaetzlich wird der Nutzer bei JEDEM Aufruf gegen die Datenbank geprueft.
+ * Das Cookie ist acht Stunden gueltig und beweist nur, dass sich hier irgendwann
+ * jemand angemeldet hat — nicht, dass es dieses Konto noch gibt. Wird ein
+ * Redakteur im Dashboard geloescht oder gesperrt (oder der Tenant unter
+ * demselben Kuerzel neu angelegt, was cms_users mitloescht), blieb er ohne
+ * diese Pruefung bis zum Ablauf angemeldet: lesen und schreiben ging weiter,
+ * und erst der Bild-Upload brach ab, weil cms_media.uploaded_by als einzige
+ * Stelle auf cms_users verweist. Die Sitzung ist dann schlicht ungueltig, und
+ * die Antwort darauf ist eine neue Anmeldung, keine Datenbank-Fehlermeldung.
  */
 export async function requireSession(tenantSlug: string): Promise<CmsSession | null> {
   const session = await readSession();
   if (!session) return null;
   if (session.tenantSlug !== tenantSlug) return null;
-  return session;
+
+  const user = await getSessionUser(tenantSlug, session.userId);
+  if (!user || user.disabled) {
+    await clearStaleCookie();
+    return null;
+  }
+
+  // Werte aus der Datenbank statt aus dem Cookie: Name, Rolle oder Adresse
+  // koennen sich seit der Anmeldung geaendert haben.
+  return {
+    userId: user.id,
+    tenantSlug,
+    email: user.email,
+    displayName: user.display_name,
+    role: user.role,
+  };
+}
+
+/**
+ * Cookie einer ungueltig gewordenen Sitzung wegraeumen, damit der Browser nicht
+ * bei jedem Aufruf erneut damit ankommt.
+ *
+ * Best effort: Next erlaubt das Schreiben von Cookies nur in Route Handlers und
+ * Server Actions. Beim Rendern einer Seite wirft der Aufruf — das ist kein
+ * Fehlerfall, die Sitzung gilt trotzdem als beendet und der Layout leitet zur
+ * Anmeldung weiter.
+ */
+async function clearStaleCookie(): Promise<void> {
+  try {
+    (await cookies()).delete(COOKIE_NAME);
+  } catch {
+    /* beim Rendern nicht moeglich — unkritisch, siehe oben */
+  }
 }
