@@ -6,7 +6,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { writeFile } from 'fs/promises';
 import crypto from 'crypto';
-import { ensureRateLimitMiddlewares } from './lib/traefikDynamic';
+import { ensureRateLimitMiddlewares, resyncTenantServiceRouters } from './lib/traefikDynamic';
 import { projectsRouter } from './routes/projects';
 import { tenantsRouter } from './routes/tenants';
 import { deploymentsRouter } from './routes/deployments';
@@ -510,9 +510,37 @@ app.listen(3001, () => {
   // Neuaufsetzen des Servers nicht stillschweigend fehlen — ein Router, der
   // eine unbekannte Middleware referenziert, wird von Traefik verworfen, und
   // dann waere die Seite offline statt ungebremst.
-  ensureRateLimitMiddlewares().catch((e: any) =>
-    console.error('Rate-Limit-Middlewares konnten nicht geschrieben werden:', e.message)
-  );
+  ensureRateLimitMiddlewares()
+    .then(async () => {
+      // Erst die Middleware-Datei, dann die Router, die sie referenzieren —
+      // andersherum kennt Traefik fuer einen Moment einen Router mit
+      // unbekannter Middleware und verwirft ihn.
+      const db = new Client({
+        connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
+      });
+      db.on('error', (e) => console.error('pg client error (router-resync):', e.message));
+      await db.connect();
+      try {
+        const { rows } = await db.query(
+          `SELECT slug, postgrest_public_enabled, auth_public_enabled FROM kunden
+           WHERE postgrest_public_enabled OR auth_public_enabled`
+        );
+        const domain = process.env.PLATFORM_DOMAIN || 'example.com';
+        const written = await resyncTenantServiceRouters(
+          rows.map((r) => ({
+            slug: r.slug,
+            postgrestHost: r.postgrest_public_enabled ? `${r.slug}-api.${domain}` : null,
+            authHost: r.auth_public_enabled ? `${r.slug}-auth.${domain}` : null,
+          }))
+        );
+        if (written > 0) console.log(`Tenant-Dienst-Router aktualisiert: ${written}`);
+      } finally {
+        await db.end().catch(() => {});
+      }
+    })
+    .catch((e: any) =>
+      console.error('Rate-Limit-Middlewares/Router-Resync fehlgeschlagen:', e.message)
+    );
   // Audit §15: ein Agent-Start im laufenden Betrieb bedeutet, dass er vorher
   // gestorben ist. Genau das war bisher nirgends sichtbar.
   alert('Provisioning Agent gestartet',

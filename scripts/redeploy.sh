@@ -256,6 +256,8 @@ http:
       rule: "Host(\`media.${PLATFORM_DOMAIN:-example.com}\`)"
       entryPoints:
         - websecure
+      middlewares:
+        - public-ratelimit@file
       service: media-svc
       tls:
         certResolver: myresolver

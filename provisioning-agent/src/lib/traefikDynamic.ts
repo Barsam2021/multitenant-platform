@@ -5,11 +5,6 @@ const DYNAMIC_DIR = '/opt/multitenant-platform/traefik/dynamic';
 // Namen der geteilten Middlewares. Referenziert werden sie mit dem Suffix
 // @file, weil sie aus dem File-Provider kommen und auch von Routern aus
 // Docker-Labels erreichbar sein muessen.
-// public-ratelimit haengt am websecure-Entrypoint (traefik/docker-compose.yml)
-// und gilt damit fuer JEDEN Router — hier steht der Name nur, weil die
-// Middleware-Datei ihn definieren muss. Ihn zusaetzlich an einzelnen Routern zu
-// referenzieren waere schaedlich: Entrypoint- und Router-Middlewares laufen
-// beide, dieselbe Bremse zweimal in der Kette zieht pro Anfrage zwei Token.
 export const PUBLIC_RATE_LIMIT = 'public-ratelimit';
 export const API_RATE_LIMIT = 'api-ratelimit';
 const RATE_LIMIT_FILE = 'aa-rate-limit.yml';
@@ -143,6 +138,7 @@ export async function writeCustomDomainRouter(
         - websecure
       middlewares:
         - ${routerName}-redirect
+        - ${PUBLIC_RATE_LIMIT}
       service: ${serviceName}
       tls:
         certResolver: httpresolver
@@ -158,6 +154,8 @@ export async function writeCustomDomainRouter(
       rule: "Host(\`${hostname}\`)"
       entryPoints:
         - websecure
+      middlewares:
+        - ${PUBLIC_RATE_LIMIT}
       service: ${serviceName}
       tls:
         certResolver: httpresolver
@@ -241,6 +239,36 @@ http:
 
   await writeFile(`${DYNAMIC_DIR}/${fileName}`, yaml, 'utf8');
   return fileName;
+}
+
+/**
+ * Schreibt die Router der oeffentlich freigeschalteten Tenant-Dienste neu.
+ *
+ * Diese Dateien entstehen nur beim Umschalten der Freigabe und wurden danach
+ * nie wieder angefasst. Aendert sich ihr Inhalt im Code — so wie jetzt mit der
+ * Rate-Limit-Middleware —, bleiben bestehende Installationen stillschweigend
+ * auf dem alten Stand: die Datei ist da, sie sieht unauffaellig aus, und die
+ * Bremse fehlt trotzdem. Genau dieser Fall ist im Lasttest aufgefallen.
+ *
+ * Laeuft beim Agent-Start, idempotent.
+ */
+export async function resyncTenantServiceRouters(
+  tenants: { slug: string; postgrestHost: string | null; authHost: string | null }[]
+): Promise<number> {
+  let written = 0;
+  for (const tenant of tenants) {
+    if (tenant.postgrestHost) {
+      await writeTenantServiceRouter('postgrest', tenant.slug, tenant.postgrestHost)
+        .then(() => { written++; })
+        .catch((e: any) => console.error(`Router postgrest/${tenant.slug}:`, e.message));
+    }
+    if (tenant.authHost) {
+      await writeTenantServiceRouter('auth', tenant.slug, tenant.authHost)
+        .then(() => { written++; })
+        .catch((e: any) => console.error(`Router auth/${tenant.slug}:`, e.message));
+    }
+  }
+  return written;
 }
 
 export async function removeTenantServiceRouter(kind: 'postgrest' | 'auth', tenantSlug: string): Promise<void> {
