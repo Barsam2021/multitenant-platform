@@ -307,16 +307,42 @@ Zurück auf den alten Stand kommst du mit demselben Befehl:
 ## Schritt 10 — Health-Check
 
 ```bash
-docker exec provisioning-agent wget -qO- \
-  --header="X-Agent-Secret: $PROVISIONING_AGENT_SECRET" \
-  http://localhost:3001/health
+docker exec provisioning-agent curl -s http://localhost:3001/health
 ```
+
+`/health` ist der einzige Endpunkt des Agents ohne Secret-Prüfung — der
+Docker-Healthcheck kennt das Secret nicht, und eine Route hinter der Prüfung hätte
+ihm dauerhaft 401 geliefert. Der Container hätte dann als `unhealthy` gegolten,
+obwohl er einwandfrei arbeitet. Öffentlich erreichbar ist der Pfad nicht: der
+Traefik-Router des Agents nimmt ausschließlich `/webhooks`.
 
 Danach testweise einen Smoke-Test fahren:
 
 ```bash
 ./scripts/smoke-test.sh
 ```
+
+## Wenn Cloudflare davor steht
+
+Wird die Plattform über Cloudflare veröffentlicht (Proxy aktiv, „orange Wolke"),
+sieht Traefik als Gegenstelle nicht den Besucher, sondern eine Cloudflare-Edge-IP.
+Zwei Dinge hängen davon ab und sind entsprechend auf den Header `Cf-Connecting-Ip`
+umgestellt: das Rate-Limiting und die Besucherzählung. Beides funktioniert auch
+ohne Cloudflare — dann fehlt der Header und die TCP-Gegenstelle ist die richtige
+Quelle.
+
+Wer prüfen will, was tatsächlich ankommt:
+
+```bash
+docker logs --since 2m global-traefik 2>&1 | grep -o '"ClientAddr":"[^"]*"' | sort -u | head
+```
+
+Erscheinen dort `188.114.96.x`, `172.67.x` oder `104.16.x`, ist der Proxy aktiv.
+
+## Weiterbetrieb
+
+Alles, was nach der Einrichtung kommt — Diagnose, Prüfbefehle, typische Symptome
+und ihre Ursachen —, steht in [docs/OPERATIONS.md](./docs/OPERATIONS.md).
 
 ## Bekannte offene Punkte (siehe auch README „Sicherheitsdesign")
 
