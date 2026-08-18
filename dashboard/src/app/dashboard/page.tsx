@@ -314,7 +314,10 @@ export default function PlatformOverviewPage() {
     })),
     ...(restBytes > 0 ? [{ key: "__rest", label: `${consumers.length - TOP_SEGMENTS} weitere`, bytes: restBytes }] : []),
     ...(outsideDockerBytes > 0 ? [{ key: "__system", label: "Sonstiges", bytes: outsideDockerBytes }] : []),
-  ];
+    // Absteigend, inklusive der Sammelposten: "Sonstiges" ans Ende zu haengen
+    // stellte einen 124-MB-Posten hinter einen mit 33 MB, und im Balken lag das
+    // groesste Stueck irgendwo in der Mitte.
+  ].sort((a, b) => b.bytes - a.bytes);
 
   // Dieselbe Aufteilung fuer die Platte: je Kunde ein Segment, der Rest ist
   // alles, was nicht einem Kunden zugeordnet werden kann (System, Images, Logs).
@@ -336,7 +339,7 @@ export default function PlatformOverviewPage() {
               },
             ]
           : []),
-      ]
+      ].sort((a, b) => b.bytes - a.bytes)
     : [];
 
   // Projekte mit den meisten Aufrufen zuerst — die Frage "wer erzeugt die Last"
