@@ -93,6 +93,23 @@ services:
       UPTIME_KUMA_URL: ${UPTIME_KUMA_URL}
       UPTIME_KUMA_USERNAME: ${UPTIME_KUMA_USERNAME}
       UPTIME_KUMA_PASSWORD: ${UPTIME_KUMA_PASSWORD}
+      # Verschluesselt die Passwoerter der Rollen cms_<slug> (Migration 21).
+      # BEWUSST ein anderer Schluessel als ENCRYPTION_MASTER_KEY, siehe
+      # lib/cms.ts. Ohne ihn scheitert "CMS aktivieren" im Dashboard.
+      CMS_ENCRYPTION_KEY: ${CMS_ENCRYPTION_KEY:-}
+      # Besucher-Analytics. Alle optional — die Defaults stehen im Code
+      # (lib/analytics.ts, lib/cleanup.ts). Trotzdem durchgereicht, sonst haette
+      # ein Eintrag in der .env keinerlei Wirkung und niemand wuesste warum.
+      ANALYTICS_SALT: ${ANALYTICS_SALT:-}
+      ANALYTICS_ACCESS_LOG: ${ANALYTICS_ACCESS_LOG:-}
+      ANALYTICS_INTERVAL_MS: ${ANALYTICS_INTERVAL_MS:-}
+      ANALYTICS_ROTATE_AT_BYTES: ${ANALYTICS_ROTATE_AT_BYTES:-}
+      ANALYTICS_VISITOR_RETENTION_DAYS: ${ANALYTICS_VISITOR_RETENTION_DAYS:-}
+      ANALYTICS_DETAIL_RETENTION_DAYS: ${ANALYTICS_DETAIL_RETENTION_DAYS:-}
+      ANALYTICS_DAILY_RETENTION_DAYS: ${ANALYTICS_DAILY_RETENTION_DAYS:-}
+      # Bestand, aber nie durchgereicht: lib/nixpacks.ts liest die Variable,
+      # im Container kam sie nie an.
+      PLATFORM_DEFAULT_NODE_VERSION: ${PLATFORM_DEFAULT_NODE_VERSION:-}
     volumes:
       - /opt/multitenant-platform:/opt/multitenant-platform
       # Nur fuer nixpacks/BuildKit-Builds (siehe lib/nixpacks.ts) — der Proxy kann das

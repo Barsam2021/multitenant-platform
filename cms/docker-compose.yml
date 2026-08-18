@@ -27,6 +27,8 @@ services:
       # Trennung der Kunden passiert ueber den Bucket-Namen aus der Sitzung.
       MINIO_ENDPOINT: core-minio
       MINIO_PORT: "9000"
+      # Intern per HTTP im traefik-net; nur setzen, wenn MinIO selbst TLS spricht.
+      MINIO_USE_SSL: ${MINIO_USE_SSL:-false}
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
       MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
       MEDIA_PUBLIC_BASE_URL: ${MEDIA_PUBLIC_BASE_URL}
