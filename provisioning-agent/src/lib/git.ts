@@ -26,6 +26,26 @@ function gitEnv(repoUrl: string): NodeJS.ProcessEnv {
 }
 
 /**
+ * Vergleicht das origin des vorhandenen Klons mit der im Projekt hinterlegten
+ * Repo-URL. Toleriert die ueblichen Schreibweisen derselben Adresse
+ * (mit/ohne .git, mit/ohne Schraegstrich am Ende, Gross-/Kleinschreibung),
+ * damit ein kosmetischer Unterschied keinen unnoetigen Neu-Klon ausloest.
+ */
+function normalizeRepoUrl(url: string): string {
+  return url.trim().replace(/\.git$/i, '').replace(/\/+$/, '').toLowerCase();
+}
+
+async function remoteMatches(repoDir: string, repoUrl: string): Promise<boolean> {
+  try {
+    const { stdout } = await execFileP('git', ['-C', repoDir, 'remote', 'get-url', 'origin']);
+    return normalizeRepoUrl(stdout) === normalizeRepoUrl(repoUrl);
+  } catch {
+    // Kein origin (oder kaputtes Repo) — dann lieber frisch klonen.
+    return false;
+  }
+}
+
+/**
  * Klont (oder pullt, falls bereits vorhanden) ein Repo für ein Projekt und checkt
  * den angeforderten Commit/Branch aus. Gibt den lokalen Pfad + aufgelösten commit_sha zurück.
  *
@@ -49,7 +69,20 @@ export async function checkoutRepo(
   // Clone-Versuch (z.B. Auth-Fehler vor diesem Fix) legt zwar den Ordner an,
   // aber ohne funktionierendes Repo drin. 'fetch' darauf schlägt dann mit
   // irreführenden Fehlern fehl statt mit "not a git repository".
-  if (!existsSync(`${repoDir}/.git`)) {
+  //
+  // Zweite Bedingung: zeigt der vorhandene Klon ueberhaupt noch auf DIESES
+  // Repo? Der Cache liegt unter <slug>/repo, der Slug bleibt aber gleich, wenn
+  // einem Projekt ein anderes Repository zugewiesen oder ein Projekt unter
+  // demselben Slug neu angelegt wird. `git fetch` holt dann brav vom ALTEN
+  // origin, und deployt wird stillschweigend weiter der alte Code — sichtbar
+  // erst daran, dass die Seite etwas voellig anderes zeigt als das Repo, das
+  // im Dashboard steht.
+  const reuse = existsSync(`${repoDir}/.git`) && (await remoteMatches(repoDir, repoUrl));
+
+  if (!reuse) {
+    if (existsSync(`${repoDir}/.git`)) {
+      console.warn(`checkoutRepo: ${repoDir} zeigt auf ein anderes Repo als ${repoUrl} — wird neu geklont.`);
+    }
     await execFileP('rm', ['-rf', repoDir]);
     await execFileP('mkdir', ['-p', repoDir]);
     await execFileP('git', ['clone', '--no-single-branch', repoUrl, repoDir], { env, signal });
