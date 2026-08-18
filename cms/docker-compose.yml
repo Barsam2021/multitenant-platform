@@ -1,0 +1,62 @@
+# CMS-Dienst: die Oberflaeche, in der die ENDKUNDEN ihre Inhalte pflegen.
+#
+# Ein Dienst fuer alle Tenants, nicht einer pro Kunde — der Mandant kommt aus
+# der Sitzung (siehe cms/src/lib/session.ts). Ein Container pro Kunde waere
+# genau die Verschwendung, die Migration 19 gerade abgeschafft hat.
+#
+# Anders als das Dashboard ist dieser Dienst OEFFENTLICH erreichbar (kein
+# Cloudflare Tunnel davor). Entsprechend: eigene, eingeschraenkte DB-Rollen,
+# eigener Verschluesselungs-Key, eigenes Session-Secret.
+services:
+  cms:
+    build: .
+    container_name: cms
+    environment:
+      # Konfigurationsdatenbank: Sammlungen, Felder, Redakteure, Medien.
+      # Eigene Rolle mit Rechten NUR auf die cms_*-Tabellen (siehe SETUP.md),
+      # nicht die DATABASE_URL des Dashboards (die ist Superuser).
+      CMS_DATABASE_URL: ${CMS_DATABASE_URL}
+      # Entschluesselt das Passwort der Rolle cms_<slug>. Bewusst NICHT
+      # ENCRYPTION_MASTER_KEY — dieser Dienst soll bei einer Kompromittierung
+      # keine MinIO-/JWT-Secrets lesen koennen.
+      CMS_ENCRYPTION_KEY: ${CMS_ENCRYPTION_KEY}
+      CMS_SESSION_SECRET: ${CMS_SESSION_SECRET}
+      PGBOUNCER_HOST: ${ADMIN_DB_HOST:-core-postgres}
+      # Uploads landen im Bucket des jeweiligen Kunden. Der Dienst nutzt dafuer
+      # den MinIO-Root-Zugang, weil er bucket-uebergreifend schreibt; die
+      # Trennung der Kunden passiert ueber den Bucket-Namen aus der Sitzung.
+      MINIO_ENDPOINT: core-minio
+      MINIO_PORT: "9000"
+      # Intern per HTTP im traefik-net; nur setzen, wenn MinIO selbst TLS spricht.
+      MINIO_USE_SSL: ${MINIO_USE_SSL:-false}
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      MEDIA_PUBLIC_BASE_URL: ${MEDIA_PUBLIC_BASE_URL}
+      CMS_MAX_UPLOAD_BYTES: ${CMS_MAX_UPLOAD_BYTES:-10485760}
+      CMS_MAX_STORAGE_BYTES: ${CMS_MAX_STORAGE_BYTES:-2147483648}
+    networks:
+      - traefik-net
+    restart: always
+    mem_limit: 512m
+    cpus: 0.75
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3002/').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.cms.rule=Host(`cms.${PLATFORM_DOMAIN:-example.com}`)"
+      - "traefik.http.routers.cms.entrypoints=websecure"
+      - "traefik.http.routers.cms.tls.certresolver=myresolver"
+      - "traefik.http.services.cms.loadbalancer.server.port=3002"
+
+networks:
+  traefik-net:
+    external: true
