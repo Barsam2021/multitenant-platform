@@ -222,7 +222,7 @@ export async function describeTenantTable(dbName: string, table: string): Promis
       `SELECT a.attname AS column_name
        FROM pg_index i
        JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-       WHERE i.indrelid = format('public.%I', $1)::regclass AND i.indisprimary`,
+       WHERE i.indrelid = format('public.%I', $1::text)::regclass AND i.indisprimary`,
       [table]
     );
     const pkNames = new Set(pk.map((r) => r.column_name));
@@ -241,7 +241,7 @@ export async function describeTenantTable(dbName: string, table: string): Promis
     const { rows: checks } = await tenant.query(
       `SELECT pg_get_constraintdef(con.oid) AS def
        FROM pg_constraint con
-       WHERE con.conrelid = format('public.%I', $1)::regclass AND con.contype = 'c'`,
+       WHERE con.conrelid = format('public.%I', $1::text)::regclass AND con.contype = 'c'`,
       [table]
     );
 
