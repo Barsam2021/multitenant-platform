@@ -79,13 +79,27 @@ export async function ensureCmsRole(slug: string, dbName: string): Promise<strin
   const master = masterClient();
   await master.connect();
   try {
+    // BYPASSRLS ist hier bewusst gesetzt.
+    //
+    // Kundentabellen haben haeufig Row Level Security an (Supabase-Schema-Stil:
+    // "jeder sieht nur seine eigenen Zeilen"). Diese Policies sind fuer die APP
+    // des Kunden gedacht — fuer die Redaktion sind sie falsch: ein Redakteur,
+    // der nur die Haelfte der Beitraege sieht und beim Speichern eine
+    // Rechte-Fehlermeldung bekommt, kann mit dem CMS nicht arbeiten.
+    //
+    // Die Rechtegrenze dieser Rolle ist NICHT RLS, sondern die Liste der
+    // explizit freigegebenen Tabellen (grantTable). Auf alles andere hat sie
+    // ueberhaupt kein Recht, BYPASSRLS hin oder her — genau wie Supabases
+    // service_role, nur zusaetzlich pro Tabelle beschraenkt.
     const { rows } = await master.query('SELECT 1 FROM pg_roles WHERE rolname = $1', [role]);
     if (rows.length === 0) {
-      await master.query(format('CREATE ROLE %I LOGIN PASSWORD %L;', role, password));
+      await master.query(format('CREATE ROLE %I LOGIN BYPASSRLS PASSWORD %L;', role, password));
     } else {
       // Neu-Aktivierung nach einem Abschalten: Passwort rotieren, statt das
-      // alte weiterzuverwenden (es koennte in einem Backup liegen).
-      await master.query(format('ALTER ROLE %I WITH LOGIN PASSWORD %L;', role, password));
+      // alte weiterzuverwenden (es koennte in einem Backup liegen). BYPASSRLS
+      // wird hier mitgesetzt, damit auch Rollen aus aelteren Versionen es
+      // bekommen.
+      await master.query(format('ALTER ROLE %I WITH LOGIN BYPASSRLS PASSWORD %L;', role, password));
     }
     await master.query(format('GRANT CONNECT ON DATABASE %I TO %I;', dbName, role));
   } finally {
@@ -166,6 +180,12 @@ export async function grantTable(slug: string, dbName: string, table: string): P
   try {
     await assertRealTable(tenant, table);
     await tenant.query(format('GRANT SELECT, INSERT, UPDATE, DELETE ON public.%I TO %I;', table, role));
+    // Sequenzen erneut mitnehmen: bei der Rollen-Erstellung erwischt
+    // "ALL SEQUENCES" nur die, die es damals gab. Eine Tabelle mit
+    // serial-/identity-Schluessel, die spaeter dazukommt, waere sonst
+    // freigegeben, aber jedes INSERT scheiterte an "permission denied for
+    // sequence" — ein Fehler, der auf nichts Erkennbares zeigt.
+    await tenant.query(format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO %I;', role));
   } finally {
     await tenant.end().catch(() => {});
   }

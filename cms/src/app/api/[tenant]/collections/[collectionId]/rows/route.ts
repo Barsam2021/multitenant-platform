@@ -39,6 +39,8 @@ export async function POST(
     });
     return NextResponse.json({ status: "ok", pk });
   } catch (err) {
-    return NextResponse.json({ error: toUserMessage(err as Error) }, { status: 400 });
+    const message = toUserMessage(err as Error);
+    if (!(err as { code?: string }).code) console.error(`[cms] ${(err as Error).stack || message}`);
+    return NextResponse.json({ error: message }, { status: 400 });
   }
 }
