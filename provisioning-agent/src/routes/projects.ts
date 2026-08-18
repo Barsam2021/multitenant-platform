@@ -4,7 +4,13 @@ import crypto from 'crypto';
 import { encrypt } from '../lib/crypto';
 import { createHttpMonitor, isMonitoringConfigured } from '../lib/monitoring';
 import { logAudit } from '../lib/audit';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import { parseGithubRepo, githubHeaders, webhookUrlFor, deleteGithubWebhook } from '../lib/github';
+import { BUILDS_ROOT } from '../lib/git';
+import { cleanupProjectResources } from '../lib/projectCleanup';
 
+const execFileP = promisify(execFile);
 const PGBOUNCER_HOST = process.env.PGBOUNCER_HOST || 'pgbouncer';
 const MASTER_DB_PASSWORD = process.env.MASTER_DB_PASSWORD!;
 const PREVIEW_DOMAIN_SUFFIX = process.env.PLATFORM_DOMAIN || 'example.com';
@@ -34,25 +40,6 @@ interface GithubWebhookResult {
   registered: boolean;
   hookId?: number;
   reason?: string;
-}
-
-function parseGithubRepo(repoUrl: string): { owner: string; repo: string } | null {
-  const match = repoUrl.match(/github\.com[:/]([^/]+)\/([^/.]+)(\.git)?\/?$/);
-  if (!match) return null;
-  return { owner: match[1], repo: match[2] };
-}
-
-function githubHeaders(): Record<string, string> {
-  return {
-    Authorization: `Bearer ${GITHUB_PAT}`,
-    Accept: 'application/vnd.github+json',
-    'Content-Type': 'application/json',
-    'X-GitHub-Api-Version': '2022-11-28',
-  };
-}
-
-export function webhookUrlFor(projectId: string): string {
-  return `${WEBHOOK_PUBLIC_URL}/webhooks/github/${projectId}`;
 }
 
 /**
@@ -216,6 +203,135 @@ projectsRouter.get('/projects', async (_req, res) => {
        ORDER BY p.created_at DESC`
     );
     res.json(rows);
+  } finally {
+    await db.end();
+  }
+});
+
+// GET /projects/:id — Einzelprojekt. Das Dashboard rief den Endpunkt schon
+// auf (dashboard/src/app/api/projects/[id]/route.ts), im Agent gab es ihn nie —
+// die Anfrage lief durch alle Router und endete in Express' Standard-404.
+projectsRouter.get('/projects/:id', async (req, res) => {
+  const db = adminClient();
+  await db.connect();
+  try {
+    const { rows } = await db.query(
+      `SELECT id, tenant_slug, slug, repo_url, repo_provider, default_branch, build_command,
+              active_container, active_deployment_id, preview_hostname, github_webhook_id,
+              COALESCE(app_port, 3000) AS app_port, COALESCE(health_path, '/') AS health_path, created_at
+       FROM projects WHERE id = $1`,
+      [req.params.id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'project not found' });
+    res.json(rows[0]);
+  } finally {
+    await db.end();
+  }
+});
+
+// PATCH /projects/:id — Repo, Branch, Port, Healthcheck-Pfad, Build-Befehl.
+//
+// Ein Repo-Wechsel zieht zwei Aufraeumschritte nach sich, die man leicht
+// vergisst und die beide still danebengehen: der Build-Cache zeigt sonst
+// weiter auf das alte Repository (dann wird der alte Code deployt), und der
+// Webhook des alten Repos feuert weiter auf dieses Projekt.
+projectsRouter.patch('/projects/:id', async (req, res) => {
+  const { id } = req.params;
+  const { repoUrl, defaultBranch, buildCommand, appPort, healthPath } = req.body;
+
+  const db = adminClient();
+  await db.connect();
+  try {
+    const { rows: existing } = await db.query(
+      'SELECT id, slug, repo_url, github_webhook_id, webhook_secret FROM projects WHERE id = $1',
+      [id]
+    );
+    if (existing.length === 0) return res.status(404).json({ error: 'project not found' });
+    const project = existing[0];
+
+    const sets: string[] = [];
+    const vals: any[] = [];
+    let i = 1;
+    if (repoUrl !== undefined) { sets.push(`repo_url = $${i++}`); vals.push(String(repoUrl).trim()); }
+    if (defaultBranch !== undefined) { sets.push(`default_branch = $${i++}`); vals.push(String(defaultBranch).trim() || 'main'); }
+    if (buildCommand !== undefined) { sets.push(`build_command = $${i++}`); vals.push(buildCommand ? String(buildCommand) : null); }
+    if (appPort !== undefined) {
+      const port = Number(appPort);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) return res.status(400).json({ error: 'invalid app port' });
+      sets.push(`app_port = $${i++}`); vals.push(port);
+    }
+    if (healthPath !== undefined) {
+      const path = String(healthPath);
+      if (!path.startsWith('/')) return res.status(400).json({ error: 'health path must start with /' });
+      sets.push(`health_path = $${i++}`); vals.push(path);
+    }
+    if (sets.length === 0) return res.status(400).json({ error: 'nothing to update' });
+    vals.push(id);
+
+    const { rows } = await db.query(
+      `UPDATE projects SET ${sets.join(', ')} WHERE id = $${i}
+       RETURNING id, tenant_slug, slug, repo_url, default_branch, build_command, app_port, health_path`,
+      vals
+    );
+
+    const warnings: string[] = [];
+    const repoChanged = repoUrl !== undefined && String(repoUrl).trim() !== project.repo_url;
+    if (repoChanged) {
+      // Build-Cache verwerfen. checkoutRepo() erkennt den Wechsel inzwischen
+      // zwar selbst, aber hier ist der Zeitpunkt bekannt — dann muss niemand
+      // auf die Selbstheilung beim naechsten Deploy vertrauen.
+      await execFileP('rm', ['-rf', `${BUILDS_ROOT}/${project.slug}`]).catch((e: any) =>
+        warnings.push(`Build-Cache verwerfen fehlgeschlagen: ${e.message}`)
+      );
+
+      if (project.github_webhook_id && project.repo_url) {
+        const removed = await deleteGithubWebhook(project.repo_url, project.github_webhook_id);
+        if (!removed.deleted) warnings.push(`Alten Webhook nicht entfernt (${removed.reason})`);
+      }
+      const hook = await ensureGithubWebhook(String(repoUrl).trim(), webhookUrlFor(id), project.webhook_secret);
+      await db.query('UPDATE projects SET github_webhook_id = $1 WHERE id = $2', [hook.hookId || null, id]);
+      if (!hook.registered) warnings.push(`Neuer Webhook nicht registriert: ${hook.reason}`);
+    }
+
+    await logAudit('project.update', project.slug, { fields: Object.keys(req.body), repoChanged });
+    res.json({ project: rows[0], warnings: warnings.length ? warnings : undefined });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  } finally {
+    await db.end();
+  }
+});
+
+// DELETE /projects/:id — Projekt samt aller Spuren entfernen.
+//
+// Das Dashboard rief diesen Endpunkt bereits auf, im Agent fehlte er. Das
+// Loeschen lief damit ins Leere, und was liegen blieb, erbte das naechste
+// Projekt mit demselben Slug — inklusive des Git-Klons, weshalb dann
+// kommentarlos der Code des Vorgaengers ausgeliefert wurde.
+//
+// Nicht angefasst wird die Datenbank des Kunden: ein Projekt ist die
+// Deployment-Seite, die Daten gehoeren dem Tenant.
+projectsRouter.delete('/projects/:id', async (req, res) => {
+  const { id } = req.params;
+  const db = adminClient();
+  await db.connect();
+  try {
+    const { rows } = await db.query(
+      'SELECT id, slug, repo_url, github_webhook_id, kuma_monitor_id FROM projects WHERE id = $1',
+      [id]
+    );
+    if (rows.length === 0) return res.status(404).json({ error: 'project not found' });
+    const project = rows[0];
+
+    const warnings = await cleanupProjectResources(project);
+    // domains, deployments und project_env_vars haengen per ON DELETE CASCADE
+    // daran und verschwinden mit.
+    await db.query('DELETE FROM projects WHERE id = $1', [id]);
+
+    await logAudit('project.delete', project.slug, { warnings });
+    res.json({ status: 'ok', slug: project.slug, warnings: warnings.length ? warnings : undefined });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   } finally {
     await db.end();
   }
