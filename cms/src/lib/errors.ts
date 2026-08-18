@@ -44,6 +44,17 @@ export function toUserMessage(err: Error & { code?: string; column?: string; det
     case "28P01":
       return "Die Datenbankverbindung wurde neu eingerichtet. Bitte die Seite neu laden.";
     default:
+      // Alles mit Fehlercode kommt aus Postgres, und dessen Meldungen nennen
+      // Tabellen-, Spalten- und Constraint-Namen. Das dem Redakteur zu zeigen
+      // hilft ihm nicht und beschreibt einem Angreifer das Schema — der CMS-
+      // Dienst steht offen im Internet. Der Betreiber findet den vollen Text
+      // oben im Server-Log, wo er hingehoert.
+      if (err.code) {
+        return "Der Eintrag konnte nicht gespeichert werden. Bitte den Betreuer informieren.";
+      }
+      // Ohne Code stammt die Meldung aus den eigenen Pruefungen dieses Dienstes
+      // ("Pflichtfeld", "kein gueltiges JSON") und ist fuer den Redakteur
+      // geschrieben.
       return err.message;
   }
 }

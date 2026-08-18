@@ -163,17 +163,24 @@ function writableFields(fields: Field[]): Field[] {
 
 function validate(fields: Field[], values: Record<string, unknown>, partial: boolean): void {
   for (const field of fields) {
-    if (!field.required) continue;
     const value = values[field.column_name];
     if (partial && value === undefined) continue;
-    if (value === null || value === undefined || value === "") {
+
+    // Pflichtfeld-Pruefung nur fuer Pflichtfelder — Laenge und Auswahl aber
+    // fuer ALLE. Vorher stand ein `continue` fuer optionale Felder ganz oben,
+    // womit ein optionales Auswahlfeld jeden beliebigen Wert annahm und
+    // maxLength nur fuer Pflichtfelder galt: die Grenzen waren genau dort weg,
+    // wo sie am ehesten gebraucht werden.
+    if (field.required && (value === null || value === undefined || value === "")) {
       throw new Error(`"${field.label}" ist ein Pflichtfeld.`);
     }
+    if (value === null || value === undefined) continue;
+
     if (field.options?.maxLength && typeof value === "string" && value.length > field.options.maxLength) {
       throw new Error(`"${field.label}" ist zu lang (maximal ${field.options.maxLength} Zeichen).`);
     }
     if (field.field_type === "select" && field.options?.choices?.length) {
-      if (typeof value === "string" && !field.options.choices.includes(value)) {
+      if (typeof value === "string" && value !== "" && !field.options.choices.includes(value)) {
         throw new Error(`"${field.label}": ungültige Auswahl.`);
       }
     }

@@ -76,6 +76,24 @@ const AGENT_SECRET = process.env.PROVISIONING_AGENT_SECRET!;
 const MASTER_DB_PASSWORD = process.env.MASTER_DB_PASSWORD!;
 const PGBOUNCER_HOST = process.env.PGBOUNCER_HOST || 'pgbouncer';
 
+/**
+ * Vergleich in konstanter Zeit. Ein `!==` auf Strings bricht beim ersten
+ * abweichenden Byte ab; wer den Endpunkt oft genug aufruft, kann daraus Zeichen
+ * fuer Zeichen das Secret rekonstruieren. Ueber ein Netzwerk ist das muehsam,
+ * aber dieser Dienst darf Datenbanken anlegen und Container starten — der
+ * Aufwand fuer die sichere Variante sind drei Zeilen.
+ *
+ * Die Laengenpruefung vorab verraet nur die Laenge des Secrets; ohne sie wuerde
+ * timingSafeEqual bei ungleicher Laenge werfen.
+ */
+function secretMatches(provided: unknown): boolean {
+  if (typeof provided !== 'string') return false;
+  const a = Buffer.from(provided);
+  const b = Buffer.from(AGENT_SECRET);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
 app.use('/webhooks', webhookLimiter, express.raw({ type: 'application/json', limit: '5mb' }), webhooksRouter);
 
 // MUSS vor der Secret-Middleware stehen. Der Docker-Healthcheck kennt das
@@ -90,7 +108,7 @@ app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 app.use(globalLimiter);
 app.use(express.json());
 app.use((req, res, next) => {
-  if (req.headers['x-agent-secret'] !== AGENT_SECRET) {
+  if (!secretMatches(req.headers['x-agent-secret'])) {
     return res.status(401).json({ error: 'unauthorized' });
   }
   next();
