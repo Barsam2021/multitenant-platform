@@ -128,6 +128,37 @@ export default function CmsAdminPage({ params }: { params: Promise<{ slug: strin
     }
   }
 
+  // Rechte neu setzen, ohne das CMS abzuschalten.
+  //
+  // Bisher liess sich das nur ueber deaktivieren + aktivieren erreichen — und
+  // das entfernt zwischendurch die Datenbankrolle, wirft also jeden gerade
+  // arbeitenden Redakteur raus. Gebraucht wird es, wenn sich an den
+  // Rechte-Voraussetzungen etwas geaendert hat (neue Plattform-Version) oder
+  // eine Tabelle nachtraeglich RLS bekommen hat.
+  async function handleRepair() {
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/tenants/${slug}/cms`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast.error(data.error || "Rechte konnten nicht gesetzt werden");
+        return;
+      }
+      if (data.warnings?.length) {
+        data.warnings.forEach((w: string) => toast.error(w));
+      } else {
+        toast.success("Rechte neu gesetzt — Datenbankrolle, Tabellen und Medien-Freigabe.");
+      }
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function addCollection(tableName: string) {
     setBusy(true);
     try {
@@ -252,13 +283,20 @@ export default function CmsAdminPage({ params }: { params: Promise<{ slug: strin
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 18 }}>
         <h2 style={{ margin: 0, fontSize: 16 }}>CMS</h2>
-        <button
-          className={enabled ? "btn" : "btn btn-primary"}
-          onClick={() => setToggleTarget(!enabled)}
-          disabled={busy || (!enabled && !dbProvisioned)}
-        >
-          {enabled ? "CMS deaktivieren" : "CMS aktivieren"}
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          {enabled && (
+            <button className="btn" onClick={handleRepair} disabled={busy}>
+              {busy ? "Moment…" : "Rechte neu setzen"}
+            </button>
+          )}
+          <button
+            className={enabled ? "btn" : "btn btn-primary"}
+            onClick={() => setToggleTarget(!enabled)}
+            disabled={busy || (!enabled && !dbProvisioned)}
+          >
+            {enabled ? "CMS deaktivieren" : "CMS aktivieren"}
+          </button>
+        </div>
       </div>
 
       <div
