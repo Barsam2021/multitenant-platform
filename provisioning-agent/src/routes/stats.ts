@@ -150,7 +150,7 @@ statsRouter.get('/stats/storage', async (_req, res) => {
       console.error('pg_database_size fehlgeschlagen:', e.message);
     }
 
-    const bucketSizes = await readBucketSizes();
+    const bucketSizes = await readBucketSizes(tenants.map((t) => `kunde-${t.slug}-storage`));
 
     const buildSizes = new Map<string, number>();
     await Promise.all(
@@ -242,30 +242,40 @@ async function directorySize(path: string): Promise<number | null> {
   }
 }
 
-/** Belegung je MinIO-Bucket, Bucket-Name -> Bytes. */
-async function readBucketSizes(): Promise<Map<string, number>> {
+/**
+ * Belegung je MinIO-Bucket, Bucket-Name -> Bytes.
+ *
+ * Je Bucket ein Aufruf, obwohl das nach einem unnoetigen Fan-out aussieht:
+ * `mc du localminio` fasst ueber alle Buckets zusammen und liefert genau EINE
+ * Zeile mit leerem prefix, --depth 1 aendert daran nichts. Die Aufteilung ist
+ * aber der ganze Zweck der Anzeige.
+ */
+async function readBucketSizes(buckets: string[]): Promise<Map<string, number>> {
   const sizes = new Map<string, number>();
   const user = process.env.MINIO_ROOT_USER;
   const password = process.env.MINIO_ROOT_PASSWORD;
-  if (!user || !password) return sizes;
+  if (!user || !password || buckets.length === 0) return sizes;
   try {
     await execFileP('mc', ['alias', 'set', 'localminio', 'http://core-minio:9000', user, password]);
-    // --json, weil die Textausgabe von mc je nach Version anders formatiert ist
-    // und Groessen dort bereits gerundet sind ("1.2GiB").
-    const { stdout } = await execFileP('mc', ['du', '--json', 'localminio']);
-    for (const line of stdout.trim().split('\n').filter(Boolean)) {
-      try {
-        const entry = JSON.parse(line) as { size?: number; prefix?: string };
-        if (typeof entry.size === 'number' && entry.prefix) {
-          sizes.set(entry.prefix.replace(/\/$/, ''), entry.size);
-        }
-      } catch {
-        /* eine unlesbare Zeile macht die anderen nicht ungueltig */
-      }
-    }
   } catch (e: any) {
-    console.error('mc du fehlgeschlagen:', e.message);
+    console.error('mc alias set fehlgeschlagen:', e.message);
+    return sizes;
   }
+
+  await Promise.all(
+    buckets.map(async (bucket) => {
+      try {
+        const { stdout } = await execFileP('mc', ['du', '--json', `localminio/${bucket}`]);
+        const line = stdout.trim().split('\n').filter(Boolean)[0];
+        if (!line) return;
+        const entry = JSON.parse(line) as { size?: number };
+        if (typeof entry.size === 'number') sizes.set(bucket, entry.size);
+      } catch {
+        // Bucket existiert nicht (Kunde ohne Storage) oder mc antwortet nicht —
+        // beides ist "keine Angabe", kein Grund die anderen zu verlieren.
+      }
+    })
+  );
   return sizes;
 }
 
