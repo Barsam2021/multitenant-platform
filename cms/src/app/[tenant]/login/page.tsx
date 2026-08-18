@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { getTenant } from "@/lib/configDb";
-import { readSession } from "@/lib/session";
+import { requireSession } from "@/lib/session";
 import { LoginForm } from "@/components/LoginForm";
 
 export default async function LoginPage({ params }: { params: Promise<{ tenant: string }> }) {
@@ -24,8 +24,11 @@ export default async function LoginPage({ params }: { params: Promise<{ tenant: 
     );
   }
 
-  const session = await readSession();
-  if (session?.tenantSlug === tenantSlug) redirect(`/${tenantSlug}`);
+  // requireSession und nicht readSession: eine Sitzung, deren Konto es nicht
+  // mehr gibt, wuerde hier nach innen leiten, waehrend das Layout sofort wieder
+  // hierher zurueckleitet — eine Endlosschleife im Browser.
+  const session = await requireSession(tenantSlug);
+  if (session) redirect(`/${tenantSlug}`);
 
   return (
     <div className="login-wrap">

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { insertMedia, logCmsAudit, usedStorageBytes } from "@/lib/configDb";
 import { MAX_UPLOAD_BYTES, uploadFile } from "@/lib/media";
 import { requireSession } from "@/lib/session";
+import { toUserMessage } from "@/lib/errors";
 
 // Next puffert den Body ohnehin; die harte Grenze steht in lib/media.ts und
 // wird zusaetzlich hier vorab geprueft, damit eine 200-MB-Datei nicht erst
@@ -9,7 +10,12 @@ import { requireSession } from "@/lib/session";
 export async function POST(req: Request, { params }: { params: Promise<{ tenant: string }> }) {
   const { tenant: tenantSlug } = await params;
   const session = await requireSession(tenantSlug);
-  if (!session) return NextResponse.json({ error: "nicht angemeldet" }, { status: 401 });
+  if (!session) {
+    return NextResponse.json(
+      { error: "Die Anmeldung ist abgelaufen. Bitte neu anmelden.", reauth: true },
+      { status: 401 }
+    );
+  }
 
   const contentLength = Number(req.headers.get("content-length") || 0);
   if (contentLength > MAX_UPLOAD_BYTES * 1.2) {
@@ -52,6 +58,16 @@ export async function POST(req: Request, { params }: { params: Promise<{ tenant:
 
     return NextResponse.json({ media });
   } catch (err) {
-    return NextResponse.json({ error: (err as Error).message }, { status: 400 });
+    // Postgres-Fehler uebersetzen statt durchreichen: der Redakteur bekam sonst
+    // woertlich 'violates foreign key constraint "cms_media_uploaded_by_fkey"'
+    // zu sehen — eine Meldung, mit der niemand etwas anfangen kann.
+    const error = err as Error & { code?: string };
+    if (error.code) {
+      console.error(`[cms] Medien-Upload fuer "${tenantSlug}" fehlgeschlagen:`, error.message);
+      return NextResponse.json({ error: toUserMessage(error) }, { status: 400 });
+    }
+    // Alles ohne Fehlercode kommt aus den eigenen Pruefungen (zu gross, Typ
+    // nicht erlaubt, Kontingent voll) und ist bereits verstaendlich formuliert.
+    return NextResponse.json({ error: error.message }, { status: 400 });
   }
 }

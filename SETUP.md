@@ -260,6 +260,14 @@ Im Dashboard unter Projekt → **CMS**: aktivieren, Tabellen als Sammlungen
 freigeben, Felder beschriften, Zugang für den Kunden anlegen. Der Kunde meldet
 sich dann unter `https://cms.<PLATFORM_DOMAIN>/<slug>` an.
 
+Wird ein Zugang gelöscht, gesperrt oder neu angelegt, endet die Sitzung im
+Browser des Kunden beim nächsten Aufruf — er landet auf der Anmeldeseite. Das
+Sitzungs-Cookie allein genügt nicht mehr, der Nutzer wird bei jedem Aufruf
+gegen `cms_users` geprüft. Vorher blieb eine solche Sitzung bis zu acht Stunden
+scheinbar gültig und brach erst beim Bild-Upload mit einer Datenbankmeldung ab
+(`cms_media_uploaded_by_fkey`), weil das die einzige Stelle ist, die auf
+`cms_users` verweist.
+
 ## Einen neuen Stand ausrollen
 
 Für alles nach der Erstinstallation — Branch testen, Update einspielen:
