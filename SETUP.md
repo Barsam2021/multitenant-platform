@@ -271,6 +271,16 @@ Für alles nach der Erstinstallation — Branch testen, Update einspielen:
 ./scripts/redeploy.sh --all <branch>   # zusätzlich Traefik/Postgres/MinIO neu starten
 ```
 
+**Beim ersten Mal auf einem Server, dessen Stand das Skript noch nicht kennt:**
+`git fetch` aktualisiert nur die Remote-Refs — die Datei liegt danach noch nicht
+im Arbeitsverzeichnis. Also einmal von Hand auschecken, danach übernimmt das
+Skript:
+
+```bash
+git checkout <branch>
+./scripts/redeploy.sh
+```
+
 Das Skript zieht den Branch, fährt die Infrastruktur hoch, wartet auf Postgres,
 spielt Migrationen ein, baut Agent/Dashboard/CMS neu, startet die
 Tenant-Instanzen (nur die mit aktiver Datenbank — siehe Migration 19) und die
