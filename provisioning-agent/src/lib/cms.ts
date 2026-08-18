@@ -173,6 +173,37 @@ async function assertRealTable(tenant: Client, table: string): Promise<void> {
 }
 
 /** Schreibrechte auf genau eine Tabelle. */
+/**
+ * PostgREST dazu bringen, sein Schema neu einzulesen.
+ *
+ * PostgREST baut den Schema-Cache beim Start auf und zeigt ausschliesslich,
+ * worauf die verbindende Rolle Rechte hat. Eine spaeter angelegte Tabelle oder
+ * ein spaeter erteiltes GRANT existiert fuer die Kunden-API deshalb nicht — sie
+ * antwortet mit PGRST205 "Could not find the table in the schema cache", was
+ * wie ein Tippfehler im Tabellennamen aussieht und keiner ist.
+ *
+ * Der uebliche Weg (NOTIFY pgrst, 'reload schema') funktioniert hier NICHT:
+ * PostgREST verbindet ueber PgBouncer im Transaction-Mode, und LISTEN/NOTIFY
+ * ueberlebt Transaction-Pooling nicht — die Verbindung, die lauscht, ist nach
+ * der naechsten Transaktion eine andere. SIGUSR1 geht am Datenbankpfad vorbei
+ * und ist damit der einzige zuverlaessige Ausloeser.
+ *
+ * Best effort: laeuft die API des Tenants nicht (db_enabled=false, oder ein
+ * Kunde ohne Datenbank), ist das kein Fehler — es gibt dann keinen Cache, der
+ * veralten koennte.
+ */
+export async function reloadPostgrestSchema(slug: string): Promise<void> {
+  try {
+    await execFileP('docker', ['kill', '-s', 'SIGUSR1', `api-${slug}`]);
+  } catch (err: any) {
+    const message = String(err?.stderr || err?.message || err);
+    if (/No such container|is not running/i.test(message)) return;
+    // Auch ein echter Fehlschlag darf die eigentliche Aktion nicht kippen —
+    // die Rechte sind dann gesetzt, nur der Cache haengt hinterher.
+    console.error(`PostgREST-Schema-Reload fuer "${slug}" fehlgeschlagen:`, message);
+  }
+}
+
 export async function grantTable(slug: string, dbName: string, table: string): Promise<void> {
   const role = cmsRoleName(slug);
   const tenant = tenantClient(dbName);

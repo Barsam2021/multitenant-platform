@@ -11,6 +11,7 @@ import {
   listTenantTables,
   publishTenantMediaPrefix,
   unpublishTenantMediaPrefix,
+  reloadPostgrestSchema,
 } from '../lib/cms';
 
 const PGBOUNCER_HOST = process.env.PGBOUNCER_HOST || 'pgbouncer';
@@ -99,6 +100,7 @@ cmsRouter.post('/tenants/:slug/cms', async (req, res) => {
         )
       );
 
+      await reloadPostgrestSchema(slug);
       await logAudit('cms.enabled', slug, { collections: collections.length, warnings });
       return res.json({ status: 'ok', enabled: true, warnings: warnings.length ? warnings : undefined });
     }
@@ -202,6 +204,10 @@ async function handleGrantOrRevoke(
     } else {
       await revokeTable(slug, tenant.db_name, table);
     }
+    // Geaenderte Rechte aendern, was PostgREST ueberhaupt anzeigt — ohne
+    // Reload bleibt die Tabelle fuer die Kunden-API unsichtbar bzw. sichtbar,
+    // je nach Richtung, bis der Container irgendwann neu startet.
+    await reloadPostgrestSchema(slug);
     await logAudit(`cms.${action}`, slug, { table });
     res.json({ status: 'ok', table, action });
   } catch (err: any) {
