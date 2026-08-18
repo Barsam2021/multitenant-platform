@@ -12,6 +12,19 @@ services:
       - --providers.file.watch=true
       - --entrypoints.web.address=:80
       - --entrypoints.websecure.address=:443
+      # Rate-Limit fuer JEDEN Router auf websecure, ohne pro Router ein Label
+      # oder eine Middleware-Zeile zu brauchen: so sind auch bereits laufende
+      # Kundencontainer und kuenftige Deployments automatisch gebremst. Die
+      # referenzierte Middleware kommt aus dem File-Provider
+      # (traefik/dynamic/aa-rate-limit.yml). Diese Datei MUSS existieren, bevor
+      # Traefik startet -- sonst faellt jeder HTTPS-Router auf 500. Sie wird
+      # deshalb in der Infra-Phase von scripts/redeploy.sh und in bootstrap.sh
+      # geschrieben, bevor dieser Container hochkommt, und zusaetzlich vom
+      # Provisioning Agent bei jedem Start (lib/traefikDynamic.ts).
+      # Strengere Grenzen fuer die Tenant-APIs stapeln sich zusaetzlich ueber
+      # deren eigene Router-Datei (api-ratelimit) und gewinnen, weil Traefik das
+      # jeweils strengere Limit anwendet.
+      - --entrypoints.websecure.http.middlewares=public-ratelimit@file
       - --certificatesresolvers.myresolver.acme.email=${ACME_EMAIL}
       - --certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json
       - --certificatesresolvers.myresolver.acme.dnschallenge=true

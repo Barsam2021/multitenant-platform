@@ -54,6 +54,8 @@ if [ ! -f "$ROOT/core-postgres/init-scripts/01_roles.sql" ]; then
 fi
 
 echo "==> [7/9] Core-Infrastruktur starten (Traefik, Postgres+PgBouncer, MinIO, Uptime-Kuma, Cloudflared)"
+# Vor Traefik: der websecure-Entrypoint referenziert public-ratelimit@file.
+"$ROOT/scripts/write-ratelimit.sh" "$ROOT" || echo "  -> WARN: Rate-Limit-Middlewares nicht geschrieben"
 for svc in traefik core-postgres minio monitoring/uptime-kuma cloudflared; do
   if [ -f "$ROOT/$svc/docker-compose.yml" ]; then
     echo "  -> $svc"
