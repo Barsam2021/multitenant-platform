@@ -1,8 +1,9 @@
 # CMS-Modul — Umsetzungsplan
 
-Status: **Phasen 1–3 gebaut** (siehe `cms/`, Migrationen 21/22, Dashboard-Tab
-„CMS"). Phase 4 und 5 stehen offen, ebenso die Entscheidungen in § 9 — die
-Umsetzung hat dort vorläufige Antworten gewählt, die in § 8 notiert sind.
+Status: **Phasen 1–3 gebaut und im Betrieb** (siehe `cms/`, Migrationen 21/22,
+Dashboard-Tab „CMS"). Phase 4 und 5 stehen offen, ebenso die Entscheidungen in
+§ 9 — die Umsetzung hat dort vorläufige Antworten gewählt, die in § 8 notiert
+sind.
 
 Dieses Dokument bleibt der Entwurf: es erklärt, warum das Modul so geschnitten
 ist, nicht wie der Code im Detail aussieht.
@@ -301,8 +302,23 @@ Stand der Umsetzung, mit den Abweichungen vom Entwurf:
 | 1 Fundament | gebaut | Migration 21 legt zusätzlich `cms_audit.detail`/`ip` und den Fehlversuchszähler an; Migration 22 die Rolle `cms_config` (im Entwurf nicht vorgesehen, siehe unten) |
 | 2 Listen & Formulare | gebaut | zusätzlich `json`-Felder und Suche über alle Listenspalten |
 | 3 Medien | gebaut | Upload, Neukodierung, Medienübersicht; Löschen von Dateien fehlt noch |
+| — Härtung | nachgezogen | Sitzung wird bei jedem Aufruf gegen `cms_users` geprüft; Bremsen für Login, Upload und Schreibvorgänge; Pixel- und Bildanzahl-Grenzen beim Dekodieren; Postgres-Fehler werden übersetzt statt durchgereicht |
 | 4 Komfort | offen | `richtext` ist als bereinigtes Textfeld da, aber ohne Editor; `relation`, `gallery`, Entwurfsstatus fehlen |
 | 5 Automatik | offen | „Seite neu veröffentlichen" gibt es noch nicht |
+
+Was der Betrieb dem Entwurf hinzugefügt hat — der Vollständigkeit halber notiert,
+weil es sich nicht aus dem Entwurf ableiten ließ:
+
+* **Eine Sitzung ist nur so gültig wie ihr Konto.** Der Entwurf ging von einem
+  signierten Cookie mit Laufzeit aus. In der Praxis wird ein Zugang gelöscht und
+  neu angelegt, während der Browser des Redakteurs weiterläuft. Da `cms_media`
+  die einzige Schreiboperation mit Fremdschlüssel auf `cms_users` ist, fiel das
+  ausschließlich beim Bild-Upload auf — lesen und Inhalte speichern lief weiter.
+  Die Sitzung wird deshalb bei jedem Aufruf gegen die Datenbank geprüft.
+* **Die Größe einer Datei sagt nichts über ihren Speicherbedarf.** Die
+  10-MB-Grenze des Entwurfs begrenzt den Upload, nicht das dekodierte Bild.
+  Dazu kommen jetzt Grenzen für Pixelzahl und, bei Animationen, für die Anzahl
+  der Einzelbilder.
 
 Zwei Entscheidungen, die der Entwurf offengelassen hatte und die die Umsetzung
 getroffen hat:

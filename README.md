@@ -28,6 +28,10 @@ Jeder Tenant (Kunde) bekommt automatisiert:
 - Besucher-Analytics pro Domain: Aufrufe, Besucher, meistbesuchte Seiten und
   Herkunft — gezählt aus dem Traefik-Accesslog, ohne Cookies, ohne
   Tracking-Script in der Kunden-App und ohne gespeicherte IP-Adressen
+- Rate-Limiting auf jeder öffentlich erreichbaren Ebene: Kundenseiten, Kunden-APIs,
+  CMS-Login, Uploads und Schreibvorgänge. Ausgelegt auf die gemeinsame
+  Infrastruktur — Datenbank und Arbeitsspeicher teilen sich alle Mandanten, eine
+  überlastete Kundenseite darf nicht die übrigen mitreißen
 - Uptime-Monitoring (Uptime Kuma) und täglich per Cron laufende, age-verschlüsselte
   Backups nach Object Storage (rclone) — inklusive Postgres-Globals, aller
   Datenbanken, MinIO und der Konfiguration; Restore ist skriptiert und getestet
@@ -35,6 +39,15 @@ Jeder Tenant (Kunde) bekommt automatisiert:
 Verwaltet wird alles über ein zentrales Next.js-Dashboard mit Tenant-Verwaltung,
 Table-/SQL-Editor, Deployment-Historie mit Live-Logs, Besucherstatistik, Domain-
 und Environment-Variable-Verwaltung sowie Audit-Log.
+
+Die Startseite beantwortet die Fragen, die im Betrieb tatsächlich anfallen, und
+zwar in absoluten Zahlen statt in Prozent von etwas Ungenanntem: wie viel
+Arbeitsspeicher ist belegt und **wer** belegt ihn, wie viel Platte verbraucht
+welcher Kunde (aufgeteilt nach Datenbank, hochgeladenen Dateien und
+Build-Snapshots), wie viel RAM ist einem Projekt zugesagt und liegt brach, und
+welche Seite erzeugt die meisten Aufrufe. Dazu die Dinge, die man sonst nur per
+`docker ps` findet: Container, die zu keinem Projekt mehr gehören, mit
+Aufräum-Knopf.
 
 Dazu kommt ein **CMS für die Endkunden** (`cms/`): der Kunde meldet sich unter
 `cms.<domain>/<slug>` an und pflegt seine Inhalte selbst — Beiträge schreiben,
@@ -63,10 +76,14 @@ Punkte: [docs/CMS-PLAN.md](./docs/CMS-PLAN.md).
 | Backups | `age`-Verschlüsselung + `rclone` (Object Storage, z. B. Hetzner Storage Box) |
 | Tunnel | Cloudflare Tunnel (Admin-Zugriff ohne offenen Port) |
 
-## Architektur
+## Dokumentation
 
-Siehe [ARCHITECTURE.md](./ARCHITECTURE.md) für eine Übersicht der Module und
-wie die Services zusammenspielen.
+| Dokument | Inhalt |
+|---|---|
+| [ARCHITECTURE.md](./ARCHITECTURE.md) | Module, Datenflüsse, Sicherheits- und Netzwerkmodell — warum die Dinge so geschnitten sind |
+| [SETUP.md](./SETUP.md) | Einrichtung von 0 auf einem frischen Server, Schritt für Schritt |
+| [docs/OPERATIONS.md](./docs/OPERATIONS.md) | Betrieb: diagnostizieren, prüfen, reparieren. Die Befehle, die im Ernstfall gebraucht werden |
+| [docs/CMS-PLAN.md](./docs/CMS-PLAN.md) | Entwurf des CMS-Moduls samt Begründungen und Stand der Umsetzung |
 
 ## Lokal/auf eigenem Server ausprobieren
 
@@ -105,9 +122,22 @@ Für alles danach — Update einspielen, einen Branch testen:
   sind derzeit `kunden.gotrue_jwt_secret`, `kunden.authenticator_password`,
   `kunden.anon_jwt`, `kunden.service_role_jwt` und `projects.webhook_secret` — diese
   stehen im Klartext in der Datenbank (offener Punkt, siehe unten).
-- GitHub-Webhooks werden per HMAC-SHA256-Signatur gegen den rohen Request-Body
-  verifiziert.
-- Rate-Limiting auf drei Stufen (global, Webhooks, sensible Operationen).
+- GitHub-Webhooks werden per HMAC-SHA256-Signatur in konstanter Zeit gegen den
+  rohen Request-Body verifiziert; dasselbe gilt für das Shared Secret des Agents.
+- Rate-Limiting in mehreren Schichten: Traefik bremst Kundenseiten (50 req/s,
+  Burst 100) und die öffentlich freigeschalteten Kunden-APIs strenger (20 req/s),
+  der Agent begrenzt allgemeine, Webhook- und sensible Operationen getrennt, das
+  CMS Login, Uploads und Schreibvorgänge. Geschlüsselt wird auf `Cf-Connecting-Ip`
+  und nicht auf die TCP-Gegenstelle — hinter Cloudflare ist letztere immer eine
+  Edge-IP, und ein Limit darauf greift nachweislich nicht (siehe
+  [docs/OPERATIONS.md](./docs/OPERATIONS.md), Abschnitt „Rate-Limits prüfen").
+- Das CMS prüft bei **jedem** Aufruf, ob das Konto der Sitzung noch existiert und
+  nicht gesperrt ist. Ein Cookie allein ist kein Zugang: gelöschte oder gesperrte
+  Redakteure sind sofort draußen, nicht erst nach Ablauf des Tokens.
+- Uploads werden neu kodiert (EXIF weg) und dabei hart begrenzt — Dateigröße,
+  Pixelzahl und Bildanzahl bei Animationen. Die Größe der hochgeladenen Datei sagt
+  nichts über den Speicher des dekodierten Bildes; ohne diese Grenzen kippt eine
+  wenige hundert Kilobyte große Datei den gemeinsamen Container.
 - Der SQL-Editor im Dashboard erlaubt bewusst freie Queries (wie Supabase Studio) —
   das ist als Single-Admin-Werkzeug hinter Auth + Cloudflare Zero Trust gedacht,
   **nicht** für Multi-User-Zugriff mit unterschiedlichen Rechten. Wer das
@@ -133,18 +163,45 @@ Tenant-Isolation auf Datenbankebene (`REVOKE CONNECT` plus Rollen pro Tenant),
 Advisory Lock beim Provisioning, wertbasierte Secret-Maskierung und
 wiederherstellbare Backups.
 
+Ein zweiter Durchgang am 18.08.2026 hat fünf weitere Befunde behoben — dokumentiert,
+weil die Art der Fehler aussagekräftiger ist als ihre Zahl:
+
+- Die Feldprüfung des CMS übersprang für optionale Felder Längen- **und**
+  Auswahlgrenzen. Ein `continue` an der falschen Stelle.
+- Der Login rechnete bei jedem Versuch einen bcrypt-Hash, ohne Bremse — absichtlich
+  auch bei unbekannter Adresse, damit die Antwortzeit nichts verrät. Genau das machte
+  ihn zum billigen Hebel gegen die CPU aller Kunden.
+- Uploads waren nur nach Dateigröße begrenzt, nicht nach dekodierter Bildfläche.
+- Postgres-Rohmeldungen gingen an den Redakteur und beschrieben ihm das Schema.
+- Das Shared Secret des Agents wurde mit `!==` verglichen, nicht zeitkonstant.
+
+Der wichtigste Fund kam nicht aus dem Lesen, sondern aus einem Lasttest: Das
+Rate-Limiting war korrekt konfiguriert und wirkungslos. Vor der Plattform steht
+Cloudflare, Traefik sah als Gegenstelle immer eine Edge-IP, und 600 Anfragen in
+fünf Sekunden verteilten sich auf so viele Edges, dass 576 durchkamen. Derselbe
+Denkfehler steckte in der Besucherzählung, die damit Rechenzentren statt Menschen
+gezählt hat. Beides schlüsselt jetzt auf `Cf-Connecting-Ip`; der Lasttest liefert
+seither 463 von 600 Anfragen als `429` — genau der rechnerische Wert.
+
 Offen, und hier bewusst dokumentiert statt beschönigt:
 
 - Es existiert **keine Testsuite**. Sieben der elf schwersten Audit-Befunde wären
   von vier Integrationstests gefunden worden (Tenant-Isolation, Backup-Restore,
-  Deploy-Concurrency, Route-Vertrag).
+  Deploy-Concurrency, Route-Vertrag). Der Cloudflare-Befund oben wäre es nicht —
+  den findet nur ein Lasttest gegen die echte Kette.
 - `kunden.gotrue_jwt_secret`, `kunden.authenticator_password` und
   `projects.webhook_secret` liegen im Klartext in der Datenbank.
 - Der Tabellen-Editor im Dashboard behandelt zusammengesetzte Primärschlüssel
   noch nicht korrekt (offener Punkt P1-2).
+- Das Speicherkontingent des CMS wird vor dem Upload geprüft, nicht atomar. Zwei
+  gleichzeitige Uploads können es beide passieren.
+- Die Rate-Limit-Zähler des CMS liegen im Prozessspeicher. Der Dienst läuft als ein
+  Container, damit gilt das Limit global — bei mehreren Instanzen gehört es nach
+  Redis.
 - Die Plattform ist für 5–10 Tenants auf einem 8-GB-VPS ausgelegt. Darüber
   braucht es mehr RAM oder eine zweite Maschine.
 - `next-auth` läuft als Beta mit Caret-Range.
 
 Wer das Repo als Referenz liest: die Architektur-Entscheidungen sind in
-[ARCHITECTURE.md](./ARCHITECTURE.md) begründet, die bekannten Grenzen stehen hier.
+[ARCHITECTURE.md](./ARCHITECTURE.md) begründet, die Betriebsrealität steht in
+[docs/OPERATIONS.md](./docs/OPERATIONS.md), und die bekannten Grenzen stehen hier.
