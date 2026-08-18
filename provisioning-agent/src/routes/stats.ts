@@ -4,6 +4,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { readFile } from 'fs/promises';
 import { getDiskUsage } from '../lib/cleanup';
+import { logAudit } from '../lib/audit';
 import { BUILDS_ROOT } from '../lib/git';
 
 const execFileP = promisify(execFile);
@@ -193,6 +194,37 @@ statsRouter.get('/stats/storage', async (_req, res) => {
     });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  } finally {
+    await db.end();
+  }
+});
+
+// DELETE /containers/orphan/:name — einen verwaisten App-Container entfernen.
+//
+// Bewusst eng: nur Namen, die mit app- beginnen, und nur solche, die KEIN
+// Projekt mehr kennt. Die Pruefung passiert hier und nicht im Dashboard --
+// die Liste dort ist ein Vorschlag, die Entscheidung darf nicht davon
+// abhaengen, dass der Aufrufer sie richtig ausgewertet hat.
+statsRouter.delete('/containers/orphan/:name', async (req, res) => {
+  const { name } = req.params;
+  if (!/^app-[a-z0-9][a-z0-9-]*$/.test(name)) return res.status(400).json({ error: 'invalid container name' });
+
+  const db = adminClient();
+  await db.connect();
+  try {
+    const { rows: projects } = await db.query('SELECT slug, active_container FROM projects');
+    const belongsToProject = projects.some(
+      (p) => p.active_container === name || name === `app-${p.slug}` || name.startsWith(`app-${p.slug}-`)
+    );
+    if (belongsToProject) {
+      return res.status(409).json({ error: `"${name}" gehoert zu einem Projekt und wird nicht entfernt.` });
+    }
+
+    await execFileP('docker', ['rm', '-f', name]);
+    await logAudit('container.orphan.removed', null, { container: name });
+    res.json({ status: 'ok', removed: name });
+  } catch (err: any) {
+    res.status(500).json({ error: err.stderr || err.message });
   } finally {
     await db.end();
   }
@@ -412,6 +444,26 @@ statsRouter.get('/stats/overview', async (_req, res) => {
     }
 
     const memoryConsumers = [...consumerMap.values()].sort((a, b) => b.usedBytes - a.usedBytes);
+
+    // Verwaiste App-Container: laufen noch, gehoeren aber zu keinem Projekt
+    // mehr. Entstehen, wenn ein Projekt geloescht wird, waehrend sein Container
+    // laeuft, oder wenn ein Deploy-Swap auf halber Strecke abbricht. Sie
+    // belegen RAM und ihr Limit, ohne dass irgendwo etwas darauf zeigt — und
+    // sichtbar sind sie bisher nur, wenn jemand von Hand `docker ps` tippt.
+    const knownContainers = new Set<string>();
+    for (const p of projects) {
+      if (p.active_container) knownContainers.add(p.active_container);
+      knownContainers.add(`app-${p.slug}`);
+    }
+    const orphanContainers = Object.entries(containerStats)
+      .filter(([name]) => name.startsWith('app-') && !knownContainers.has(name))
+      // Waehrend eines Deploys existiert kurzzeitig app-<slug>-<sha> neben dem
+      // oeffentlichen Container. Das ist kein Waisenkind, sondern der Kandidat.
+      .filter(([name]) => !projects.some((p) => name.startsWith(`app-${p.slug}-`)))
+      .map(([name, stat]) => {
+        const mem = parseMemUsage(stat.MemUsage);
+        return { name, memUsedBytes: mem.usedBytes, memLimitBytes: mem.limitBytes };
+      });
     const allContainers = Object.values(containerStats).map((c) => parseMemUsage(c.MemUsage));
 
     res.json({
@@ -433,6 +485,7 @@ statsRouter.get('/stats/overview', async (_req, res) => {
           consumers: memoryConsumers,
         },
       },
+      orphanContainers,
       projects: projectStats,
     });
   } catch (err: any) {

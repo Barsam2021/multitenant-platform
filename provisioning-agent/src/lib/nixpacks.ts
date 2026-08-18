@@ -93,6 +93,14 @@ export async function nixpacksBuild(
     args.push('--build-cmd', buildCommand);
   }
 
+  // Der BuildKit-Container, den nixpacks sich selbst anlegt, hat kein
+  // Speicherlimit — ein Build zieht dort 1-2 GB. Auf einer 8-GB-Maschine ist
+  // das der wahrscheinlichste Grund, warum waehrend eines Deploys ein ganz
+  // anderer Dienst OOM-gekillt wird. Wir koennen die Erstellung des Builders
+  // nicht steuern, das Limit aber nachtraeglich setzen; `docker update` wirkt
+  // sofort auf den laufenden Container.
+  await capBuildkitMemory();
+
   try {
     const { stdout, stderr } = await execFileP('nixpacks', args, {
       maxBuffer: 1024 * 1024 * 32, // 32MB — Build-Logs können lang werden
@@ -123,5 +131,30 @@ export async function nixpacksBuild(
       Object.values(envVars || {})
     );
     throw Object.assign(new Error('nixpacks build failed'), { buildLog: log });
+  }
+}
+
+/**
+ * Speicherlimit auf die BuildKit-Builder legen, best effort.
+ *
+ * Ueber den rohen Socket und nicht ueber den Socket-Proxy: dessen ACL kennt
+ * /containers/{id}/update nicht, und ein 403 hier soll keinen Build verhindern.
+ * Faellt der Aufruf aus, wird nur nicht begrenzt — vorher war es das auch nicht.
+ */
+async function capBuildkitMemory(): Promise<void> {
+  const limit = process.env.BUILDKIT_MEM_LIMIT || '2g';
+  const env = { ...process.env, DOCKER_HOST: 'unix:///var/run/docker.sock' };
+  try {
+    const { stdout } = await execFileP('docker', ['ps', '--filter', 'name=buildx_buildkit', '--format', '{{.Names}}'], { env });
+    const names = stdout.trim().split('\n').filter(Boolean);
+    for (const name of names) {
+      // --memory-swap gleich --memory: ohne das darf der Container unbegrenzt
+      // swappen und das Limit waere wirkungslos, sobald Swap existiert.
+      await execFileP('docker', ['update', `--memory=${limit}`, `--memory-swap=${limit}`, name], { env }).catch(
+        (e: any) => console.warn(`BuildKit-Limit fuer ${name} nicht gesetzt:`, e.stderr || e.message)
+      );
+    }
+  } catch (e: any) {
+    console.warn('BuildKit-Container nicht auffindbar:', e.message);
   }
 }

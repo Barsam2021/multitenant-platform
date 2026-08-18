@@ -22,7 +22,14 @@ interface Overview {
       consumers: MemoryConsumer[];
     };
   };
+  orphanContainers: OrphanContainer[];
   projects: ProjectStat[];
+}
+
+interface OrphanContainer {
+  name: string;
+  memUsedBytes: number | null;
+  memLimitBytes: number | null;
 }
 
 interface MemoryConsumer {
@@ -203,6 +210,7 @@ export default function PlatformOverviewPage() {
   const [error, setError] = useState<string | null>(null);
   const [cleaning, setCleaning] = useState(false);
   const [cleanupNote, setCleanupNote] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<string | null>(null);
 
   function load() {
     fetch("/api/stats/overview")
@@ -225,6 +233,21 @@ export default function PlatformOverviewPage() {
       .then((r) => r.json())
       .then((d) => !d.error && setStorage(d))
       .catch(() => {});
+  }
+
+  async function handleRemoveOrphan(name: string) {
+    if (!confirm(`Container "${name}" endgültig entfernen? Er gehört zu keinem Projekt mehr.`)) return;
+    setRemoving(name);
+    try {
+      const res = await fetch(`/api/containers/orphan/${encodeURIComponent(name)}`, { method: "DELETE" });
+      const d = await res.json();
+      setCleanupNote(res.ok ? `${name} entfernt.` : d.error || "Entfernen fehlgeschlagen");
+      load();
+    } catch {
+      setCleanupNote("Verbindung zum Provisioning Agent fehlgeschlagen");
+    } finally {
+      setRemoving(null);
+    }
   }
 
   async function handleCleanupNow() {
@@ -437,6 +460,28 @@ export default function PlatformOverviewPage() {
             )}
           </div>
           {cleanupNote && <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 6 }}>{cleanupNote}</div>}
+        </div>
+      )}
+
+      {(data.orphanContainers ?? []).length > 0 && (
+        <div style={{ border: "1px solid #e0a340", borderRadius: 8, padding: 14, marginBottom: 24, background: "var(--panel)" }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
+            Verwaiste Container ({data.orphanContainers.length})
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-dim)", marginBottom: 10 }}>
+            Laufen noch, gehören aber zu keinem Projekt mehr — sie belegen Speicher, ohne dass etwas darauf zeigt.
+          </div>
+          {data.orphanContainers.map((c) => (
+            <div key={c.name} style={{ display: "flex", alignItems: "center", gap: 12, padding: "6px 0", fontSize: 13 }}>
+              <code style={{ flex: 1 }}>{c.name}</code>
+              <span style={{ color: "var(--text-dim)" }}>
+                {formatBytes(c.memUsedBytes)} belegt · {formatBytes(c.memLimitBytes)} Limit
+              </span>
+              <button className="btn" onClick={() => handleRemoveOrphan(c.name)} disabled={removing === c.name}>
+                {removing === c.name ? "Entferne…" : "Entfernen"}
+              </button>
+            </div>
+          ))}
         </div>
       )}
 
