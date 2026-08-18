@@ -6,6 +6,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { writeFile } from 'fs/promises';
 import crypto from 'crypto';
+import { ensureRateLimitMiddlewares } from './lib/traefikDynamic';
 import { projectsRouter } from './routes/projects';
 import { tenantsRouter } from './routes/tenants';
 import { deploymentsRouter } from './routes/deployments';
@@ -504,6 +505,14 @@ process.on('uncaughtException', (err) => {
 
 app.listen(3001, () => {
   console.log('Provisioning Agent (mit Deployment Engine) listening on :3001');
+  // Die Rate-Limit-Middlewares liegen im dynamischen Traefik-Verzeichnis, das
+  // nicht versioniert ist. Bei jedem Start neu schreiben, damit sie nach einem
+  // Neuaufsetzen des Servers nicht stillschweigend fehlen — ein Router, der
+  // eine unbekannte Middleware referenziert, wird von Traefik verworfen, und
+  // dann waere die Seite offline statt ungebremst.
+  ensureRateLimitMiddlewares().catch((e: any) =>
+    console.error('Rate-Limit-Middlewares konnten nicht geschrieben werden:', e.message)
+  );
   // Audit §15: ein Agent-Start im laufenden Betrieb bedeutet, dass er vorher
   // gestorben ist. Genau das war bisher nirgends sichtbar.
   alert('Provisioning Agent gestartet',

@@ -2,6 +2,56 @@ import { writeFile, unlink, readdir } from 'fs/promises';
 
 const DYNAMIC_DIR = '/opt/multitenant-platform/traefik/dynamic';
 
+// Namen der geteilten Middlewares. Referenziert werden sie mit dem Suffix
+// @file, weil sie aus dem File-Provider kommen und auch von Routern aus
+// Docker-Labels erreichbar sein muessen.
+export const PUBLIC_RATE_LIMIT = 'public-ratelimit';
+export const API_RATE_LIMIT = 'api-ratelimit';
+const RATE_LIMIT_FILE = 'aa-rate-limit.yml';
+
+/**
+ * Legt die geteilten Rate-Limit-Middlewares an.
+ *
+ * Warum ueberhaupt auf dieser Ebene: bis hierher gab es Bremsen nur im
+ * Provisioning Agent, also hinter dem Agent-Secret. Alles, was tatsaechlich im
+ * offenen Internet steht — die Seiten der Kunden und die freigeschalteten
+ * PostgREST-/GoTrue-Endpunkte — nahm beliebig viele Anfragen an. Da Postgres,
+ * PgBouncer und der Arbeitsspeicher der Maschine von ALLEN Mandanten geteilt
+ * werden, trifft eine einzige Kunden-API unter Last nicht nur ihren eigenen
+ * Kunden, sondern die ganze Plattform.
+ *
+ * Zwei Stufen, weil die Kosten pro Anfrage sich um Groessenordnungen
+ * unterscheiden: eine ausgelieferte Seite kostet fast nichts, eine
+ * PostgREST-Abfrage laeuft in die gemeinsame Datenbank.
+ *
+ * average/burst gelten in Traefik je Quell-IP (sourceCriterion standardmaessig
+ * request.host bzw. die Client-IP hinter den Forwarded-Headern). Die Werte sind
+ * bewusst hoch genug, dass normales Surfen — eine Seite mit 40 Assets, ein
+ * schneller Klickpfad — sie nie erreicht.
+ *
+ * Idempotent, wird bei jedem Agent-Start geschrieben: die Datei liegt in einem
+ * Verzeichnis, das nicht versioniert ist (siehe .gitignore), und darf nach
+ * einem Neuaufsetzen nicht fehlen.
+ */
+export async function ensureRateLimitMiddlewares(): Promise<void> {
+  const yaml = `# Automatisch erzeugt vom Provisioning Agent — nicht von Hand editieren.
+# Geteilte Rate-Limit-Middlewares fuer alles, was oeffentlich erreichbar ist.
+http:
+  middlewares:
+    ${PUBLIC_RATE_LIMIT}:
+      rateLimit:
+        average: 50
+        burst: 100
+        period: 1s
+    ${API_RATE_LIMIT}:
+      rateLimit:
+        average: 20
+        burst: 40
+        period: 1s
+`;
+  await writeFile(`${DYNAMIC_DIR}/${RATE_LIMIT_FILE}`, yaml, 'utf8');
+}
+
 /**
  * Wandelt einen Hostnamen in ein dateisystem- und YAML-sicheres Fragment um.
  * "www.kunde.at" -> "www_kunde_at"
@@ -88,6 +138,7 @@ export async function writeCustomDomainRouter(
         - websecure
       middlewares:
         - ${routerName}-redirect
+        - ${PUBLIC_RATE_LIMIT}
       service: ${serviceName}
       tls:
         certResolver: httpresolver
@@ -103,6 +154,8 @@ export async function writeCustomDomainRouter(
       rule: "Host(\`${hostname}\`)"
       entryPoints:
         - websecure
+      middlewares:
+        - ${PUBLIC_RATE_LIMIT}
       service: ${serviceName}
       tls:
         certResolver: httpresolver
@@ -172,6 +225,8 @@ http:
       rule: "Host(\`${hostname}\`)"
       entryPoints:
         - websecure
+      middlewares:
+        - ${API_RATE_LIMIT}
       service: ${routerName}-svc
       tls:
         certResolver: myresolver

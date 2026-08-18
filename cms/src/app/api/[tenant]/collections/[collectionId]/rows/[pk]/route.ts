@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getCollectionWithFields, logCmsAudit } from "@/lib/configDb";
 import { deleteRow, updateRow } from "@/lib/rows";
 import { requireSession } from "@/lib/session";
+import { hit } from "@/lib/rateLimit";
 import { toUserMessage } from "@/lib/errors";
 
 export async function PATCH(
@@ -11,6 +12,19 @@ export async function PATCH(
   const { tenant: tenantSlug, collectionId, pk } = await params;
   const session = await requireSession(tenantSlug);
   if (!session) return NextResponse.json({ error: "nicht angemeldet" }, { status: 401 });
+
+  // Schreibvorgaenge bremsen: jeder geht in die Datenbank des Kunden, die ueber
+  // PgBouncer mit allen anderen Mandanten geteilt wird. 60 pro Minute sind mehr,
+  // als ein Mensch tippen kann, und wenig genug, dass ein durchgedrehtes Skript
+  // die gemeinsame Datenbank nicht mitreisst.
+  const writes = hit(`rows:${session.userId}`, 60, 60_000);
+  if (!writes.allowed) {
+    return NextResponse.json(
+      { error: "Zu viele Änderungen in kurzer Zeit. Bitte einen Moment warten." },
+      { status: 429, headers: { "Retry-After": String(writes.retryAfterSeconds) } }
+    );
+  }
+
 
   const found = await getCollectionWithFields(tenantSlug, collectionId);
   if (!found) return NextResponse.json({ error: "Bereich nicht gefunden" }, { status: 404 });
@@ -55,6 +69,19 @@ export async function DELETE(
   const { tenant: tenantSlug, collectionId, pk } = await params;
   const session = await requireSession(tenantSlug);
   if (!session) return NextResponse.json({ error: "nicht angemeldet" }, { status: 401 });
+
+  // Schreibvorgaenge bremsen: jeder geht in die Datenbank des Kunden, die ueber
+  // PgBouncer mit allen anderen Mandanten geteilt wird. 60 pro Minute sind mehr,
+  // als ein Mensch tippen kann, und wenig genug, dass ein durchgedrehtes Skript
+  // die gemeinsame Datenbank nicht mitreisst.
+  const writes = hit(`rows:${session.userId}`, 60, 60_000);
+  if (!writes.allowed) {
+    return NextResponse.json(
+      { error: "Zu viele Änderungen in kurzer Zeit. Bitte einen Moment warten." },
+      { status: 429, headers: { "Retry-After": String(writes.retryAfterSeconds) } }
+    );
+  }
+
 
   const found = await getCollectionWithFields(tenantSlug, collectionId);
   if (!found) return NextResponse.json({ error: "Bereich nicht gefunden" }, { status: 404 });

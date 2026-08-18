@@ -7,6 +7,7 @@ import { buildEnvVars } from './secrets';
 import { maskSecrets } from './crypto';
 import { detectBuildErrorHint } from './buildErrorHints';
 import { truncateBuildLog } from './cleanup';
+import { PUBLIC_RATE_LIMIT } from './traefikDynamic';
 
 const execFileP = promisify(execFile);
 
@@ -366,6 +367,10 @@ export async function runDeployment(
       '--label', `traefik.http.routers.${project.slug}-app.entrypoints=websecure`,
       '--label', `traefik.http.routers.${project.slug}-app.tls.certresolver=myresolver`,
       '--label', `traefik.http.services.${project.slug}-app.loadbalancer.server.port=${appPort}`,
+      // Bremse fuer die Vorschau-Domain. @file, weil die Middleware aus dem
+      // File-Provider kommt (lib/traefikDynamic.ts) — ohne das Suffix sucht
+      // Traefik sie im Docker-Provider und verwirft den Router.
+      '--label', `traefik.http.routers.${project.slug}-app.middlewares=${PUBLIC_RATE_LIMIT}@file`,
       ...envArgs,
       imageTag,
     ]);
@@ -500,6 +505,10 @@ export async function rollbackToDeployment(project: Project, targetDeploymentId:
       '--label', `traefik.http.routers.${project.slug}-app.entrypoints=websecure`,
       '--label', `traefik.http.routers.${project.slug}-app.tls.certresolver=myresolver`,
       '--label', `traefik.http.services.${project.slug}-app.loadbalancer.server.port=${appPort}`,
+      // Bremse fuer die Vorschau-Domain. @file, weil die Middleware aus dem
+      // File-Provider kommt (lib/traefikDynamic.ts) — ohne das Suffix sucht
+      // Traefik sie im Docker-Provider und verwirft den Router.
+      '--label', `traefik.http.routers.${project.slug}-app.middlewares=${PUBLIC_RATE_LIMIT}@file`,
       ...envArgs,
       target.image_tag,
     ]);
