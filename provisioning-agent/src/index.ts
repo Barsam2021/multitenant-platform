@@ -18,15 +18,15 @@ import { auditRouter } from './routes/audit';
 import { statsRouter } from './routes/stats';
 import { cleanupRouter } from './routes/cleanup';
 import { analyticsRouter } from './routes/analytics';
+import { cmsRouter } from './routes/cms';
 import { runCleanup } from './lib/cleanup';
 import { ingestAccessLog } from './lib/analytics';
 import { provisionTenantDatabase } from './lib/tenantDatabase';
+import { cleanupProjectResources } from './lib/projectCleanup';
 import { encrypt } from './lib/crypto';
 import { signTenantJwt } from './lib/jwt';
 import { actorStorage } from './lib/actorContext';
 import { logAudit } from './lib/audit';
-import { deleteMonitor, isMonitoringConfigured } from './lib/monitoring';
-import { removeAllRoutersForProject } from './lib/traefikDynamic';
 import { wrapRouterAsync } from './lib/asyncRoutes';
 import { alert } from './lib/alert';
 
@@ -115,41 +115,29 @@ async function cleanupTenantResources(slug: string): Promise<{ warnings: string[
   const tenantDir = `/opt/multitenant-platform/kunden-instances/${slug}`;
   const warnings: string[] = [];
 
-  if (isMonitoringConfigured()) {
-    try {
-      const monitorAdmin = new Client({
-        connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
-      });
-      monitorAdmin.on('error', (e) => console.error('pg client error (monitorAdmin):', e.message));
-      await monitorAdmin.connect();
-      const { rows: projectRows } = await monitorAdmin.query(
-        'SELECT kuma_monitor_id FROM projects WHERE tenant_slug = $1 AND kuma_monitor_id IS NOT NULL',
-        [slug]
-      );
-      await monitorAdmin.end();
-      for (const p of projectRows) {
-        await deleteMonitor(p.kuma_monitor_id).catch((e: any) =>
-          warnings.push(`Monitor ${p.kuma_monitor_id} löschen fehlgeschlagen: ${e.message}`)
-        );
-      }
-    } catch (e: any) {
-      warnings.push(`Monitor-Cleanup fehlgeschlagen: ${e.message}`);
-    }
-  }
-
+  // Zuerst die Projekte des Tenants vollstaendig abraeumen: App-Container,
+  // Traefik-Router, Projekt-Netz, Images, Build-Cache, GitHub-Webhook und
+  // Monitor. Bis hierher passierte davon nur ein Teil (Monitor und Router) —
+  // der Rest blieb liegen und wurde vom naechsten Projekt mit demselben Slug
+  // geerbt. Besonders der Build-Cache: der enthaelt den Git-Klon, weshalb ein
+  // gleichnamiges Nachfolgeprojekt kommentarlos den Code des Vorgaengers
+  // ausgeliefert bekam.
   try {
-    const routerDb = new Client({
+    const projectDb = new Client({
       connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
     });
-    routerDb.on('error', (e) => console.error('pg client error (routerDb):', e.message));
-    await routerDb.connect();
-    const { rows: slugRows } = await routerDb.query('SELECT slug FROM projects WHERE tenant_slug = $1', [slug]);
-    await routerDb.end();
-    for (const p of slugRows) {
-      await removeAllRoutersForProject(p.slug);
+    projectDb.on('error', (e) => console.error('pg client error (projectDb):', e.message));
+    await projectDb.connect();
+    const { rows: projectRows } = await projectDb.query(
+      'SELECT slug, repo_url, github_webhook_id, kuma_monitor_id FROM projects WHERE tenant_slug = $1',
+      [slug]
+    );
+    await projectDb.end();
+    for (const project of projectRows) {
+      warnings.push(...(await cleanupProjectResources(project)));
     }
   } catch (e: any) {
-    warnings.push(`Traefik-Router-Cleanup fehlgeschlagen: ${e.message}`);
+    warnings.push(`Projekt-Cleanup fehlgeschlagen: ${e.message}`);
   }
 
   try {
@@ -167,6 +155,10 @@ async function cleanupTenantResources(slug: string): Promise<{ warnings: string[
     await master.query('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1', [dbName]);
     await master.query(format('DROP DATABASE IF EXISTS %I;', dbName));
     await master.query(format('DROP ROLE IF EXISTS %I;', `authenticator_${slug}`));
+    // Migration 21: die CMS-Rolle haengt an derselben Datenbank. Nach dem DROP
+    // DATABASE besitzt sie nichts mehr, laesst sich also direkt entfernen —
+    // ohne das bliebe pro geloeschtem Tenant eine Login-Rolle im Cluster zurueck.
+    await master.query(format('DROP ROLE IF EXISTS %I;', `cms_${slug}`));
     await master.end();
   } catch (e: any) {
     warnings.push(`DB/Rolle löschen fehlgeschlagen: ${e.message}`);
@@ -436,7 +428,7 @@ app.delete('/tenants/:slug', sensitiveOpLimiter, async (req, res) => {
 // als unhandledRejection den Prozess zu beenden.
 for (const r of [projectsRouter, tenantsRouter, deploymentsRouter, domainsRouter,
                  githubRouter, backupsRouter, secretsRouter, auditRouter,
-                 statsRouter, cleanupRouter, analyticsRouter, webhooksRouter]) {
+                 statsRouter, cleanupRouter, analyticsRouter, cmsRouter, webhooksRouter]) {
   wrapRouterAsync(r);
 }
 
@@ -451,6 +443,7 @@ app.use(auditRouter);
 app.use(statsRouter); // P1-8: /stats + /stats/overview, siehe routes/stats.ts
 app.use(cleanupRouter); // P3-6: /cleanup/run
 app.use(analyticsRouter); // Besucherstatistik, siehe lib/analytics.ts
+app.use(cmsRouter); // CMS-Rolle + Tabellenrechte, siehe lib/cms.ts
 
 
 app.get('/health', (_req, res) => res.json({ status: 'ok' }));

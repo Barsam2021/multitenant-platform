@@ -19,8 +19,11 @@ multitenant-platform/
 │                           init-scripts/ = versionierte SQL-Migrationen (Rollen,
 │                           Admin-Schema, Audit-Logs, Backups, Monitoring, Previews)
 │
-├── docs/CMS-PLAN.md        Umsetzungsplan für das geplante CMS-Modul (Endkunden
-│                           pflegen ihre Inhalte selbst) — noch nicht gebaut
+├── cms/                    Next.js-Dienst für die ENDKUNDEN: Inhalte pflegen,
+│                           Bilder hochladen. Ein Dienst für alle Tenants,
+│                           Mandant kommt aus der Sitzung. Verbindet sich mit
+│                           eingeschränkten Rollen (cms_config / cms_<slug>),
+│                           nie als Superuser. Entwurf: docs/CMS-PLAN.md
 │
 ├── minio/                  S3-kompatibler Object Storage, ein Bucket pro Tenant
 ├── traefik/                Reverse Proxy + automatisches TLS (Let's Encrypt, DNS-01)
@@ -107,6 +110,34 @@ Datenschutz: keine IP, kein User-Agent wird gespeichert. Das Salt des
 Besucher-Hashes wechselt täglich, ein Besucher ist also innerhalb eines Tages
 wiedererkennbar und darüber hinaus nicht. Entsprechend ist „Besucher" über einen
 Zeitraum die Summe der Tageswerte, nicht die Zahl unterschiedlicher Personen.
+
+## Datenfluss: CMS (Endkunden-Redaktion)
+
+```
+Betreiber im Dashboard (Tab „CMS")
+   ├─ CMS aktivieren  ──▶ Agent: CREATE ROLE cms_<slug>, Passwort verschlüsselt
+   │                       (CMS_ENCRYPTION_KEY, NICHT der Master-Key)
+   ├─ Tabelle freigeben ─▶ cms_collections + cms_fields (aus dem Schema vorbelegt)
+   │                       Agent: GRANT SELECT,INSERT,UPDATE,DELETE auf GENAU diese Tabelle
+   └─ Zugang anlegen  ──▶ cms_users (bcrypt)
+
+Endkunde auf cms.<PLATFORM_DOMAIN>/<slug>
+   ├─ Anmeldung → Sitzungs-Cookie (JWT, HS256) mit tenant_slug
+   ├─ Liste/Formular werden aus cms_fields gebaut, nie aus dem Request
+   ├─ Schreiben als Rolle cms_<slug> über PgBouncer in kunde_<slug>
+   └─ Upload → Neukodierung (EXIF weg) → MinIO public/… → URL im Textfeld
+```
+
+Zwei Grenzen, die bewusst doppelt gezogen sind: die Anwendung schreibt nur in
+Tabellen, die als Collection konfiguriert sind, **und** die Datenbankrolle hat
+auf nichts anderes Rechte. Ein Fehler in der einen Schicht öffnet nicht die
+andere — insbesondere ist `auth.*` (die GoTrue-Nutzer des Kunden) für das CMS
+grundsätzlich unerreichbar.
+
+Nicht dasselbe wie der Tabellen-Editor im Dashboard: der verbindet sich als
+`postgres`-Superuser und ist Betreiberwerkzeug. Der CMS-Dienst läuft deshalb als
+eigener Prozess mit eigenen Zugangsdaten, auch wenn dadurch etwas Code doppelt
+existiert.
 
 ## Docker-Sicherheitsmodell
 

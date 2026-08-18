@@ -73,6 +73,19 @@ if [ -f "$ROOT/dashboard/docker-compose.yml" ]; then
   (cd "$ROOT/dashboard" && docker compose --env-file "$ROOT/.env" up -d --build)
 fi
 
+# CMS-Dienst (Endkunden-Redaktion). Nur starten, wenn er auch konfiguriert ist —
+# ohne CMS_DATABASE_URL/CMS_ENCRYPTION_KEY/CMS_SESSION_SECRET wuerde der
+# Container beim ersten Request abbrechen, und ein CMS ist fuer viele
+# Installationen schlicht nicht noetig.
+if [ -f "$ROOT/cms/docker-compose.yml" ]; then
+  if [ -n "${CMS_DATABASE_URL:-}" ] && [ -n "${CMS_ENCRYPTION_KEY:-}" ] && [ -n "${CMS_SESSION_SECRET:-}" ]; then
+    echo "==> CMS-Dienst"
+    (cd "$ROOT/cms" && docker compose --env-file "$ROOT/.env" up -d --build)
+  else
+    echo "==> CMS-Dienst: nicht konfiguriert (CMS_* in .env fehlen), uebersprungen — siehe SETUP.md"
+  fi
+fi
+
 # P0-5: Backup-Cron gehoert ins Setup, nicht in die Doku. Ein Backup, das
 # niemand einrichtet, ist kein Backup.
 if [ -f "$ROOT/backups/cron.d-multitenant-backup" ]; then
