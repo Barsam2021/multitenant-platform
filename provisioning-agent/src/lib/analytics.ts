@@ -59,6 +59,9 @@ interface AccessLogLine {
   RequestMethod?: string;
   DownstreamStatus?: number;
   ClientHost?: string;
+  // Traefik schreibt behaltene Header als request_<Name> ins JSON-Log.
+  request_Cf_Connecting_Ip?: string;
+  'request_Cf-Connecting-Ip'?: string;
   time?: string;
   StartUTC?: string;
   'request_User-Agent'?: string;
@@ -210,7 +213,11 @@ function accumulate(agg: Aggregates, hostMap: Map<string, string>, raw: string):
     else agg.referrers.set(refKey, { projectId, host, day, referrer, views: 1 });
   }
 
-  const ip = line.ClientHost || '';
+  // ClientHost ist die TCP-Gegenstelle — hinter Cloudflare also der Edge, nicht
+  // der Besucher. Alle Anfragen bekaemen sonst eine Handvoll gemeinsamer Hashes,
+  // und "eindeutige Besucher" waere die Zahl der Cloudflare-Rechenzentren.
+  // Ohne Cloudflare davor fehlt der Header und ClientHost ist korrekt.
+  const ip = line.request_Cf_Connecting_Ip || line['request_Cf-Connecting-Ip'] || line.ClientHost || '';
   if (ip) {
     const hash = visitorHash(day, ip, userAgent, host);
     agg.visitors.set(`${dailyKey}|${hash}`, { projectId, host, day, hash });

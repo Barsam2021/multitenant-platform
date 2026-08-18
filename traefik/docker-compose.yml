@@ -39,6 +39,11 @@ services:
       # User-Agent) und keine Herkunft.
       - --accesslog.fields.headers.names.User-Agent=keep
       - --accesslog.fields.headers.names.Referer=keep
+      # Echte Client-IP. Vor der Plattform steht Cloudflare, ClientHost im
+      # Accesslog ist deshalb IMMER eine Cloudflare-Edge-IP (188.114.96.x &
+      # Co.) und nicht der Besucher. Ohne diesen Header zaehlt die
+      # Besucherstatistik Edge-Server statt Menschen.
+      - --accesslog.fields.headers.names.Cf-Connecting-Ip=keep
       # Nur die Anfragen, die auch ausgeliefert wurden. Spart einen erheblichen
       # Teil des Volumens (Scanner-Traffic auf /wp-admin & Co.), und gezaehlt
       # werden ohnehin nur Antworten unter 400.

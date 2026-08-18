@@ -24,10 +24,16 @@ const RATE_LIMIT_FILE = 'aa-rate-limit.yml';
  * unterscheiden: eine ausgelieferte Seite kostet fast nichts, eine
  * PostgREST-Abfrage laeuft in die gemeinsame Datenbank.
  *
- * average/burst gelten in Traefik je Quell-IP (sourceCriterion standardmaessig
- * request.host bzw. die Client-IP hinter den Forwarded-Headern). Die Werte sind
- * bewusst hoch genug, dass normales Surfen — eine Seite mit 40 Assets, ein
- * schneller Klickpfad — sie nie erreicht.
+ * Geschluesselt wird auf Cf-Connecting-Ip und NICHT auf die TCP-Gegenstelle:
+ * vor der Plattform steht Cloudflare, Traefik sieht also immer eine der wenigen
+ * Edge-IPs. Mit der Standardeinstellung verteilten sich 600 Anfragen in fuenf
+ * Sekunden auf so viele Edges, dass praktisch keine gebremst wurde — im
+ * Lasttest kamen 576 von 600 durch. Fehlt der Header (direkter Zugriff auf die
+ * Server-IP, an Cloudflare vorbei), teilen sich alle diese Anfragen einen Topf.
+ * Das ist die sichere Richtung: wer den Proxy umgeht, wird strenger behandelt.
+ *
+ * Die Werte sind hoch genug, dass normales Surfen — eine Seite mit 40 Assets,
+ * ein schneller Klickpfad — sie nie erreicht.
  *
  * Idempotent, wird bei jedem Agent-Start geschrieben: die Datei liegt in einem
  * Verzeichnis, das nicht versioniert ist (siehe .gitignore), und darf nach
@@ -43,11 +49,15 @@ http:
         average: 50
         burst: 100
         period: 1s
+        sourceCriterion:
+          requestHeaderName: Cf-Connecting-Ip
     ${API_RATE_LIMIT}:
       rateLimit:
         average: 20
         burst: 40
         period: 1s
+        sourceCriterion:
+          requestHeaderName: Cf-Connecting-Ip
 `;
   await writeFile(`${DYNAMIC_DIR}/${RATE_LIMIT_FILE}`, yaml, 'utf8');
 }

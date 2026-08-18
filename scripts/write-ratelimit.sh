@@ -8,6 +8,11 @@
 # (Erstinstallation) als auch redeploy.sh (Infra-Phase) vor dem Traefik-Start,
 # und zusaetzlich der Provisioning Agent bei jedem Start als Redundanz.
 #
+# Geschluesselt auf Cf-Connecting-Ip: vor der Plattform steht Cloudflare, die
+# TCP-Gegenstelle ist also immer eine Edge-IP und als Unterscheidungsmerkmal
+# wertlos. Inhaltlich identisch mit dem Generator im Provisioning Agent
+# (lib/traefikDynamic.ts) -- beide Stellen aendern, wenn sich die Werte aendern.
+#
 # Werte bewusst grosszuegig: 50 req/s pro IP (Burst 100) fuer Kundenseiten,
 # 20/s (Burst 40) fuer die Tenant-APIs. Eine Seite laedt beim Oeffnen Dutzende
 # Assets gleichzeitig, und hinter einer IP koennen ganze NAT-Netze stecken —
@@ -25,9 +30,13 @@ http:
         average: 50
         burst: 100
         period: 1s
+        sourceCriterion:
+          requestHeaderName: Cf-Connecting-Ip
     api-ratelimit:
       rateLimit:
         average: 20
         burst: 40
         period: 1s
+        sourceCriterion:
+          requestHeaderName: Cf-Connecting-Ip
 YAML
