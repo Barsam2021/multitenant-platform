@@ -7,6 +7,7 @@ import { promisify } from 'util';
 import { writeFile } from 'fs/promises';
 import crypto from 'crypto';
 import { ensureRateLimitMiddlewares, resyncTenantServiceRouters } from './lib/traefikDynamic';
+import { ensureProjectNetwork } from './lib/deploy';
 import { projectsRouter } from './routes/projects';
 import { tenantsRouter } from './routes/tenants';
 import { deploymentsRouter } from './routes/deployments';
@@ -503,6 +504,36 @@ process.on('uncaughtException', (err) => {
   // erkennt einen wirklich kaputten Prozess.
 });
 
+/**
+ * Haengt Traefik, den Agent und MinIO wieder in alle Projektnetze.
+ *
+ * Siehe ensureProjectNetwork(): diese Verbindungen sind reiner Laufzeit-Zustand
+ * des Docker-Daemons und ueberleben ein --force-recreate der beteiligten
+ * Container nicht. Der Agent startet nach einem solchen Neustart ohnehin mit
+ * neu, ist also die passende Stelle, das geradezuziehen. Idempotent: eine
+ * bereits bestehende Verbindung meldet Docker als Fehler, den wir schlucken.
+ */
+async function reattachProjectNetworks(): Promise<void> {
+  const db = new Client({
+    connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
+  });
+  db.on('error', (e) => console.error('pg client error (reattach):', e.message));
+  await db.connect();
+  try {
+    const { rows } = await db.query(
+      'SELECT slug, tenant_slug FROM projects WHERE tenant_slug IS NOT NULL'
+    );
+    for (const project of rows) {
+      await ensureProjectNetwork(project.slug, project.tenant_slug).catch((e: any) =>
+        console.error(`Projektnetz fuer "${project.slug}" nicht hergestellt:`, e.message)
+      );
+    }
+    if (rows.length > 0) console.log(`Projektnetze geprueft: ${rows.length}`);
+  } finally {
+    await db.end().catch(() => {});
+  }
+}
+
 app.listen(3001, () => {
   console.log('Provisioning Agent (mit Deployment Engine) listening on :3001');
   // Die Rate-Limit-Middlewares liegen im dynamischen Traefik-Verzeichnis, das
@@ -551,6 +582,12 @@ app.listen(3001, () => {
         'agent-start').catch(() => {});
   // P1-1c: offene Domain-Verifikationen nach einem Neustart wieder aufnehmen.
   // Erst fehlende Router reparieren, dann offene Verifikationen fortsetzen.
+  // Netzanbindungen wiederherstellen. Muss VOR der Router-Selbstheilung nichts,
+  // aber frueh laufen: bis das durch ist, antwortet jede Kundenseite mit 504,
+  // falls Traefik zwischenzeitlich neu erstellt wurde.
+  reattachProjectNetworks()
+    .catch((err) => console.error('reattachProjectNetworks fehlgeschlagen:', err.message));
+
   healMissingRouters()
     .catch((err) => console.error('healMissingRouters fehlgeschlagen:', err.message))
     .then(() => resumePendingDomainChecks())

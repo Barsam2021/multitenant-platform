@@ -175,7 +175,19 @@ async function pollHealthcheck(
  * Bridge-Netz liegen und keine Host-Ports publizieren (Ausnahme: pgbouncer auf
  * 127.0.0.1:6432 — nur Loopback des Hosts, aus dem Container nicht erreichbar).
  */
-async function ensureProjectNetwork(slug: string, tenantSlug: string): Promise<string> {
+/**
+ * Projektnetz anlegen und alle Container hineinhaengen, die es brauchen.
+ *
+ * Exportiert, weil es nicht nur beim Deploy gebraucht wird: die Zuordnung
+ * "global-traefik haengt in app-<slug>-net" ist Laufzeit-Zustand des
+ * Docker-Daemons und steht in KEINER compose-Datei. Wird Traefik neu erstellt
+ * (docker compose up --force-recreate, z. B. scripts/redeploy.sh --all), baut
+ * Docker seine Netze aus der compose-Datei neu auf — die dynamisch
+ * angehaengten Projektnetze sind danach weg. Traefik kennt den Router dann
+ * weiterhin, erreicht den Container aber nicht mehr: 504 auf jeder
+ * Kundenseite, ohne eine einzige Fehlermeldung im Log.
+ */
+export async function ensureProjectNetwork(slug: string, tenantSlug: string): Promise<string> {
   const netName = `app-${slug}-net`;
 
   try {
