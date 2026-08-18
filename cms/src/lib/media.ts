@@ -33,6 +33,14 @@ const ALLOWED = new Map<string, { ext: string; image: boolean }>([
   ["application/pdf", { ext: "pdf", image: false }],
 ]);
 
+// ~50 Megapixel: mehr als jede Kamera liefert, und entpackt noch im Rahmen
+// dessen, was der Container tragen kann.
+const MAX_INPUT_PIXELS = 50_000_000;
+// Genug fuer eine uebliche Animation, weit weg von den Tausenden Einzelbildern,
+// mit denen sich derselbe Speicher ueber die Bildanzahl statt ueber die Flaeche
+// erschoepfen liesse.
+const MAX_ANIMATION_FRAMES = 60;
+
 export const MAX_UPLOAD_BYTES = MAX_FILE_BYTES;
 export const MAX_STORAGE_BYTES = MAX_TENANT_BYTES;
 
@@ -125,7 +133,19 @@ export async function uploadFile(
     // Neu kodieren statt durchreichen: entfernt EXIF-Daten (inklusive
     // GPS-Koordinaten aus Handyfotos) und macht praeparierte Dateien
     // unschaedlich, weil nur noch das dekodierte Bild uebrig bleibt.
-    const image = sharp(file.buffer, { animated: detected === "image/gif" });
+    //
+    // Die beiden Grenzen sind kein Feintuning, sondern der Schutz gegen die
+    // Dekompressionsbombe: 10 MB Eingabe sagen nichts darueber, wie viel
+    // Speicher das DEKODIERTE Bild braucht. Ein PNG mit 30000x30000 Pixeln
+    // passt in wenige hundert KB und belegt entpackt mehrere GB — der
+    // CMS-Container hat 512 MB und wuerde mitsamt allen anderen Kunden
+    // OOM-gekillt. Bei animierten GIFs multipliziert sich die Flaeche
+    // zusaetzlich mit jedem Einzelbild, deshalb eine Obergrenze fuer die
+    // Bildanzahl statt "alle" (animated: true).
+    const image = sharp(file.buffer, {
+      limitInputPixels: MAX_INPUT_PIXELS,
+      pages: detected === "image/gif" ? MAX_ANIMATION_FRAMES : 1,
+    });
     const meta = await image.metadata();
     width = meta.width ?? null;
     height = meta.height ?? null;
@@ -135,7 +155,7 @@ export async function uploadFile(
       .webp({ quality: 82 })
       .toBuffer();
     contentType = "image/webp";
-    const resized = await sharp(body).metadata();
+    const resized = await sharp(body, { limitInputPixels: MAX_INPUT_PIXELS }).metadata();
     width = resized.width ?? width;
     height = resized.height ?? height;
   }

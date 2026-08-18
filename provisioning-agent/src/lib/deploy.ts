@@ -7,6 +7,7 @@ import { buildEnvVars } from './secrets';
 import { maskSecrets } from './crypto';
 import { detectBuildErrorHint } from './buildErrorHints';
 import { truncateBuildLog } from './cleanup';
+import { PUBLIC_RATE_LIMIT } from './traefikDynamic';
 
 const execFileP = promisify(execFile);
 
@@ -174,7 +175,19 @@ async function pollHealthcheck(
  * Bridge-Netz liegen und keine Host-Ports publizieren (Ausnahme: pgbouncer auf
  * 127.0.0.1:6432 — nur Loopback des Hosts, aus dem Container nicht erreichbar).
  */
-async function ensureProjectNetwork(slug: string, tenantSlug: string): Promise<string> {
+/**
+ * Projektnetz anlegen und alle Container hineinhaengen, die es brauchen.
+ *
+ * Exportiert, weil es nicht nur beim Deploy gebraucht wird: die Zuordnung
+ * "global-traefik haengt in app-<slug>-net" ist Laufzeit-Zustand des
+ * Docker-Daemons und steht in KEINER compose-Datei. Wird Traefik neu erstellt
+ * (docker compose up --force-recreate, z. B. scripts/redeploy.sh --all), baut
+ * Docker seine Netze aus der compose-Datei neu auf — die dynamisch
+ * angehaengten Projektnetze sind danach weg. Traefik kennt den Router dann
+ * weiterhin, erreicht den Container aber nicht mehr: 504 auf jeder
+ * Kundenseite, ohne eine einzige Fehlermeldung im Log.
+ */
+export async function ensureProjectNetwork(slug: string, tenantSlug: string): Promise<string> {
   const netName = `app-${slug}-net`;
 
   try {
@@ -366,6 +379,10 @@ export async function runDeployment(
       '--label', `traefik.http.routers.${project.slug}-app.entrypoints=websecure`,
       '--label', `traefik.http.routers.${project.slug}-app.tls.certresolver=myresolver`,
       '--label', `traefik.http.services.${project.slug}-app.loadbalancer.server.port=${appPort}`,
+      // Bremse fuer die Vorschau-Domain. @file, weil die Middleware aus dem
+      // File-Provider kommt — ohne das Suffix sucht Traefik sie im
+      // Docker-Provider und verwirft den Router komplett.
+      '--label', `traefik.http.routers.${project.slug}-app.middlewares=${PUBLIC_RATE_LIMIT}@file`,
       ...envArgs,
       imageTag,
     ]);
@@ -500,6 +517,10 @@ export async function rollbackToDeployment(project: Project, targetDeploymentId:
       '--label', `traefik.http.routers.${project.slug}-app.entrypoints=websecure`,
       '--label', `traefik.http.routers.${project.slug}-app.tls.certresolver=myresolver`,
       '--label', `traefik.http.services.${project.slug}-app.loadbalancer.server.port=${appPort}`,
+      // Bremse fuer die Vorschau-Domain. @file, weil die Middleware aus dem
+      // File-Provider kommt — ohne das Suffix sucht Traefik sie im
+      // Docker-Provider und verwirft den Router komplett.
+      '--label', `traefik.http.routers.${project.slug}-app.middlewares=${PUBLIC_RATE_LIMIT}@file`,
       ...envArgs,
       target.image_tag,
     ]);

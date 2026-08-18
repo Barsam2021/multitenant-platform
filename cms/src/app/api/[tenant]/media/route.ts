@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { insertMedia, logCmsAudit, usedStorageBytes } from "@/lib/configDb";
 import { MAX_UPLOAD_BYTES, uploadFile } from "@/lib/media";
 import { requireSession } from "@/lib/session";
+import { hit } from "@/lib/rateLimit";
 import { toUserMessage } from "@/lib/errors";
 
 // Next puffert den Body ohnehin; die harte Grenze steht in lib/media.ts und
@@ -14,6 +15,20 @@ export async function POST(req: Request, { params }: { params: Promise<{ tenant:
     return NextResponse.json(
       { error: "Die Anmeldung ist abgelaufen. Bitte neu anmelden.", reauth: true },
       { status: 401 }
+    );
+  }
+
+  // Bremse pro Redakteur, nicht pro IP: angemeldet ist er, die Frage ist nur,
+  // wie viel Arbeit er ausloesen darf. Jedes Bild wird von sharp dekodiert und
+  // neu kodiert — das ist die teuerste Operation im ganzen Dienst, und der
+  // Dienst gehoert allen Kunden gemeinsam. 30 Dateien pro Minute liegen weit
+  // ueber dem, was jemand von Hand hochlaedt, und weit unter dem, was einen
+  // 512-MB-Container in die Knie zwingt.
+  const upload = hit(`media:${session.userId}`, 30, 60_000);
+  if (!upload.allowed) {
+    return NextResponse.json(
+      { error: "Zu viele Uploads in kurzer Zeit. Bitte einen Moment warten." },
+      { status: 429, headers: { "Retry-After": String(upload.retryAfterSeconds) } }
     );
   }
 

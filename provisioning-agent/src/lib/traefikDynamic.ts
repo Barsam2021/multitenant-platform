@@ -2,6 +2,66 @@ import { writeFile, unlink, readdir } from 'fs/promises';
 
 const DYNAMIC_DIR = '/opt/multitenant-platform/traefik/dynamic';
 
+// Namen der geteilten Middlewares. Referenziert werden sie mit dem Suffix
+// @file, weil sie aus dem File-Provider kommen und auch von Routern aus
+// Docker-Labels erreichbar sein muessen.
+export const PUBLIC_RATE_LIMIT = 'public-ratelimit';
+export const API_RATE_LIMIT = 'api-ratelimit';
+const RATE_LIMIT_FILE = 'aa-rate-limit.yml';
+
+/**
+ * Legt die geteilten Rate-Limit-Middlewares an.
+ *
+ * Warum ueberhaupt auf dieser Ebene: bis hierher gab es Bremsen nur im
+ * Provisioning Agent, also hinter dem Agent-Secret. Alles, was tatsaechlich im
+ * offenen Internet steht — die Seiten der Kunden und die freigeschalteten
+ * PostgREST-/GoTrue-Endpunkte — nahm beliebig viele Anfragen an. Da Postgres,
+ * PgBouncer und der Arbeitsspeicher der Maschine von ALLEN Mandanten geteilt
+ * werden, trifft eine einzige Kunden-API unter Last nicht nur ihren eigenen
+ * Kunden, sondern die ganze Plattform.
+ *
+ * Zwei Stufen, weil die Kosten pro Anfrage sich um Groessenordnungen
+ * unterscheiden: eine ausgelieferte Seite kostet fast nichts, eine
+ * PostgREST-Abfrage laeuft in die gemeinsame Datenbank.
+ *
+ * Geschluesselt wird auf Cf-Connecting-Ip und NICHT auf die TCP-Gegenstelle:
+ * vor der Plattform steht Cloudflare, Traefik sieht also immer eine der wenigen
+ * Edge-IPs. Mit der Standardeinstellung verteilten sich 600 Anfragen in fuenf
+ * Sekunden auf so viele Edges, dass praktisch keine gebremst wurde — im
+ * Lasttest kamen 576 von 600 durch. Fehlt der Header (direkter Zugriff auf die
+ * Server-IP, an Cloudflare vorbei), teilen sich alle diese Anfragen einen Topf.
+ * Das ist die sichere Richtung: wer den Proxy umgeht, wird strenger behandelt.
+ *
+ * Die Werte sind hoch genug, dass normales Surfen — eine Seite mit 40 Assets,
+ * ein schneller Klickpfad — sie nie erreicht.
+ *
+ * Idempotent, wird bei jedem Agent-Start geschrieben: die Datei liegt in einem
+ * Verzeichnis, das nicht versioniert ist (siehe .gitignore), und darf nach
+ * einem Neuaufsetzen nicht fehlen.
+ */
+export async function ensureRateLimitMiddlewares(): Promise<void> {
+  const yaml = `# Automatisch erzeugt vom Provisioning Agent — nicht von Hand editieren.
+# Geteilte Rate-Limit-Middlewares fuer alles, was oeffentlich erreichbar ist.
+http:
+  middlewares:
+    ${PUBLIC_RATE_LIMIT}:
+      rateLimit:
+        average: 50
+        burst: 100
+        period: 1s
+        sourceCriterion:
+          requestHeaderName: Cf-Connecting-Ip
+    ${API_RATE_LIMIT}:
+      rateLimit:
+        average: 20
+        burst: 40
+        period: 1s
+        sourceCriterion:
+          requestHeaderName: Cf-Connecting-Ip
+`;
+  await writeFile(`${DYNAMIC_DIR}/${RATE_LIMIT_FILE}`, yaml, 'utf8');
+}
+
 /**
  * Wandelt einen Hostnamen in ein dateisystem- und YAML-sicheres Fragment um.
  * "www.kunde.at" -> "www_kunde_at"
@@ -88,6 +148,7 @@ export async function writeCustomDomainRouter(
         - websecure
       middlewares:
         - ${routerName}-redirect
+        - ${PUBLIC_RATE_LIMIT}
       service: ${serviceName}
       tls:
         certResolver: httpresolver
@@ -103,6 +164,8 @@ export async function writeCustomDomainRouter(
       rule: "Host(\`${hostname}\`)"
       entryPoints:
         - websecure
+      middlewares:
+        - ${PUBLIC_RATE_LIMIT}
       service: ${serviceName}
       tls:
         certResolver: httpresolver
@@ -172,6 +235,8 @@ http:
       rule: "Host(\`${hostname}\`)"
       entryPoints:
         - websecure
+      middlewares:
+        - ${API_RATE_LIMIT}
       service: ${routerName}-svc
       tls:
         certResolver: myresolver
@@ -184,6 +249,36 @@ http:
 
   await writeFile(`${DYNAMIC_DIR}/${fileName}`, yaml, 'utf8');
   return fileName;
+}
+
+/**
+ * Schreibt die Router der oeffentlich freigeschalteten Tenant-Dienste neu.
+ *
+ * Diese Dateien entstehen nur beim Umschalten der Freigabe und wurden danach
+ * nie wieder angefasst. Aendert sich ihr Inhalt im Code — so wie jetzt mit der
+ * Rate-Limit-Middleware —, bleiben bestehende Installationen stillschweigend
+ * auf dem alten Stand: die Datei ist da, sie sieht unauffaellig aus, und die
+ * Bremse fehlt trotzdem. Genau dieser Fall ist im Lasttest aufgefallen.
+ *
+ * Laeuft beim Agent-Start, idempotent.
+ */
+export async function resyncTenantServiceRouters(
+  tenants: { slug: string; postgrestHost: string | null; authHost: string | null }[]
+): Promise<number> {
+  let written = 0;
+  for (const tenant of tenants) {
+    if (tenant.postgrestHost) {
+      await writeTenantServiceRouter('postgrest', tenant.slug, tenant.postgrestHost)
+        .then(() => { written++; })
+        .catch((e: any) => console.error(`Router postgrest/${tenant.slug}:`, e.message));
+    }
+    if (tenant.authHost) {
+      await writeTenantServiceRouter('auth', tenant.slug, tenant.authHost)
+        .then(() => { written++; })
+        .catch((e: any) => console.error(`Router auth/${tenant.slug}:`, e.message));
+    }
+  }
+  return written;
 }
 
 export async function removeTenantServiceRouter(kind: 'postgrest' | 'auth', tenantSlug: string): Promise<void> {

@@ -6,6 +6,8 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { writeFile } from 'fs/promises';
 import crypto from 'crypto';
+import { ensureRateLimitMiddlewares, resyncTenantServiceRouters } from './lib/traefikDynamic';
+import { ensureProjectNetwork } from './lib/deploy';
 import { projectsRouter } from './routes/projects';
 import { tenantsRouter } from './routes/tenants';
 import { deploymentsRouter } from './routes/deployments';
@@ -76,6 +78,24 @@ const AGENT_SECRET = process.env.PROVISIONING_AGENT_SECRET!;
 const MASTER_DB_PASSWORD = process.env.MASTER_DB_PASSWORD!;
 const PGBOUNCER_HOST = process.env.PGBOUNCER_HOST || 'pgbouncer';
 
+/**
+ * Vergleich in konstanter Zeit. Ein `!==` auf Strings bricht beim ersten
+ * abweichenden Byte ab; wer den Endpunkt oft genug aufruft, kann daraus Zeichen
+ * fuer Zeichen das Secret rekonstruieren. Ueber ein Netzwerk ist das muehsam,
+ * aber dieser Dienst darf Datenbanken anlegen und Container starten — der
+ * Aufwand fuer die sichere Variante sind drei Zeilen.
+ *
+ * Die Laengenpruefung vorab verraet nur die Laenge des Secrets; ohne sie wuerde
+ * timingSafeEqual bei ungleicher Laenge werfen.
+ */
+function secretMatches(provided: unknown): boolean {
+  if (typeof provided !== 'string') return false;
+  const a = Buffer.from(provided);
+  const b = Buffer.from(AGENT_SECRET);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
 app.use('/webhooks', webhookLimiter, express.raw({ type: 'application/json', limit: '5mb' }), webhooksRouter);
 
 // MUSS vor der Secret-Middleware stehen. Der Docker-Healthcheck kennt das
@@ -90,7 +110,7 @@ app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 app.use(globalLimiter);
 app.use(express.json());
 app.use((req, res, next) => {
-  if (req.headers['x-agent-secret'] !== AGENT_SECRET) {
+  if (!secretMatches(req.headers['x-agent-secret'])) {
     return res.status(401).json({ error: 'unauthorized' });
   }
   next();
@@ -484,8 +504,74 @@ process.on('uncaughtException', (err) => {
   // erkennt einen wirklich kaputten Prozess.
 });
 
+/**
+ * Haengt Traefik, den Agent und MinIO wieder in alle Projektnetze.
+ *
+ * Siehe ensureProjectNetwork(): diese Verbindungen sind reiner Laufzeit-Zustand
+ * des Docker-Daemons und ueberleben ein --force-recreate der beteiligten
+ * Container nicht. Der Agent startet nach einem solchen Neustart ohnehin mit
+ * neu, ist also die passende Stelle, das geradezuziehen. Idempotent: eine
+ * bereits bestehende Verbindung meldet Docker als Fehler, den wir schlucken.
+ */
+async function reattachProjectNetworks(): Promise<void> {
+  const db = new Client({
+    connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
+  });
+  db.on('error', (e) => console.error('pg client error (reattach):', e.message));
+  await db.connect();
+  try {
+    const { rows } = await db.query(
+      'SELECT slug, tenant_slug FROM projects WHERE tenant_slug IS NOT NULL'
+    );
+    for (const project of rows) {
+      await ensureProjectNetwork(project.slug, project.tenant_slug).catch((e: any) =>
+        console.error(`Projektnetz fuer "${project.slug}" nicht hergestellt:`, e.message)
+      );
+    }
+    if (rows.length > 0) console.log(`Projektnetze geprueft: ${rows.length}`);
+  } finally {
+    await db.end().catch(() => {});
+  }
+}
+
 app.listen(3001, () => {
   console.log('Provisioning Agent (mit Deployment Engine) listening on :3001');
+  // Die Rate-Limit-Middlewares liegen im dynamischen Traefik-Verzeichnis, das
+  // nicht versioniert ist. Bei jedem Start neu schreiben, damit sie nach einem
+  // Neuaufsetzen des Servers nicht stillschweigend fehlen — ein Router, der
+  // eine unbekannte Middleware referenziert, wird von Traefik verworfen, und
+  // dann waere die Seite offline statt ungebremst.
+  ensureRateLimitMiddlewares()
+    .then(async () => {
+      // Erst die Middleware-Datei, dann die Router, die sie referenzieren —
+      // andersherum kennt Traefik fuer einen Moment einen Router mit
+      // unbekannter Middleware und verwirft ihn.
+      const db = new Client({
+        connectionString: `postgres://postgres:${MASTER_DB_PASSWORD}@${PGBOUNCER_HOST}:5432/admin_dashboard`,
+      });
+      db.on('error', (e) => console.error('pg client error (router-resync):', e.message));
+      await db.connect();
+      try {
+        const { rows } = await db.query(
+          `SELECT slug, postgrest_public_enabled, auth_public_enabled FROM kunden
+           WHERE postgrest_public_enabled OR auth_public_enabled`
+        );
+        const domain = process.env.PLATFORM_DOMAIN || 'example.com';
+        const written = await resyncTenantServiceRouters(
+          rows.map((r) => ({
+            slug: r.slug,
+            postgrestHost: r.postgrest_public_enabled ? `${r.slug}-api.${domain}` : null,
+            authHost: r.auth_public_enabled ? `${r.slug}-auth.${domain}` : null,
+          }))
+        );
+        if (written > 0) console.log(`Tenant-Dienst-Router aktualisiert: ${written}`);
+      } finally {
+        await db.end().catch(() => {});
+      }
+    })
+    .catch((e: any) =>
+      console.error('Rate-Limit-Middlewares/Router-Resync fehlgeschlagen:', e.message)
+    );
   // Audit §15: ein Agent-Start im laufenden Betrieb bedeutet, dass er vorher
   // gestorben ist. Genau das war bisher nirgends sichtbar.
   alert('Provisioning Agent gestartet',
@@ -496,6 +582,12 @@ app.listen(3001, () => {
         'agent-start').catch(() => {});
   // P1-1c: offene Domain-Verifikationen nach einem Neustart wieder aufnehmen.
   // Erst fehlende Router reparieren, dann offene Verifikationen fortsetzen.
+  // Netzanbindungen wiederherstellen. Muss VOR der Router-Selbstheilung nichts,
+  // aber frueh laufen: bis das durch ist, antwortet jede Kundenseite mit 504,
+  // falls Traefik zwischenzeitlich neu erstellt wurde.
+  reattachProjectNetworks()
+    .catch((err) => console.error('reattachProjectNetworks fehlgeschlagen:', err.message));
+
   healMissingRouters()
     .catch((err) => console.error('healMissingRouters fehlgeschlagen:', err.message))
     .then(() => resumePendingDomainChecks())

@@ -156,6 +156,15 @@ fi
 # -------------------------------------------------------------- Infrastruktur
 
 say "Infrastruktur"
+# MUSS vor dem Traefik-Start stehen: der websecure-Entrypoint referenziert
+# public-ratelimit@file. Fehlt die Datei, faellt jeder HTTPS-Router auf 500.
+if [ -x "$ROOT/scripts/write-ratelimit.sh" ]; then
+  "$ROOT/scripts/write-ratelimit.sh" "$ROOT" && ok "Rate-Limit-Middlewares geschrieben" \
+    || warn "Rate-Limit-Middlewares konnten nicht geschrieben werden"
+else
+  warn "scripts/write-ratelimit.sh fehlt — Traefik startet ohne die referenzierte Middleware"
+fi
+
 for svc in traefik core-postgres minio monitoring/uptime-kuma cloudflared; do
   if [ "$RESTART_INFRA" -eq 1 ]; then
     # Bewusst nur auf Wunsch: core-postgres neu zu starten trennt JEDE
@@ -247,6 +256,8 @@ http:
       rule: "Host(\`media.${PLATFORM_DOMAIN:-example.com}\`)"
       entryPoints:
         - websecure
+      middlewares:
+        - public-ratelimit@file
       service: media-svc
       tls:
         certResolver: myresolver

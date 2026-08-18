@@ -227,11 +227,14 @@ export async function healMissingRouters(): Promise<void> {
         [r.project_id]
       );
       const missing = check.filter((d: any) => !d.router_file || !existsSync(`${DYNAMIC_DIR}/${d.router_file}`));
-      if (missing.length === 0) continue;
       for (const m of missing) {
         console.warn(`Router fehlt fuer ${m.hostname} — wird neu geschrieben.`);
       }
-      // Immer das ganze Projekt synchronisieren, damit Primaer/Redirect stimmig bleibt.
+      // Bewusst IMMER neu schreiben, nicht nur wenn eine Datei fehlt: der Inhalt
+      // aendert sich mit dem Code (zuletzt kam die Rate-Limit-Middleware dazu),
+      // und eine vorhandene Datei mit veraltetem Inhalt faellt sonst niemandem
+      // auf — man sieht ihr nicht an, dass ihr etwas fehlt. Der Schreibvorgang
+      // ist idempotent; Traefik laedt nur bei echter Aenderung neu.
       await syncProjectRouters(db, r.project_id);
       healed += missing.length;
     }
