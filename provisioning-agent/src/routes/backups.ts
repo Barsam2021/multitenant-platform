@@ -36,7 +36,11 @@ backupsRouter.get('/backups', async (_req, res) => {
       `SELECT id, db_name, filename, size_bytes, status, created_at
        FROM backups ORDER BY created_at DESC LIMIT 100`
     );
-    res.json({ backups: rows, backupRunning, restoreTestRunning });
+    // size_bytes ist BIGINT und kommt aus node-postgres als String. Hier an
+    // der API-Grenze in eine Zahl wandeln, nicht erst im Frontend: sonst muss
+    // jede Stelle, die den Wert anfasst, denselben Sonderfall kennen.
+    const backups = rows.map((row) => ({ ...row, size_bytes: Number(row.size_bytes) }));
+    res.json({ backups, backupRunning, restoreTestRunning });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   } finally {

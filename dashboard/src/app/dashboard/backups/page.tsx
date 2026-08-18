@@ -8,7 +8,10 @@ interface Backup {
   id: string;
   db_name: string;
   filename: string;
-  size_bytes: number;
+  // BIGINT: node-postgres liefert das als String. Der Agent normalisiert es
+  // zwar, aber der Typ bleibt tolerant — eine ungepatchte Agent-Version darf
+  // die Seite nicht kaputtmachen.
+  size_bytes: number | string;
   status: "ok" | "dump_failed" | "upload_failed";
   created_at: string;
 }
@@ -25,11 +28,15 @@ const STATUS_COLOR: Record<string, string> = {
   upload_failed: "var(--danger)",
 };
 
-function formatBytes(bytes: number): string {
-  if (!bytes) return "—";
+function formatBytes(bytes: number | string | null | undefined): string {
+  // Number() statt Verlass auf den Typ: kam der Wert als String an, war
+  // "!bytes" false und der Vergleich "val >= 1024" ein Textvergleich —
+  // die Groesse stand dann als "1.0 B" oder gar nicht in der Liste.
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n <= 0) return "—";
   const units = ["B", "KB", "MB", "GB"];
   let i = 0;
-  let val = bytes;
+  let val = n;
   while (val >= 1024 && i < units.length - 1) {
     val /= 1024;
     i++;
