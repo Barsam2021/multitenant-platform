@@ -12,6 +12,7 @@ import {
   tenantComposeExists,
   tenantComposeFile,
 } from '../lib/tenantDatabase';
+import { reloadPostgrestSchema } from '../lib/cms';
 
 const execFileP = promisify(execFile);
 const PGBOUNCER_HOST = process.env.PGBOUNCER_HOST || 'pgbouncer';
@@ -33,6 +34,19 @@ function adminClient(): PGClient {
 }
 
 export const tenantsRouter = Router();
+
+// POST /tenants/:slug/postgrest/reload — Schema-Cache der Kunden-API neu einlesen.
+//
+// Gebraucht, sobald sich das Schema aendert, ohne dass der Agent es merkt: der
+// SQL-Editor im Dashboard legt Tabellen direkt an, und PostgREST kennt danach
+// nur den Stand vom Containerstart. Warum SIGUSR1 und nicht NOTIFY steht in
+// lib/cms.ts.
+tenantsRouter.post('/tenants/:slug/postgrest/reload', async (req, res) => {
+  const { slug } = req.params;
+  if (!slug || !/^[a-z0-9-]+$/.test(slug)) return res.status(400).json({ error: 'invalid slug' });
+  await reloadPostgrestSchema(slug);
+  res.json({ status: 'ok' });
+});
 
 // GET /tenants/:slug/api-keys — liefert die Supabase-kompatiblen JWTs für den Tenant
 // (siehe lib/jwt.ts + Migration 09_tenant_api_keys.sql). Kein logAudit() mit den

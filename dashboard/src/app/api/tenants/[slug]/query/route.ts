@@ -3,8 +3,15 @@ import { auth } from "@/auth";
 import { getTenantBySlug, hasTenantDatabase, NO_TENANT_DATABASE_ERROR } from "@/lib/adminDb";
 import { runSql } from "@/lib/tenantDb";
 import { logAudit } from "@/lib/audit";
+import { agentFetch } from "@/lib/agent";
 
 const SQL_LOG_PREVIEW_LEN = 300;
+
+// Statements, nach denen PostgREST sein Schema neu lesen muss. Bewusst grob:
+// ein ueberfluessiges Reload kostet nichts (PostgREST liest den Katalog neu),
+// ein ausgelassenes bedeutet, dass eine gerade angelegte Tabelle fuer die
+// Kunden-API nicht existiert — PGRST205, und der Grund ist nirgends ablesbar.
+const SCHEMA_CHANGING = /\b(create|drop|alter|grant|revoke|comment|rename)\b/i;
 
 function requestMeta(req: Request) {
   return {
@@ -45,6 +52,15 @@ export async function POST(
 
   try {
     const result = await runSql(tenant.db_name, sql, { readOnly: readOnly !== false });
+
+    // Nach dem Schreiben, aber vor der Antwort: der Benutzer sieht das Ergebnis
+    // seines CREATE TABLE erst, wenn er es ueber die API abfragt — und genau
+    // dann muss der Cache stimmen. Best effort, ein fehlgeschlagener Reload
+    // darf ein erfolgreiches Statement nicht als Fehler erscheinen lassen.
+    if (readOnly === false && SCHEMA_CHANGING.test(sql)) {
+      await agentFetch(`/tenants/${slug}/postgrest/reload`, { method: "POST" }).catch(() => null);
+    }
+
     await logAudit(actor, "sql.execute", slug, {
       sqlPreview,
       readOnly: readOnly !== false,
