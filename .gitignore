@@ -25,4 +25,10 @@ diagnose-*.log
 *.bak2
 traefik/logs/*
 !traefik/logs/.gitkeep
+# Laufzeit-Router: schreibt der Provisioning Agent pro Custom-Domain und pro
+# oeffentlich geschaltetem Tenant-Dienst (lib/traefikDynamic.ts). Gehoert nicht
+# ins Repo — und muss ignoriert sein, damit ein `git clean -fd` beim Aufraeumen
+# nicht die Live-Routen aller Kundendomains loescht.
+traefik/dynamic/*
+!traefik/dynamic/.gitkeep
 *.tsbuildinfo
