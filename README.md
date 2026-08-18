@@ -85,6 +85,13 @@ sudo ./bootstrap.sh
 existiert — es gibt keine funktionierenden Default-Secrets. Details zu jeder
 Variable stehen kommentiert direkt in [`.env.example`](./.env.example).
 
+Für alles danach — Update einspielen, einen Branch testen:
+
+```bash
+./scripts/redeploy.sh <branch>   # ziehen, migrieren, neu bauen, neu starten
+./scripts/redeploy.sh --status   # nur nachsehen, was läuft
+```
+
 ## Sicherheitsdesign (kurz)
 
 - Der Provisioning Agent spricht nicht direkt mit dem Docker-Socket, sondern über

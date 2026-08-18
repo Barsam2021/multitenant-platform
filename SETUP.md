@@ -231,18 +231,24 @@ http:
           - url: "http://core-minio:9000"
 ```
 
-Dazu `MEDIA_PUBLIC_BASE_URL=https://media.example.com` in die `.env`, und pro
-Kunde das Präfix `public/` öffentlich lesbar machen — **nur** dieses Präfix:
-
-```bash
-docker exec provisioning-agent mc anonymous set download \
-  localminio/kunde-<slug>-storage/public
-```
+Dazu `MEDIA_PUBLIC_BASE_URL=https://media.example.com` in die `.env`. Das
+Präfix `public/` im Bucket eines Kunden schaltet der Provisioning Agent beim
+Aktivieren des CMS selbst öffentlich lesbar — **nur** dieses Präfix, alles
+andere bleibt privat. Schlägt das fehl, meldet das Dashboard es als Warnung
+samt dem Befehl zum Nachholen.
 
 **4. Dienst starten**
 
 ```bash
 cd /opt/multitenant-platform/cms && docker compose --env-file ../.env up -d --build
+```
+
+Schritt 1–4 gehen auch in einem Rutsch — das Skript erzeugt die fehlenden
+Schlüssel, setzt das Passwort für `cms_config`, legt den Medien-Router an und
+startet alles neu:
+
+```bash
+./scripts/redeploy.sh --init-cms
 ```
 
 DNS: `cms.<PLATFORM_DOMAIN>` und `media.<PLATFORM_DOMAIN>` zeigen auf die VPS-IP
@@ -253,6 +259,32 @@ DNS: `cms.<PLATFORM_DOMAIN>` und `media.<PLATFORM_DOMAIN>` zeigen auf die VPS-IP
 Im Dashboard unter Projekt → **CMS**: aktivieren, Tabellen als Sammlungen
 freigeben, Felder beschriften, Zugang für den Kunden anlegen. Der Kunde meldet
 sich dann unter `https://cms.<PLATFORM_DOMAIN>/<slug>` an.
+
+## Einen neuen Stand ausrollen
+
+Für alles nach der Erstinstallation — Branch testen, Update einspielen:
+
+```bash
+./scripts/redeploy.sh                  # aktuellen Branch neu bauen und starten
+./scripts/redeploy.sh <branch>         # auf einen Branch wechseln und ausrollen
+./scripts/redeploy.sh --status         # nur nachsehen, nichts anfassen
+./scripts/redeploy.sh --all <branch>   # zusätzlich Traefik/Postgres/MinIO neu starten
+```
+
+Das Skript zieht den Branch, fährt die Infrastruktur hoch, wartet auf Postgres,
+spielt Migrationen ein, baut Agent/Dashboard/CMS neu, startet die
+Tenant-Instanzen (nur die mit aktiver Datenbank — siehe Migration 19) und die
+Kunden-App-Container, und meldet am Ende, was läuft und was nicht.
+
+`--all` ist bewusst nicht der Standard: `core-postgres` neu zu starten trennt
+jede Tenant-Verbindung, und ein Traefik-Neustart bedeutet ein paar Sekunden ohne
+Reverse Proxy für alle Kundenseiten.
+
+Zurück auf den alten Stand kommst du mit demselben Befehl:
+
+```bash
+./scripts/redeploy.sh main
+```
 
 ## Schritt 10 — Health-Check
 

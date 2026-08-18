@@ -1,6 +1,10 @@
 import { Client } from 'pg';
 import format from 'pg-format';
 import crypto from 'crypto';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+
+const execFileP = promisify(execFile);
 
 const PGBOUNCER_HOST = process.env.PGBOUNCER_HOST || 'pgbouncer';
 const MASTER_DB_PASSWORD = process.env.MASTER_DB_PASSWORD!;
@@ -286,4 +290,34 @@ export async function listTenantTables(dbName: string): Promise<{ name: string; 
   } finally {
     await tenant.end().catch(() => {});
   }
+}
+
+/**
+ * Gibt das Praefix `public/` im MinIO-Bucket des Tenants zum anonymen Lesen
+ * frei — und NUR dieses Praefix.
+ *
+ * Ohne diesen Schritt laedt ein Redakteur Bilder hoch, bekommt eine URL
+ * zurueck, und die liefert dann 403: der Bucket ist per Default komplett
+ * privat. Das war bisher ein manueller `mc`-Aufruf pro Kunde in der
+ * Einrichtungsanleitung — also genau die Art Schritt, die man beim zehnten
+ * Kunden vergisst und danach eine halbe Stunde sucht.
+ *
+ * Alles ausserhalb von `public/` bleibt unerreichbar; der CMS-Dienst legt
+ * Uploads ausschliesslich unter diesem Praefix ab (cms/src/lib/media.ts).
+ */
+export async function publishTenantMediaPrefix(slug: string): Promise<void> {
+  const { MINIO_ROOT_USER, MINIO_ROOT_PASSWORD } = process.env;
+  if (!MINIO_ROOT_USER || !MINIO_ROOT_PASSWORD) {
+    throw new Error('MINIO_ROOT_USER/MINIO_ROOT_PASSWORD fehlen — Medien-Freigabe nicht moeglich.');
+  }
+  await execFileP('mc', ['alias', 'set', 'localminio', 'http://core-minio:9000', MINIO_ROOT_USER, MINIO_ROOT_PASSWORD]);
+  await execFileP('mc', ['anonymous', 'set', 'download', `localminio/kunde-${slug}-storage/public`]);
+}
+
+/** Gegenstueck: Freigabe zuruecknehmen, wenn das CMS abgeschaltet wird. */
+export async function unpublishTenantMediaPrefix(slug: string): Promise<void> {
+  const { MINIO_ROOT_USER, MINIO_ROOT_PASSWORD } = process.env;
+  if (!MINIO_ROOT_USER || !MINIO_ROOT_PASSWORD) return;
+  await execFileP('mc', ['alias', 'set', 'localminio', 'http://core-minio:9000', MINIO_ROOT_USER, MINIO_ROOT_PASSWORD]);
+  await execFileP('mc', ['anonymous', 'set', 'none', `localminio/kunde-${slug}-storage/public`]);
 }

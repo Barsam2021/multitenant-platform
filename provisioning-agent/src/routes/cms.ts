@@ -9,6 +9,8 @@ import {
   revokeTable,
   describeTenantTable,
   listTenantTables,
+  publishTenantMediaPrefix,
+  unpublishTenantMediaPrefix,
 } from '../lib/cms';
 
 const PGBOUNCER_HOST = process.env.PGBOUNCER_HOST || 'pgbouncer';
@@ -86,11 +88,28 @@ cmsRouter.post('/tenants/:slug/cms', async (req, res) => {
           warnings.push(`Rechte auf ${c.table_name}: ${e.message}`)
         );
       }
+      // Medien-Praefix oeffentlich lesbar machen. Best effort: schlaegt es
+      // fehl, funktioniert das CMS vollstaendig — nur hochgeladene Bilder
+      // liefern 403. Das als Warnung zu melden ist deutlich besser, als das
+      // Aktivieren daran scheitern zu lassen.
+      await publishTenantMediaPrefix(slug).catch((e: any) =>
+        warnings.push(
+          `Medien-Freigabe fehlgeschlagen (${e.message}) — hochgeladene Bilder sind nicht abrufbar. ` +
+          `Manuell: mc anonymous set download localminio/kunde-${slug}-storage/public`
+        )
+      );
+
       await logAudit('cms.enabled', slug, { collections: collections.length, warnings });
       return res.json({ status: 'ok', enabled: true, warnings: warnings.length ? warnings : undefined });
     }
 
     await dropCmsRole(slug, tenant.db_name);
+    // Die Dateien selbst bleiben liegen (sie gehoeren dem Kunden), aber
+    // oeffentlich abrufbar muessen sie nicht bleiben, wenn niemand mehr ein CMS
+    // hat, das darauf verweist.
+    await unpublishTenantMediaPrefix(slug).catch((e: any) =>
+      console.error(`Medien-Freigabe fuer ${slug} zuruecknehmen fehlgeschlagen:`, e.message)
+    );
     await db.query(
       'UPDATE kunden SET cms_enabled = false, cms_db_password_encrypted = NULL WHERE slug = $1',
       [slug]
