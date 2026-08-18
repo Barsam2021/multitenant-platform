@@ -179,6 +179,17 @@ for i in $(seq 1 30); do
   sleep 2
 done
 
+# ---------------------------------------------------------------- Migrationen
+
+say "Migrationen"
+# MUSS vor dem CMS-Setup stehen: --init-cms setzt das Passwort der Rolle
+# cms_config, und angelegt wird die erst von Migration 22.
+if [ -x "$ROOT/scripts/migrate.sh" ]; then
+  "$ROOT/scripts/migrate.sh" || warn "migrate.sh meldet einen Fehler — Ausgabe oben pruefen"
+else
+  warn "scripts/migrate.sh fehlt oder ist nicht ausfuehrbar"
+fi
+
 # ------------------------------------------------------------------ CMS-Setup
 
 if [ "$INIT_CMS" -eq 1 ]; then
@@ -251,15 +262,6 @@ EOF
   set -a; . "$ROOT/.env"; set +a
 fi
 
-# ---------------------------------------------------------------- Migrationen
-
-say "Migrationen"
-if [ -x "$ROOT/scripts/migrate.sh" ]; then
-  "$ROOT/scripts/migrate.sh" || warn "migrate.sh meldet einen Fehler — Ausgabe oben pruefen"
-else
-  warn "scripts/migrate.sh fehlt oder ist nicht ausfuehrbar"
-fi
-
 # --------------------------------------------------------- Eigene Dienste neu
 
 # Diese drei tragen den Code aus dem Branch — immer neu bauen und neu starten,
@@ -274,6 +276,14 @@ compose dashboard up -d --build --force-recreate && ok "admin-dashboard" || warn
 say "CMS-Dienst"
 if [ -n "${CMS_DATABASE_URL:-}" ] && [ -n "${CMS_ENCRYPTION_KEY:-}" ] && [ -n "${CMS_SESSION_SECRET:-}" ]; then
   compose cms up -d --build --force-recreate && ok "cms" || warn "cms: Build/Start fehlgeschlagen"
+elif [ "$INIT_CMS" -eq 1 ]; then
+  # --init-cms lief, und trotzdem fehlt etwas: das ist ein Fehler, keine
+  # Randnotiz. Ohne diese Warnung endet der Lauf scheinbar sauber, und der
+  # 404 auf cms.<domain> faellt erst viel spaeter auf.
+  warn "CMS-Dienst NICHT gestartet, obwohl --init-cms lief — fehlt in .env: $(
+    for v in CMS_DATABASE_URL CMS_ENCRYPTION_KEY CMS_SESSION_SECRET; do
+      [ -z "$(eval echo \"\${$v:-}\")" ] && printf '%s ' "$v"
+    done)"
 else
   info "nicht konfiguriert (CMS_DATABASE_URL / CMS_ENCRYPTION_KEY / CMS_SESSION_SECRET fehlen)"
   info "einmalig einrichten:  ./scripts/redeploy.sh --init-cms"
