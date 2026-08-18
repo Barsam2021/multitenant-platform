@@ -359,15 +359,60 @@ statsRouter.get('/stats/overview', async (_req, res) => {
     // Ueber ALLE Container summieren, nicht nur ueber die Projekt-Container:
     // Postgres, Traefik, MinIO und die Tenant-Dienste belegen denselben RAM,
     // und die Frage "wie viel ist noch frei" ist sonst falsch beantwortet.
+    //
+    // Container OHNE mem_limit meldet Docker mit dem Host-Speicher als Limit.
+    // Die Erkennung braucht eine Toleranz: /proc/meminfo rechnet dezimal
+    // (8.3 GB), docker stats binaer (7.62GiB) — ein exakter Vergleich haelt
+    // jeden unbegrenzten Container faelschlich fuer begrenzt und blaeht
+    // "zugesagt" um ein Vielfaches des vorhandenen Speichers auf.
+    const containerTenant = new Map<string, string>();
+    for (const p of projects) {
+      if (p.active_container) containerTenant.set(p.active_container, p.tenant_slug);
+    }
+    const tenantSlugs = new Set(projects.map((p) => p.tenant_slug));
+
+    function groupOf(containerName: string): { key: string; label: string; kind: 'tenant' | 'platform' } {
+      const direct = containerTenant.get(containerName);
+      if (direct) return { key: direct, label: direct, kind: 'tenant' };
+      // Tenant-Dienste heissen api-<slug> / auth-<slug> / app-<slug>...; der
+      // Praefix-Vergleich gegen die bekannten Slugs ist eindeutiger als ein
+      // Zerlegen am Bindestrich, weil Slugs selbst Bindestriche enthalten.
+      for (const prefix of ['api-', 'auth-', 'app-']) {
+        if (!containerName.startsWith(prefix)) continue;
+        const rest = containerName.slice(prefix.length);
+        for (const slug of tenantSlugs) {
+          if (rest === slug || rest.startsWith(`${slug}-`)) {
+            return { key: slug, label: slug, kind: 'tenant' };
+          }
+        }
+      }
+      return { key: containerName, label: containerName, kind: 'platform' };
+    }
+
+    const isUnlimited = (limitBytes: number | null) =>
+      limitBytes === null || (hostMemory !== null && limitBytes >= hostMemory.totalBytes * 0.9);
+
+    const consumerMap = new Map<string, { key: string; label: string; kind: 'tenant' | 'platform'; usedBytes: number; limitBytes: number | null; containers: number }>();
+    let containerUsedBytes = 0;
+    let committedBytes = 0;
+    let unlimitedContainers = 0;
+
+    for (const [name, stat] of Object.entries(containerStats)) {
+      const mem = parseMemUsage(stat.MemUsage);
+      containerUsedBytes += mem.usedBytes ?? 0;
+      if (isUnlimited(mem.limitBytes)) unlimitedContainers += 1;
+      else committedBytes += mem.limitBytes ?? 0;
+
+      const group = groupOf(name);
+      const entry = consumerMap.get(group.key) || { ...group, usedBytes: 0, limitBytes: 0, containers: 0 };
+      entry.usedBytes += mem.usedBytes ?? 0;
+      entry.limitBytes = isUnlimited(mem.limitBytes) ? entry.limitBytes : (entry.limitBytes ?? 0) + (mem.limitBytes ?? 0);
+      entry.containers += 1;
+      consumerMap.set(group.key, entry);
+    }
+
+    const memoryConsumers = [...consumerMap.values()].sort((a, b) => b.usedBytes - a.usedBytes);
     const allContainers = Object.values(containerStats).map((c) => parseMemUsage(c.MemUsage));
-    const containerUsedBytes = allContainers.reduce((sum, m) => sum + (m.usedBytes ?? 0), 0);
-    // Reserviert = Summe der mem_limits. Container ohne Limit bekommen von
-    // Docker den Host-Speicher als "Limit" gemeldet — die wuerden die Summe
-    // sinnlos aufblaehen und werden deshalb uebersprungen.
-    const committedBytes = allContainers.reduce(
-      (sum, m) => sum + (m.limitBytes !== null && (!hostMemory || m.limitBytes < hostMemory.totalBytes) ? m.limitBytes : 0),
-      0
-    );
 
     res.json({
       summary: {
@@ -384,6 +429,8 @@ statsRouter.get('/stats/overview', async (_req, res) => {
           containerUsedBytes,
           committedBytes,
           containerCount: allContainers.length,
+          unlimitedContainers,
+          consumers: memoryConsumers,
         },
       },
       projects: projectStats,

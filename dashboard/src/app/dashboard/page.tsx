@@ -18,9 +18,20 @@ interface Overview {
       containerUsedBytes: number;
       committedBytes: number;
       containerCount: number;
+      unlimitedContainers: number;
+      consumers: MemoryConsumer[];
     };
   };
   projects: ProjectStat[];
+}
+
+interface MemoryConsumer {
+  key: string;
+  label: string;
+  kind: "tenant" | "platform";
+  usedBytes: number;
+  limitBytes: number | null;
+  containers: number;
 }
 
 interface ProjectStat {
@@ -122,6 +133,69 @@ function UsageBar({ usedBytes, totalBytes }: { usedBytes: number; totalBytes: nu
   );
 }
 
+// Feste Reihenfolge statt Zufallsfarben: derselbe Kunde bekommt bei jedem
+// Neuladen dieselbe Farbe, sonst ist der Balken zwischen zwei Blicken nicht
+// vergleichbar. Der letzte Eintrag ist bewusst gedaempft — er faengt den
+// Rest ("Sonstiges") ab, der nie im Vordergrund stehen soll.
+const SEGMENT_COLORS = [
+  "#4c8dff", "#2da44e", "#e0a340", "#c778dd", "#e06c75",
+  "#56b6c2", "#d19a66", "#98c379", "#61afef", "#be5046",
+];
+
+function segmentColor(index: number): string {
+  return SEGMENT_COLORS[index % SEGMENT_COLORS.length];
+}
+
+interface Segment {
+  key: string;
+  label: string;
+  bytes: number;
+  detail?: string;
+}
+
+/**
+ * Gestapelter Balken: wer belegt welchen Anteil. Der freie Rest wird als
+ * eigenes, unauffaelliges Segment dargestellt statt weggelassen — sonst
+ * suggeriert ein voller Balken eine volle Maschine.
+ */
+function StackedBar({ segments, totalBytes }: { segments: Segment[]; totalBytes: number }) {
+  const usedBytes = segments.reduce((sum, s) => sum + s.bytes, 0);
+  const freeBytes = Math.max(0, totalBytes - usedBytes);
+
+  return (
+    <>
+      <div style={{ display: "flex", height: 14, borderRadius: 4, overflow: "hidden", background: "var(--panel-raised)" }}>
+        {segments.map((segment, i) => (
+          <div
+            key={segment.key}
+            title={`${segment.label}: ${formatBytes(segment.bytes)}`}
+            style={{
+              width: `${totalBytes > 0 ? (segment.bytes / totalBytes) * 100 : 0}%`,
+              background: segmentColor(i),
+            }}
+          />
+        ))}
+        <div style={{ flex: 1 }} />
+      </div>
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontSize: 12, marginTop: 8 }}>
+        {segments.map((segment, i) => (
+          <span key={segment.key} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+            <span style={{ width: 9, height: 9, borderRadius: 2, background: segmentColor(i), display: "inline-block" }} />
+            <span style={{ color: "var(--text-dim)" }}>{segment.label}</span>
+            <strong>{formatBytes(segment.bytes)}</strong>
+            {segment.detail && <span style={{ color: "var(--text-dim)" }}>({segment.detail})</span>}
+          </span>
+        ))}
+        <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          <span style={{ width: 9, height: 9, borderRadius: 2, background: "var(--panel-raised)", display: "inline-block", border: "1px solid var(--border)" }} />
+          <span style={{ color: "var(--text-dim)" }}>frei</span>
+          <strong>{formatBytes(freeBytes)}</strong>
+        </span>
+      </div>
+    </>
+  );
+}
+
 export default function PlatformOverviewPage() {
   const [data, setData] = useState<Overview | null>(null);
   const [disk, setDisk] = useState<DiskUsage | null>(null);
@@ -198,6 +272,50 @@ export default function PlatformOverviewPage() {
   const mem = summary.memory;
   const effectiveDisk = storage?.disk ?? disk;
 
+  // Ein Segment je Kunde und je Plattformdienst, klein zusammengefasst: bei
+  // zwanzig Containern wird sonst jeder Streifen zu duenn, um ihn zu treffen.
+  const consumers = mem.consumers ?? [];
+  const TOP_SEGMENTS = 8;
+  const shown = consumers.slice(0, TOP_SEGMENTS);
+  const restBytes = consumers.slice(TOP_SEGMENTS).reduce((sum, c) => sum + c.usedBytes, 0);
+  // Was der Host belegt, aber kein Container ist: Kernel, Cache, Prozesse
+  // ausserhalb von Docker. Ohne diesen Posten stimmt die Summe im Balken nicht
+  // mit "belegt" darueber ueberein, und man sucht den Unterschied.
+  const outsideDockerBytes = Math.max(0, (mem.hostUsedBytes ?? 0) - mem.containerUsedBytes);
+  const memorySegments: Segment[] = [
+    ...shown.map((c) => ({
+      key: c.key,
+      label: c.kind === "tenant" ? `Kunde ${c.label}` : c.label,
+      bytes: c.usedBytes,
+      detail: c.containers > 1 ? `${c.containers} Container` : undefined,
+    })),
+    ...(restBytes > 0 ? [{ key: "__rest", label: `${consumers.length - TOP_SEGMENTS} weitere`, bytes: restBytes }] : []),
+    ...(outsideDockerBytes > 0 ? [{ key: "__system", label: "Sonstiges", bytes: outsideDockerBytes }] : []),
+  ];
+
+  // Dieselbe Aufteilung fuer die Platte: je Kunde ein Segment, der Rest ist
+  // alles, was nicht einem Kunden zugeordnet werden kann (System, Images, Logs).
+  const diskSegments: Segment[] = storage
+    ? [
+        ...storage.tenants
+          .filter((t) => t.totalBytes > 0)
+          .slice(0, TOP_SEGMENTS)
+          .map((t) => ({ key: t.slug, label: `Kunde ${t.slug}`, bytes: t.totalBytes })),
+        ...(effectiveDisk
+          ? [
+              {
+                key: "__system",
+                label: "System, Images, Logs",
+                bytes: Math.max(
+                  0,
+                  effectiveDisk.usedBytes - storage.tenants.reduce((sum, t) => sum + t.totalBytes, 0)
+                ),
+              },
+            ]
+          : []),
+      ]
+    : [];
+
   // Projekte mit den meisten Aufrufen zuerst — die Frage "wer erzeugt die Last"
   // beantwortet eine nach Anlagedatum sortierte Liste nicht.
   const byViews = [...projects].filter((p) => p.views30d > 0).sort((a, b) => b.views30d - a.views30d);
@@ -237,27 +355,30 @@ export default function PlatformOverviewPage() {
           von etwas Ungenanntem. */}
       {mem.hostTotalBytes !== null && (
         <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 14, marginBottom: 16, background: "var(--panel)" }}>
-          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Arbeitsspeicher</div>
-          <UsageBar usedBytes={mem.hostUsedBytes ?? 0} totalBytes={mem.hostTotalBytes} />
-          <div style={{ display: "flex", gap: 24, flexWrap: "wrap", fontSize: 12, color: "var(--text-dim)", marginTop: 8 }}>
-            <span>
-              Gesamt <strong style={{ color: "var(--text)" }}>{formatBytes(mem.hostTotalBytes)}</strong>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
+            <span style={{ fontSize: 13, fontWeight: 600 }}>Arbeitsspeicher</span>
+            <span style={{ fontSize: 12, color: "var(--text-dim)" }}>
+              {formatBytes(mem.hostUsedBytes)} von {formatBytes(mem.hostTotalBytes)} belegt ·{" "}
+              {formatBytes(mem.hostAvailableBytes)} frei
             </span>
-            <span>
-              Belegt <strong style={{ color: "var(--text)" }}>{formatBytes(mem.hostUsedBytes)}</strong>
-            </span>
-            <span>
-              Frei <strong style={{ color: "var(--text)" }}>{formatBytes(mem.hostAvailableBytes)}</strong>
-            </span>
-            <span>
-              Davon in {mem.containerCount} Containern{" "}
-              <strong style={{ color: "var(--text)" }}>{formatBytes(mem.containerUsedBytes)}</strong>
-            </span>
-            <span title="Summe der mem_limits aller Container — so viel ist zugesagt, unabhängig davon, was gerade benutzt wird.">
-              Zugesagt <strong style={{ color: "var(--text)" }}>{formatBytes(mem.committedBytes)}</strong>
-              {mem.committedBytes > mem.hostTotalBytes && (
-                <span style={{ color: "var(--danger)" }}> · überbucht</span>
+          </div>
+          <StackedBar segments={memorySegments} totalBytes={mem.hostTotalBytes} />
+          <div style={{ fontSize: 12, color: "var(--text-dim)", marginTop: 10 }}>
+            <span title="Summe der mem_limits — eine Obergrenze, keine Reservierung. Container dürfen zusammen mehr Limit haben als der Host RAM besitzt, solange sie es nicht gleichzeitig ausschöpfen.">
+              Summe der Limits <strong style={{ color: "var(--text)" }}>{formatBytes(mem.committedBytes)}</strong>
+              {mem.hostTotalBytes !== null && mem.committedBytes > mem.hostTotalBytes && (
+                <span style={{ color: "#e0a340" }}>
+                  {" "}· überbucht um {formatBytes(mem.committedBytes - mem.hostTotalBytes)}
+                </span>
               )}
+            </span>
+            {mem.unlimitedContainers > 0 && (
+              <span style={{ marginLeft: 18 }}>
+                {mem.unlimitedContainers} Container ohne Limit (nicht mitgezählt)
+              </span>
+            )}
+            <span style={{ marginLeft: 18 }}>
+              {"„Sonstiges“ = Kernel, Cache und alles außerhalb von Docker"}
             </span>
           </div>
         </div>
@@ -286,7 +407,11 @@ export default function PlatformOverviewPage() {
               {cleaning ? "Räume auf…" : "Jetzt aufräumen"}
             </button>
           </div>
-          <UsageBar usedBytes={effectiveDisk.usedBytes} totalBytes={effectiveDisk.totalBytes} />
+          {diskSegments.length > 0 ? (
+            <StackedBar segments={diskSegments} totalBytes={effectiveDisk.totalBytes} />
+          ) : (
+            <UsageBar usedBytes={effectiveDisk.usedBytes} totalBytes={effectiveDisk.totalBytes} />
+          )}
           <div style={{ display: "flex", gap: 24, flexWrap: "wrap", fontSize: 12, color: "var(--text-dim)", marginTop: 8 }}>
             <span>
               Gesamt <strong style={{ color: "var(--text)" }}>{formatBytes(effectiveDisk.totalBytes)}</strong>
