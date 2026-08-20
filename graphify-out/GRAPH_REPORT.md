@@ -1,16 +1,16 @@
 # Graph Report - multitenant-platform  (2026-08-20)
 
 ## Corpus Check
-- 213 files · ~109,602 words
+- 214 files · ~110,871 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1219 nodes · 2069 edges · 127 communities (87 shown, 40 thin omitted)
+- 1231 nodes · 2080 edges · 126 communities (85 shown, 41 thin omitted)
 - Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS · INFERRED: 8 edges (avg confidence: 0.63)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `a7ed3d41`
+- Built from commit: `1cf87a46`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -49,7 +49,7 @@
 - backupHealth.ts
 - Docker Stats Monitoring
 - devDependencies
-- ConfirmDialog
+- env/page.tsx
 - Provisioning Agent TS Config
 - Versions- und CVE-Übersicht
 - Projects List UI
@@ -64,14 +64,14 @@
 - useToast
 - Operations Runbook
 - logAudit
-- ProjectContext.tsx
+- tenants.ts
 - Dashboard Layout Nav
 - backup-script.sh
-- Backup- und Restore-Plan
+- Backup einrichten — Schritt für Schritt
 - scripts
 - Smoke Test Script
 - restore-script.sh
-- 5. Umsetzung im Agent
+- cms service
 - CMS ESLint Config
 - next
 - Dashboard ESLint Config
@@ -79,7 +79,7 @@
 - Restore Test Script
 - pg
 - App Icon Route
-- 5. Was umgesetzt wurde
+- docs/GRAPHIFY.md
 - CMS Root Layout
 - PgBouncer Auth Schema
 - Tenant Tables List UI
@@ -91,7 +91,7 @@
 - CMS Next Env Types
 - CMS Pg-Format Types
 - Postgres Memory Tuning
-- 2. Was inventarisiert wird
+- traefik service
 - Backups Schema
 - Audit Logs Schema
 - Saved Queries Schema
@@ -116,7 +116,6 @@
 - Provisioning Agent Compose
 - Tenant Compose Template
 - Traefik Proxy Compose
-- 7. Phasen
 
 ## God Nodes (most connected - your core abstractions)
 1. `agentFetch()` - 86 edges
@@ -131,16 +130,16 @@
 10. `getPool()` - 14 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `CI Workflow` --references--> `dashboard service`  [INFERRED]
-  .github/workflows/ci.yml → dashboard/docker-compose.yml
 - `CI Workflow` --references--> `cms service`  [INFERRED]
   .github/workflows/ci.yml → cms/docker-compose.yml
-- `CI Workflow` --references--> `provisioning-agent service`  [INFERRED]
-  .github/workflows/ci.yml → provisioning-agent/docker-compose.yml
-- `minio service` --conceptually_related_to--> `Per-project Docker network as runtime-only state`  [INFERRED]
-  minio/docker-compose.yml → ARCHITECTURE.md
-- `provisioning-agent service` --calls--> `uptime-kuma service`  [EXTRACTED]
-  provisioning-agent/docker-compose.yml → monitoring/uptime-kuma/docker-compose.yml
+- `provisioning-agent service` --implements--> `cms_config role (Migration 22)`  [EXTRACTED]
+  provisioning-agent/docker-compose.yml → docs/CMS-PLAN.md
+- `traefik service` --conceptually_related_to--> `Per-project Docker network as runtime-only state`  [INFERRED]
+  traefik/docker-compose.yml → ARCHITECTURE.md
+- `cms service` --references--> `cms_audit table`  [EXTRACTED]
+  cms/docker-compose.yml → docs/CMS-PLAN.md
+- `cms service` --references--> `cms_collections table`  [EXTRACTED]
+  cms/docker-compose.yml → docs/CMS-PLAN.md
 
 ## Import Cycles
 - None detected.
@@ -148,7 +147,7 @@
 ## Hyperedges (group relationships)
 - **Security Hardening Measures** — docker_socket_proxy, webhook_hmac_verification, rate_limiting_cf_connecting_ip, cms_session_validation, upload_hardening [EXTRACTED 0.80]
 
-## Communities (127 total, 40 thin omitted)
+## Communities (126 total, 41 thin omitted)
 
 ### Community 0 - "agentFetch"
 Cohesion: 0.05
@@ -159,20 +158,20 @@ Cohesion: 0.10
 Nodes (41): GET(), POST(), requestMeta(), DELETE(), GET(), POST(), GET(), DELETE() (+33 more)
 
 ### Community 2 - "deploy.ts"
-Cohesion: 0.09
-Nodes (36): detectBuildErrorHint(), truncateBuildLog(), decrypt(), encrypt(), getKey(), maskSecrets(), activeDeployments, ActiveDeployState (+28 more)
+Cohesion: 0.06
+Nodes (48): reattachProjectNetworks(), detectBuildErrorHint(), truncateBuildLog(), decrypt(), encrypt(), getKey(), maskSecrets(), activeDeployments (+40 more)
 
 ### Community 3 - "domains.ts"
-Cohesion: 0.07
-Nodes (50): buildInstructions(), cfFetch(), cfZoneId(), checkDns(), checkTls(), cloudflare, configuredProviders(), DnsCheckResult (+42 more)
+Cohesion: 0.11
+Nodes (28): buildInstructions(), cfFetch(), cfZoneId(), checkDns(), checkTls(), cloudflare, configuredProviders(), DnsCheckResult (+20 more)
 
 ### Community 4 - "cmsDb.ts"
 Cohesion: 0.13
 Nodes (31): DELETE(), PATCH(), POST(), GET(), POST(), PATCH(), GET(), POST() (+23 more)
 
 ### Community 5 - "index.ts"
-Cohesion: 0.11
-Nodes (15): app, cleanupTenantResources(), execFileP, globalLimiter, reattachProjectNetworks(), sensitiveOpLimiter, webhookLimiter, AnyFn (+7 more)
+Cohesion: 0.12
+Nodes (14): app, cleanupTenantResources(), execFileP, globalLimiter, sensitiveOpLimiter, webhookLimiter, AnyFn, wrapHandler() (+6 more)
 
 ### Community 6 - "Analytics Aggregation"
 Cohesion: 0.14
@@ -180,11 +179,11 @@ Nodes (21): AccessLogLine, accumulate(), adminClient(), Aggregates, BOT_UA_RE, d
 
 ### Community 7 - "projects.ts"
 Cohesion: 0.18
-Nodes (16): BUILDS_ROOT, deleteGithubWebhook(), githubHeaders(), parseGithubRepo(), webhookUrlFor(), createHttpMonitor(), deleteMonitor(), isConfigured() (+8 more)
+Nodes (16): deleteGithubWebhook(), githubHeaders(), parseGithubRepo(), webhookUrlFor(), createHttpMonitor(), deleteMonitor(), isConfigured(), withKumaSocket() (+8 more)
 
 ### Community 8 - "README.md"
 Cohesion: 0.09
-Nodes (25): age (Verschlüsselung), CLAUDE.md — Project Instructions, .claude/hooks/*.sh, Cloudflare (DNS-01, Zero Trust), Cloudflare Tunnel, CMS Session-Gültigkeitsprüfung, docker-socket-proxy, graphify CLI Tool (+17 more)
+Nodes (22): age (Verschlüsselung), Cloudflare (DNS-01, Zero Trust), Cloudflare Tunnel, CMS Session-Gültigkeitsprüfung, docker-socket-proxy, GoTrue, NextAuth v5, Next.js 15 (Dashboard/CMS) (+14 more)
 
 ### Community 9 - "CMS Auth & App Layout"
 Cohesion: 0.17
@@ -215,16 +214,16 @@ Cohesion: 0.28
 Nodes (6): signTenantJwt(), TenantRoleKind, tenantRoleName(), execFileP, rotateLimiter, secretsRouter
 
 ### Community 16 - "provisioning-agent service"
-Cohesion: 0.08
-Nodes (34): Architecture Overview, cloudflared service, cms service, GitHub webhook deploy routing, P0-1: Docker socket proxy network isolation, PgBouncer AUTH_QUERY against pgbouncer_auth, Per-project Docker network as runtime-only state, Rate limiting keyed on Cf-Connecting-Ip (+26 more)
+Cohesion: 0.13
+Nodes (19): cloudflared service, GitHub webhook deploy routing, P0-1: Docker socket proxy network isolation, PgBouncer AUTH_QUERY against pgbouncer_auth, Per-project Docker network as runtime-only state, pgbouncer service, dashboard service, kunden table (+11 more)
 
 ### Community 17 - "analytics/page.tsx"
-Cohesion: 0.27
-Nodes (9): AnalyticsData, AnalyticsPage(), formatDay(), formatNumber(), RANGES, RankedList(), SeriesPoint, ViewsChart() (+1 more)
+Cohesion: 0.15
+Nodes (14): AnalyticsData, AnalyticsPage(), formatDay(), formatNumber(), RANGES, RankedList(), SeriesPoint, ViewsChart() (+6 more)
 
 ### Community 18 - "domains/page.tsx"
-Cohesion: 0.15
-Nodes (9): AddDomainResult, Domain, DomainsPage(), Instruction, relTime(), STATUS_META, ConfirmDialogProps, CopyValue() (+1 more)
+Cohesion: 0.13
+Nodes (10): AddDomainResult, Domain, DomainsPage(), Instruction, relTime(), STATUS_META, ConfirmDialog(), ConfirmDialogProps (+2 more)
 
 ### Community 19 - "CMS Login & Session"
 Cohesion: 0.21
@@ -271,8 +270,8 @@ Cohesion: 0.06
 Nodes (34): express-rate-limit, jsonwebtoken, dependencies, express, express-rate-limit, jsonwebtoken, pg, pg-format (+26 more)
 
 ### Community 30 - "lib/cleanup.ts"
-Cohesion: 0.24
-Nodes (13): adminClient(), ANALYTICS_DAILY_RETENTION_DAYS, ANALYTICS_DETAIL_RETENTION_DAYS, ANALYTICS_VISITOR_RETENTION_DAYS, CleanupResult, dirSize(), execFileP, getDiskUsage() (+5 more)
+Cohesion: 0.22
+Nodes (14): adminClient(), ANALYTICS_DAILY_RETENTION_DAYS, ANALYTICS_DETAIL_RETENTION_DAYS, ANALYTICS_VISITOR_RETENTION_DAYS, CleanupResult, dirSize(), execFileP, getDiskUsage() (+6 more)
 
 ### Community 31 - "backupHealth.ts"
 Cohesion: 0.12
@@ -286,17 +285,17 @@ Nodes (8): directorySize(), DockerStatsLine, execFileP, parseMemUsage(), parseSi
 Cohesion: 0.05
 Nodes (41): dependencies, bcryptjs, next, next-auth, pg, pg-format, react, react-dom (+33 more)
 
-### Community 34 - "ConfirmDialog"
-Cohesion: 0.17
-Nodes (4): ApiKeys, EnvVar, EnvVarsPage(), ConfirmDialog()
+### Community 34 - "env/page.tsx"
+Cohesion: 0.22
+Nodes (3): ApiKeys, EnvVar, EnvVarsPage()
 
 ### Community 35 - "Provisioning Agent TS Config"
 Cohesion: 0.17
 Nodes (11): compilerOptions, esModuleInterop, module, outDir, resolveJsonModule, rootDir, skipLibCheck, strict (+3 more)
 
 ### Community 36 - "Versions- und CVE-Übersicht"
-Cohesion: 0.33
-Nodes (6): 1. Ziel, 3. Werkzeug, 4. Datenmodell, 6. Dashboard, 8. Ergänzend, außerhalb dieses Plans, Versions- und CVE-Übersicht
+Cohesion: 0.09
+Nodes (22): 1. Ziel, 2. Was inventarisiert wird, 3. Werkzeug, 4. Datenmodell, 5. Umsetzung im Agent, 6. Dashboard, 7. Phasen, 8. Ergänzend, außerhalb dieses Plans (+14 more)
 
 ### Community 37 - "Projects List UI"
 Cohesion: 0.27
@@ -319,8 +318,8 @@ Cohesion: 0.24
 Nodes (4): MediaPicker(), FormField, RowForm(), toInputValue()
 
 ### Community 42 - "3. Die gefundenen Lücken"
-Cohesion: 0.18
-Nodes (11): 3. Die gefundenen Lücken, B-10 — Der Restore konnte nie funktionieren  (Schwere: kritisch), B-1 — Der Schlüssel liegt im brennenden Haus  (Schwere: kritisch), B-2 — Restore-Test aus dem Dashboard lehnt alle DB-Dumps ab  (Schwere: hoch), B-3 — `encrypt_failed` verletzt den CHECK-Constraint  (Schwere: mittel), B-4 — Kein Alarm, wenn das Backup gar nicht erst läuft  (Schwere: hoch), B-5 — Restore ist nur ein Kommandozeilen-Vorgang  (Schwere: mittel), B-6 — Kein automatischer Restore-Test  (Schwere: mittel) (+3 more)
+Cohesion: 0.08
+Nodes (26): 1. Kurzfassung, 2.1 Was schon lief, 2.2 Kennzahlen davor, 2. Ausgangszustand (vor dieser Arbeit), 3. Die gefundenen Lücken, 4. Zielbild, 5. Was umgesetzt wurde, 5a. Prüfstand (+18 more)
 
 ### Community 43 - "Project Overview Page"
 Cohesion: 0.20
@@ -335,16 +334,16 @@ Cohesion: 0.21
 Nodes (9): Backup, BackupsPage(), formatBytes(), isTestRow(), RemoteFile, RestoreResultEntry, STATUS_COLOR, STATUS_LABEL (+1 more)
 
 ### Community 47 - "Operations Runbook"
-Cohesion: 0.50
-Nodes (3): project_env_vars table, projects table, Operations Runbook
+Cohesion: 0.22
+Nodes (8): Architecture Overview, Contributing Guide, cms_config role (Migration 22), Migration 19: optional database, project_env_vars table, projects table, Operations Runbook, Setup Guide
 
 ### Community 48 - "logAudit"
 Cohesion: 0.43
 Nodes (5): ActorInfo, actorStorage, currentActor(), logAudit(), redact()
 
-### Community 49 - "ProjectContext.tsx"
-Cohesion: 0.29
-Nodes (5): TABS, Project, ProjectContext, ProjectContextValue, ProjectProvider()
+### Community 49 - "tenants.ts"
+Cohesion: 0.38
+Nodes (10): execFileP, provisionTenantDatabase(), startTenantServices(), stopTenantServices(), tenantComposeExists(), tenantComposeFile(), tenantDir(), waitForGotrue() (+2 more)
 
 ### Community 50 - "Dashboard Layout Nav"
 Cohesion: 0.32
@@ -354,9 +353,9 @@ Nodes (3): NAV_ITEMS, SidebarNav(), ThemeToggle()
 Cohesion: 0.71
 Nodes (7): encrypt_and_upload(), fail(), log(), prune_generation(), record_backup(), send_alert(), backup-script.sh script
 
-### Community 52 - "Backup- und Restore-Plan"
-Cohesion: 0.20
-Nodes (10): 1. Kurzfassung, 2.1 Was schon lief, 2.2 Kennzahlen davor, 2. Ausgangszustand (vor dieser Arbeit), 4. Zielbild, 5a. Prüfstand, 6. Betrieb: der Ernstfall in sechs Schritten, 6a. Inbetriebnahme und Abnahme (+2 more)
+### Community 52 - "Backup einrichten — Schritt für Schritt"
+Cohesion: 0.17
+Nodes (11): Ab jetzt läuft es allein, Backup einrichten — Schritt für Schritt, Schritt 1 — Speicherplatz beim Anbieter anlegen (im Browser), Schritt 2 — Code und Werkzeuge auf den Server holen, Schritt 3 — Server mit dem Speicher verbinden, Schritt 4 — Verschlüsselungsschlüssel erzeugen, Schritt 5 — Konfiguration eintragen, Schritt 6 — Die Kopie, die den Server verlässt (+3 more)
 
 ### Community 53 - "scripts"
 Cohesion: 0.40
@@ -370,9 +369,9 @@ Nodes (6): agent(), cleanup(), fail(), log(), smoke-test.sh script, step()
 Cohesion: 0.57
 Nodes (5): confirm(), die(), fetch(), log(), restore-script.sh script
 
-### Community 56 - "5. Umsetzung im Agent"
-Cohesion: 0.33
-Nodes (6): 5. Umsetzung im Agent, Alarme, `provisioning-agent/src/lib/inventory.ts` (neu), `provisioning-agent/src/lib/securityScan.ts` (neu), `provisioning-agent/src/routes/security.ts` (neu), Zeitplan
+### Community 56 - "cms service"
+Cohesion: 0.43
+Nodes (8): cms service, cms_audit table, cms_collections table, cms_fields table, cms_media table, cms_users table, Migration 21: CMS schema, CMS Implementation Plan
 
 ### Community 57 - "CMS ESLint Config"
 Cohesion: 0.40
@@ -386,37 +385,29 @@ Nodes (4): compat, __dirname, eslintConfig, __filename
 Cohesion: 0.50
 Nodes (4): AuditLog, AuditLogPage(), handleExport(), toCsv()
 
-### Community 66 - "5. Was umgesetzt wurde"
-Cohesion: 0.40
-Nodes (5): 5. Was umgesetzt wurde, Phase 1 — Die Fehler im laufenden Code, Phase 2 — Nicht mehr blind sein, Phase 3 — Der Test, der von allein läuft, Phase 4 — Generationen
-
-### Community 79 - "2. Was inventarisiert wird"
-Cohesion: 0.40
-Nodes (5): 2. Was inventarisiert wird, Ebene A — Plattform-Infrastruktur (Betreiber kann sofort handeln), Ebene B — Tenant-Dienste (Betreiber kann handeln, betrifft alle Tenants), Ebene C — Gehostete Kundenprojekte (Kunde muss handeln, Betreiber informiert), Zwei Wahrheiten, absichtlich beide
-
-### Community 125 - "7. Phasen"
-Cohesion: 0.40
-Nodes (5): 7. Phasen, Phase 1 — Inventar ohne Scanner (ca. 1 Tag), Phase 2 — Scan und Zähler (ca. 1,5 Tage), Phase 3 — Täglich und laut (ca. ½ Tag), Phase 4 — Ausnahmen und Verlauf (ca. ½ Tag)
+### Community 66 - "docs/GRAPHIFY.md"
+Cohesion: 0.67
+Nodes (3): CLAUDE.md — Project Instructions, .claude/hooks/*.sh, graphify CLI Tool
 
 ## Knowledge Gaps
-- **375 isolated node(s):** `graphify-guard.sh script`, `graphify-session-start.sh script`, `bootstrap.sh script`, `__filename`, `__dirname` (+370 more)
+- **385 isolated node(s):** `graphify-guard.sh script`, `graphify-session-start.sh script`, `bootstrap.sh script`, `__filename`, `__dirname` (+380 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **40 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **41 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `Operations Runbook` connect `Operations Runbook` to `provisioning-agent service`?**
-  _High betweenness centrality (0.010) - this node is a cross-community bridge._
-- **Why does `useToast()` connect `useToast` to `ConfirmDialog`, `Projects List UI`, `Project Overview Page`, `domains/page.tsx`, `CMS Admin Page`, `Deployments Management UI`, `Tenant Table Editor UI`, `SQL Query Editor UI`, `Dashboard Layout & Toasts`?**
+- **Why does `useToast()` connect `useToast` to `env/page.tsx`, `Projects List UI`, `Project Overview Page`, `domains/page.tsx`, `CMS Admin Page`, `Deployments Management UI`, `Tenant Table Editor UI`, `SQL Query Editor UI`, `Dashboard Layout & Toasts`?**
   _High betweenness centrality (0.010) - this node is a cross-community bridge._
 - **Why does `dependencies` connect `dependencies` to `next`, `pg`, `cms/package.json`?**
-  _High betweenness centrality (0.009) - this node is a cross-community bridge._
+  _High betweenness centrality (0.008) - this node is a cross-community bridge._
 - **What connects `graphify-guard.sh script`, `graphify-session-start.sh script`, `bootstrap.sh script` to the rest of the system?**
-  _375 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _385 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `agentFetch` be split into smaller, more focused modules?**
   _Cohesion score 0.05198537095088819 - nodes in this community are weakly interconnected._
 - **Should `adminDb.ts` be split into smaller, more focused modules?**
   _Cohesion score 0.1003921568627451 - nodes in this community are weakly interconnected._
 - **Should `deploy.ts` be split into smaller, more focused modules?**
-  _Cohesion score 0.08687943262411348 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.06393442622950819 - nodes in this community are weakly interconnected._
+- **Should `domains.ts` be split into smaller, more focused modules?**
+  _Cohesion score 0.11363636363636363 - nodes in this community are weakly interconnected._

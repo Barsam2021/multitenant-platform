@@ -353,6 +353,9 @@ Der wichtigste Satz zum Thema steht in [SETUP.md](../SETUP.md): ohne Off-Site-Ko
 des age-Keys **und** der `.env` sind die Dateien im Object Storage unlesbare Bytes.
 Beide liegen sonst ausschließlich auf dem Server, gegen dessen Verlust gesichert wird.
 
+Noch gar nichts eingerichtet? Schritt-für-Schritt von null bis zur ersten
+geprüften Off-Site-Sicherung: [BACKUP-EINRICHTEN.md](BACKUP-EINRICHTEN.md).
+
 Wie dieser Stand zustande kam, welche Fehler dabei gefunden wurden und was
 bewusst offen blieb: [BACKUP-PLAN.md](BACKUP-PLAN.md).
 

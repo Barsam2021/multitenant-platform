@@ -16,7 +16,24 @@ cd "$ROOT"
 
 echo "==> [1/9] System-Pakete"
 apt update && apt upgrade -y
-apt install -y curl git ufw coreutils postgresql-client rclone unzip tree
+# age gehoert zwingend dazu: dieses Skript installiert weiter unten den
+# Backup-Cron, und backup-script.sh verschluesselt damit JEDE Sicherung, bevor
+# sie den Server verlaesst. Fehlte age, lief der Cron zwar an, scheiterte aber
+# jede Nacht an der Verschluesselung — mit dem Ergebnis, dass ueberhaupt keine
+# Off-Site-Sicherung entsteht.
+apt install -y curl git ufw coreutils postgresql-client rclone age unzip tree
+
+# In aelteren Distributionen ist age nicht paketiert. Dann das offizielle
+# Binary nachziehen, statt den Backup-Cron ohne Verschluesselung zu lassen.
+if ! command -v age &>/dev/null; then
+  echo "==> age nicht im Paketindex — installiere offizielles Binary"
+  AGE_VERSION="v1.2.1"
+  curl -sSL "https://github.com/FiloSottile/age/releases/download/${AGE_VERSION}/age-${AGE_VERSION}-linux-amd64.tar.gz" \
+    | tar -xz -C /tmp \
+    && install -m 0755 /tmp/age/age /usr/local/bin/age \
+    && install -m 0755 /tmp/age/age-keygen /usr/local/bin/age-keygen \
+    && rm -rf /tmp/age
+fi
 
 echo "==> [2/9] Firewall (UFW)"
 ufw default deny incoming
