@@ -33,6 +33,26 @@ RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-3}"
 mkdir -p "$BACKUP_DIR" "$WORK_DIR"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
+# --- Generation (Grossvater-Vater-Sohn) -----------------------------------
+# Vorher landete jede Sicherung im selben Verzeichnis und wurde nach wenigen
+# Tagen geloescht. Ein Schaden, der erst nach zwei Wochen auffaellt —
+# schleichende Korruption, ein versehentliches DELETE, ein Verschluesselungs-
+# trojaner — war damit nicht mehr rueckholbar: die einzigen Kopien zeigten
+# laengst denselben kaputten Stand.
+#
+# Deshalb drei Toepfe mit eigener Aufbewahrung. Die Zuordnung ist bewusst
+# ueberschneidungsfrei: der Monatserste ist monthly, ein Sonntag weekly, alles
+# andere daily. Ein Lauf schreibt also genau EINE Kopie, nicht drei.
+DAY_OF_MONTH=$(date +%d)
+DAY_OF_WEEK=$(date +%u)   # 1=Montag ... 7=Sonntag
+if [ "$DAY_OF_MONTH" = "01" ]; then
+  GENERATION="monthly"
+elif [ "$DAY_OF_WEEK" = "7" ]; then
+  GENERATION="weekly"
+else
+  GENERATION="daily"
+fi
+
 : "${BACKUP_AGE_PUBLIC_KEY:?BACKUP_AGE_PUBLIC_KEY fehlt in .env}"
 
 FAILED=0
@@ -89,8 +109,8 @@ encrypt_and_upload() {
   rm -f "$src"
   local size
   size=$(stat -c%s "$enc" 2>/dev/null || stat -f%z "$enc")
-  log "Upload $(basename "$enc") (${size} bytes)"
-  if rclone --config "$RCLONE_CONFIG_PATH" copy "$enc" "$REMOTE/" --quiet; then
+  log "Upload $(basename "$enc") -> $GENERATION/ (${size} bytes)"
+  if rclone --config "$RCLONE_CONFIG_PATH" copy "$enc" "$REMOTE/$GENERATION/" --quiet; then
     mv "$enc" "$BACKUP_DIR/"
     record_backup "$label" "$(basename "$enc")" "$size" "ok"
     return 0
@@ -165,10 +185,32 @@ fi
 
 # --- 5. Retention ---------------------------------------------------------
 find "$BACKUP_DIR" -maxdepth 1 -name "*.age" -mtime +"$RETENTION_DAYS" -delete 2>/dev/null || true
+
+# Jede Generation raeumt sich selbst auf.
+#
+# WICHTIG: --max-depth 1 ist hier nicht Kosmetik. `rclone delete` arbeitet
+# rekursiv; ohne die Begrenzung wuerde der Aufruf fuer daily/ mit seinen 7
+# Tagen auch weekly/ und monthly/ mitnehmen, sobald jemand die Pfade einmal
+# anders schachtelt — und der Verlust faellt erst auf, wenn man ein altes
+# Backup braucht.
+prune_generation() {
+  local gen="$1" days="$2"
+  [ -n "$days" ] || return 0
+  rclone --config "$RCLONE_CONFIG_PATH" delete "$REMOTE/$gen/" \
+    --min-age "${days}d" --max-depth 1 --quiet \
+    || log "WARNUNG: Retention fuer $gen fehlgeschlagen"
+}
+
+prune_generation daily   "${BACKUP_DAILY_RETENTION_DAYS:-7}"
+prune_generation weekly  "${BACKUP_WEEKLY_RETENTION_DAYS:-28}"
+prune_generation monthly "${BACKUP_MONTHLY_RETENTION_DAYS:-180}"
+
+# Altbestand aus der Zeit vor den Generationen liegt flach im Wurzelverzeichnis.
+# Nur diese Ebene anfassen, die Unterordner sind oben schon geregelt.
 if [ -n "${BACKUP_REMOTE_RETENTION_DAYS:-}" ]; then
   rclone --config "$RCLONE_CONFIG_PATH" delete "$REMOTE/" \
-    --min-age "${BACKUP_REMOTE_RETENTION_DAYS}d" --quiet \
-    || log "WARNUNG: Remote-Retention fehlgeschlagen"
+    --min-age "${BACKUP_REMOTE_RETENTION_DAYS}d" --max-depth 1 --quiet \
+    || log "WARNUNG: Remote-Retention (Altbestand) fehlgeschlagen"
 fi
 
 # --- 6. Ergebnis ----------------------------------------------------------
@@ -188,5 +230,5 @@ durchgelaufen ist. Test: ./backups/restore-test-script.sh <dateiname>"
   exit 1
 fi
 
-log "Backup vollstaendig: Globals, $(echo "$DBS" | wc -w) Datenbanken, MinIO, Config."
+log "Backup vollstaendig ($GENERATION): Globals, $(echo "$DBS" | wc -w) Datenbanken, MinIO, Config."
 exit 0

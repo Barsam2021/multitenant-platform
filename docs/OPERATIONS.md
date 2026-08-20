@@ -323,18 +323,38 @@ laufenden Installation macht das `migrate.sh`.
 ./backups/backup-script.sh                      # von Hand auslösen
 ./backups/restore-script.sh list                # was liegt im Object Storage
 ./backups/restore-test-script.sh <datei.age>    # in eine Wegwerf-Datenbank zurückspielen
+./backups/restore-script.sh db <datei.age>      # ECHTER Restore, überschreibt Daten
 ```
 
-Ein Backup, das nie zurückgespielt wurde, ist kein Backup. Der Restore-Test schreibt
-sein Ergebnis in die `backups`-Tabelle; im Dashboard steht es unter „Backups".
+Ein Backup, das nie zurückgespielt wurde, ist kein Backup. Der Restore-Test läuft
+deshalb automatisch: der Agent nimmt wöchentlich die Datenbank, die am längsten
+nicht geprüft wurde, und schreibt das Ergebnis als eigene Zeile in die
+`backups`-Tabelle (`restore_test_ok` / `restore_test_failed`). Im Dashboard steht
+es unter „Backups" zwischen den Sicherungen, chronologisch an der richtigen Stelle.
+
+Die Sicherungen liegen beim Anbieter in drei Generationen — `daily/` (7 Tage),
+`weekly/` sonntags (28 Tage), `monthly/` am Monatsersten (180 Tage). Beim Restore
+genügt weiterhin der reine Dateiname; das Skript sucht ihn in allen dreien.
+
+Der Agent überwacht das Ganze täglich und alarmiert per Mail, wenn
+
+- seit über 36 h kein erfolgreiches Backup gelaufen ist (auch dann, wenn der Cron
+  gar nicht erst startet — vorher war Stille von Erfolg nicht zu unterscheiden),
+- einzelne Datenbanken kein frisches Backup haben, während der Rest durchläuft,
+- die age-Identity fehlt oder die DR-Bundle-Bestätigung veraltet ist,
+- ein automatischer Restore-Test fehlschlägt.
+
+Der Bestand beim Anbieter steht im Dashboard über der Liste; er kommt direkt aus
+`rclone` und nicht aus der `backups`-Tabelle. Das ist Absicht: nach einem
+Serververlust ist die Tabelle selbst weg, und dann zählt nur, was beim Anbieter
+liegt.
 
 Der wichtigste Satz zum Thema steht in [SETUP.md](../SETUP.md): ohne Off-Site-Kopie
 des age-Keys **und** der `.env` sind die Dateien im Object Storage unlesbare Bytes.
 Beide liegen sonst ausschließlich auf dem Server, gegen dessen Verlust gesichert wird.
 
-Bewertung des Ist-Zustands, offene Lücken und die geplanten Ausbaustufen (Totmann-
-schalter, automatischer Restore-Test, Generationen-Aufbewahrung) stehen in
-[BACKUP-PLAN.md](BACKUP-PLAN.md).
+Wie dieser Stand zustande kam, welche Fehler dabei gefunden wurden und was
+bewusst offen blieb: [BACKUP-PLAN.md](BACKUP-PLAN.md).
 
 ---
 

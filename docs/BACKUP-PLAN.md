@@ -1,7 +1,8 @@
 # Backup- und Restore-Plan
 
-Status: Planungsdokument. Der Ist-Zustand ist im Repo vorhanden und wird hier
-bewertet; die Maßnahmen sind noch nicht umgesetzt.
+Status: **umgesetzt** (alle vier Phasen). Dieses Dokument beschreibt den
+Ausgangszustand, die gefundenen Fehler und was daraus geworden ist. Der
+Betriebsstand steht in [OPERATIONS.md](OPERATIONS.md#backups).
 
 Verwandte Dokumente: [OPERATIONS.md](OPERATIONS.md) (Betrieb),
 [../SETUP.md](../SETUP.md) (Erstinstallation), [CVE-PLAN.md](CVE-PLAN.md).
@@ -16,20 +17,26 @@ um 03:00, `bootstrap.sh` installiert den Cron-Eintrag. Gesichert werden
 Postgres-Globals, `admin_dashboard` und jede `kunde_*`-Datenbank, MinIO und die
 Konfiguration — verschlüsselt mit `age`, hochgeladen per `rclone`.
 
-Der Plan ist deshalb **kein Neubau**, sondern das Schließen von sieben Lücken.
-Zwei davon sind Fehler, die das System heute schon in einem Ernstfall aus der
-Bahn werfen würden:
+Die Arbeit war deshalb **kein Neubau**, sondern das Schließen von zehn Lücken.
+Vier davon waren Fehler im laufenden Code — zwei erst bei der Umsetzung
+gefunden, und der letzte ist der schwerwiegendste im ganzen Aufbau:
 
+- **B-10** `restore-script.sh` konnte **keinen einzigen Restore durchführen**.
+  Schlimmer noch: der `db`-Modus droppte die Zieldatenbank, spielte dann nichts
+  ein und meldete trotzdem „wiederhergestellt." mit Exitcode 0. Nachgewiesen
+  und behoben, siehe unten.
+- **B-9** Über das Dashboard gestartete Backups und Restore-Tests scheiterten
+  am Socket-Proxy (`EXEC: 0`).
+- **B-2** Der Restore-Test lehnte genau die Dateinamen ab, die das
+  Backup-Skript für Datenbanken erzeugt.
 - **B-1** Der age-Key liegt nur auf dem Server, gegen dessen Verlust gesichert
   wird. Ohne Off-Site-Kopie sind alle Backups unlesbare Bytes.
-- **B-2** Der Restore-Test aus dem Dashboard ist für Datenbanken tot: der
-  Agent lehnt genau die Dateinamen ab, die das Backup-Skript erzeugt.
 
 ---
 
-## 2. Ist-Zustand
+## 2. Ausgangszustand (vor dieser Arbeit)
 
-### 2.1 Was läuft
+### 2.1 Was schon lief
 
 | Baustein | Ort | Bewertung |
 |---|---|---|
@@ -43,7 +50,7 @@ Bahn werfen würden:
 | Protokoll | Tabelle `backups` (`core-postgres/init-scripts/05_backups.sql`) | eine Zeile pro Artefakt |
 | Steuerung/UI | `provisioning-agent/src/routes/backups.ts`, `dashboard/src/app/dashboard/backups/page.tsx` | Liste, „Jetzt sichern", „Restore-Test" |
 
-### 2.2 Kennzahlen heute
+### 2.2 Kennzahlen davor
 
 - **RPO** (maximaler Datenverlust): bis zu 24 h — es gibt kein WAL-Archiv,
   nur den nächtlichen Dump.
@@ -55,7 +62,7 @@ Bahn werfen würden:
 
 ---
 
-## 3. Lücken
+## 3. Die gefundenen Lücken
 
 ### B-1 — Der Schlüssel liegt im brennenden Haus  (Schwere: kritisch)
 
@@ -66,10 +73,12 @@ Stirbt der Server, liegen im Object Storage nur noch Bytes, die niemand mehr
 entschlüsseln kann. `OPERATIONS.md:331` benennt das Risiko, aber es gibt kein
 Verfahren, das die Kopie erzwingt oder ihr Vorhandensein prüft.
 
-**Maßnahme:** DR-Bundle als bewusster, dokumentierter Schritt —
+**Behoben:** DR-Bundle als bewusster, dokumentierter Schritt —
 `age-identity.txt` + `rclone.conf` + `.env` in einen Passwortmanager oder ein
-zweites, getrenntes Konto. Dazu ein Startup-Check im Agent, der laut wird,
-wenn `BACKUP_DR_BUNDLE_CONFIRMED_AT` in `.env` älter als 180 Tage ist oder fehlt.
+zweites, getrenntes Konto. Dazu eine tägliche Prüfung im Agent, die laut
+wird, wenn `BACKUP_DR_BUNDLE_CONFIRMED_AT` in der `.env` fehlt oder älter als
+180 Tage ist — und ebenso, wenn die Identity-Datei auf dem Server gar nicht
+existiert, denn dann ist ein Restore schon heute unmöglich.
 
 ### B-2 — Restore-Test aus dem Dashboard lehnt alle DB-Dumps ab  (Schwere: hoch)
 
@@ -81,7 +90,7 @@ aber als `-Fc`-Dump, also `<db>_<ts>.dump.age`; nur die Globals sind
 Der Knopf, mit dem geprüft werden soll, ob die Backups etwas taugen,
 funktioniert für den wichtigsten Fall nicht.
 
-**Maßnahme:** Regex auf `\.(dump|sql\.gz)\.age$` erweitern — dieselbe Prüfung,
+**Behoben:** Regex auf `\.(dump|sql\.gz)\.age$` erweitern — dieselbe Prüfung,
 die `restore-test-script.sh:34` schon korrekt macht.
 
 ### B-3 — `encrypt_failed` verletzt den CHECK-Constraint  (Schwere: mittel)
@@ -92,7 +101,7 @@ die `restore-test-script.sh:34` schon korrekt macht.
 protokolliert nur eine Warnung — der Fehlerfall hinterlässt in der Tabelle
 also **keine** Spur. Genau der Zustand, den die Tabelle sichtbar machen soll.
 
-**Maßnahme:** Migration `23_backups_status.sql`: Constraint um
+**Behoben:** Migration `23_backups_status.sql`: Constraint um
 `encrypt_failed` und `restore_test_ok`/`restore_test_failed` erweitern.
 
 ### B-4 — Kein Alarm, wenn das Backup gar nicht erst läuft  (Schwere: hoch)
@@ -101,7 +110,7 @@ also **keine** Spur. Genau der Zustand, den die Tabelle sichtbar machen soll.
 (Server aus, `cron` nach `bootstrap.sh` nie neu geladen, Skript nicht
 ausführbar), passiert schlicht nichts — und Stille sieht genauso aus wie Erfolg.
 
-**Maßnahme:** Totmannschalter im Agent. Täglicher Check gegen
+**Behoben:** Totmannschalter im Agent. Täglicher Check gegen
 `SELECT max(created_at) FROM backups WHERE status='ok'`; ist der letzte
 erfolgreiche Lauf älter als 36 h, Alarm über `lib/alert.ts` (existiert bereits,
 inkl. Dedupe-Fenster).
@@ -114,7 +123,7 @@ es keinen Weg zurück — und `GET /backups` liest die `backups`-Tabelle, die
 nach einem Totalverlust selbst weg ist. Was tatsächlich im Object Storage
 liegt, sieht man nur über `restore-script.sh list`.
 
-**Maßnahme:** `GET /backups/remote` im Agent (`rclone lsjson`), im Dashboard
+**Behoben:** `GET /backups/remote` im Agent (`rclone lsjson`), im Dashboard
 als zweite Spalte „im Object Storage vorhanden". Der schreibende Restore
 bleibt bewusst CLI-only — ein Knopf, der die Produktivdatenbank überschreibt,
 gehört nicht hinter ein Web-Login.
@@ -124,7 +133,7 @@ gehört nicht hinter ein Web-Login.
 Der Test existiert, muss aber von Hand angestoßen werden. `OPERATIONS.md:328`
 sagt selbst: „Ein Backup, das nie zurückgespielt wurde, ist kein Backup."
 
-**Maßnahme:** wöchentlicher Lauf im Agent (Sonntag, versetzt zum Backup),
+**Behoben:** wöchentlicher Lauf im Agent (Sonntag, versetzt zum Backup),
 rotierend über die Tenants, Ergebnis in `backups` als eigene Zeile, Alarm bei
 Fehlschlag.
 
@@ -134,7 +143,7 @@ Fehlschlag.
 auffällt (schleichende Korruption, versehentliches `DELETE`, Ransomware), ist
 dann nicht mehr rückholbar.
 
-**Maßnahme:** Großvater-Vater-Sohn — 7 Tage täglich, 4 Wochen wöchentlich,
+**Behoben:** Großvater-Vater-Sohn — 7 Tage täglich, 4 Wochen wöchentlich,
 6 Monate monatlich; umgesetzt über `rclone`-Präfixe `daily/`, `weekly/`,
 `monthly/` und `--min-age`-Löschläufe. `BACKUP_REMOTE_RETENTION_DAYS` und die
 neuen Variablen in `.env.example` dokumentieren.
@@ -142,8 +151,80 @@ neuen Variablen in `.env.example` dokumentieren.
 ### B-8 — Dokumentation weicht vom Code ab  (Schwere: gering)
 
 `OPERATIONS.md:328-329` behauptet, der Restore-Test schreibe sein Ergebnis in
-die `backups`-Tabelle. Tatsächlich schreibt `routes/backups.ts:82,89,93` nur
-ins Audit-Log. Nach B-6 stimmt der Satz — bis dahin nicht.
+die `backups`-Tabelle. Tatsächlich schrieb `routes/backups.ts` nur ins
+Audit-Log. Mit B-6 stimmt der Satz — vorher nicht.
+
+### B-9 — Backup und Restore-Test aus dem Dashboard scheiterten immer  (Schwere: hoch)
+
+*Erst bei der Umsetzung gefunden, im Plan nicht vorgesehen.*
+
+`routes/backups.ts` startete beide Skripte per `execFileP('bash', …)` ohne
+eigene Umgebung, also mit der des Agents — inklusive
+`DOCKER_HOST=tcp://docker-socket-proxy:2375`. Am Proxy steht aber `EXEC: 0`
+(`provisioning-agent/docker-compose.yml:26`), und beide Skripte arbeiten
+ausschließlich über `docker exec core-postgres pg_dump …`. Jeder Aufruf lief
+damit in ein 403.
+
+Aus dem Cron fiel das nie auf: der läuft auf dem Host, ganz ohne `DOCKER_HOST`.
+Über das Dashboard funktionierte dagegen weder „Backup jetzt starten" noch
+„Restore-Test" — und weil `POST /backups/run` sofort `{status:'started'}`
+zurückgibt und den Fehler nur ins Agent-Log schreibt, sah die Oberfläche dabei
+zufrieden aus.
+
+**Behoben:** eigenes `SCRIPT_ENV` mit `DOCKER_HOST=unix:///var/run/docker.sock`
+für diese Kindprozesse — dieselbe Ausnahme, die `lib/nixpacks.ts:117` für
+BuildKit schon macht. Der Socket ist ohnehin gemountet, zusätzliche Rechte
+entstehen dadurch nicht.
+
+### B-10 — Der Restore konnte nie funktionieren  (Schwere: kritisch)
+
+*Erst bei der Umsetzung gefunden. Der schwerwiegendste Befund.*
+
+`restore-script.sh` gibt den Pfad der entschlüsselten Datei aus `fetch()` über
+**stdout** zurück und fängt ihn mit `PLAIN=$(fetch "$FN" "$TMP")` auf. Die
+Funktion `log()` schrieb aber ebenfalls nach stdout. `$PLAIN` enthielt damit
+zwei Zeilen:
+
+```
+[restore] Lade kunde_foo_20260810-030000.dump.age ...
+/tmp/restore-1234/kunde_foo_20260810-030000.dump
+```
+
+Jedes nachfolgende `pg_restore < "$PLAIN"`, `gunzip -c "$PLAIN"` und
+`tar xzf "$PLAIN"` lief damit auf einen Dateinamen, den es nicht gibt.
+
+Der `db`-Modus macht daraus einen Datenverlust: er trennt alle Verbindungen,
+droppt die Datenbank und legt sie leer neu an — **bevor** er den Dump anfasst.
+Der anschließende Fehler wird von `|| log "WARNUNG: pg_restore meldete Fehler"`
+aufgefangen, das Skript läuft weiter, meldet „Datenbank … wiederhergestellt."
+und endet mit Exitcode 0.
+
+Nachgestellt mit Stubs für `rclone`, `age` und `docker`, alte Fassung gegen
+neue, identische Bedingungen:
+
+```
+=== ALTE Fassung ===
+[restore] WARNUNG: pg_restore meldete Fehler — Ausgabe pruefen
+[restore] Datenbank kunde_foo wiederhergestellt.
+Exitcode: 0
+--- pg_restore-Eingang: (nichts angekommen)
+
+=== NEUE Fassung ===
+[restore] Datenbank kunde_foo wiederhergestellt (42 Tabellen).
+Exitcode: 0
+--- pg_restore-Eingang: ECHTER-DUMP-INHALT
+```
+
+**Behoben, dreifach:**
+
+1. `log()` und `die()` schreiben nach stderr. Der Rückgabewert von `fetch()`
+   ist damit wieder ausschließlich der Pfad.
+2. Fehlt die Datei im Object Storage, bricht das Skript ab, **bevor** die
+   Datenbank angefasst wird (vorher: erst droppen, dann scheitern).
+3. Nach dem Einspielen wird die Tabellenzahl geprüft. Null Tabellen ist jetzt
+   ein Abbruch mit Hinweis auf den noch entschlüsselten Dump — ein leerer
+   Erfolg ist beim Restore der gefährlichste Ausgang, weil er die Suche nach
+   der Ursache beendet, bevor sie beginnt.
 
 ---
 
@@ -166,63 +247,90 @@ jederzeit  Dashboard ──▶ Liste lokal + Object Storage, „Jetzt sichern",
 Ernstfall  CLI     ──▶ restore-script.sh  (globals → config → DBs → minio)
 ```
 
-**Zielkennzahlen:** RPO 24 h (unverändert — WAL-Archivierung siehe §7),
-RTO ≤ 60 min für eine einzelne Tenant-Datenbank, ≤ 4 h für die volle Plattform,
-beides einmal gemessen und in OPERATIONS.md eingetragen.
+**Kennzahlen:** RPO 24 h (unverändert — WAL-Archivierung siehe §7). Das RTO
+ist weiterhin **ungemessen**: der Restore funktioniert jetzt nachweislich, aber
+wie lange er auf echten Datenmengen braucht, weiß niemand, bis es jemand einmal
+mit der Uhr macht. Das ist die nächste offene Aufgabe, siehe §7.
 
 ---
 
-## 5. Maßnahmen in Reihenfolge
+## 5. Was umgesetzt wurde
 
-### Phase 1 — Die zwei echten Fehler (ca. ½ Tag)
+### Phase 1 — Die Fehler im laufenden Code
 
-1. `provisioning-agent/src/routes/backups.ts:74` — Regex auf
-   `^[a-zA-Z0-9_.-]+\.(dump|sql\.gz)\.age$`. **(B-2)**
-2. Neue Migration `core-postgres/init-scripts/23_backups_status.sql`:
-   CHECK-Constraint um `encrypt_failed`, `restore_test_ok`,
-   `restore_test_failed` erweitern (per `DROP CONSTRAINT` / `ADD CONSTRAINT`,
-   idempotent). **(B-3)**
-3. `scripts/migrate.sh` einmal ausführen.
+| Datei | Änderung |
+|---|---|
+| `provisioning-agent/src/routes/backups.ts` | `BACKUP_FILENAME_RE` akzeptiert `.dump.age` **und** `.sql.gz.age` (B-2); `SCRIPT_ENV` biegt `DOCKER_HOST` für die Skript-Kindprozesse auf den rohen Socket um (B-9) |
+| `core-postgres/init-scripts/23_backups_status.sql` | neu: CHECK-Constraint um `encrypt_failed`, `restore_test_ok`, `restore_test_failed` erweitert; zwei Indizes für die neuen Abfragen (B-3) |
+| `backups/restore-script.sh` | `log()`/`die()` nach stderr, Abbruch vor dem `DROP`, Tabellenprüfung nach dem Restore (B-10) |
 
-**Abnahme:** „Restore-Test" auf einer `kunde_*`-Zeile im Dashboard läuft durch
-und meldet Tabellen- und Zeilenzahl.
+### Phase 2 — Nicht mehr blind sein
 
-### Phase 2 — Nicht mehr blind sein (ca. 1 Tag)
+| Datei | Änderung |
+|---|---|
+| `provisioning-agent/src/lib/backupHealth.ts` | neu: `checkBackupFreshness()` (Totmannschalter **und** Prüfung je Datenbank), `checkDisasterRecoveryReadiness()`, `listRemoteBackups()` |
+| `provisioning-agent/src/index.ts` | tägliche Gesundheitsprüfung 3 min nach Start, danach im 24-h-Takt |
+| `provisioning-agent/src/routes/backups.ts` | `GET /backups/remote` (rclone `lsjson -R`), Antwort `502` statt `500`, wenn der Anbieter klemmt |
+| `dashboard/src/app/api/backups/remote/route.ts` | neu |
+| `dashboard/src/app/dashboard/backups/page.tsx` | Panel „Im Object Storage" mit Bestand je Generation |
+| `.env.example`, `provisioning-agent/docker-compose.yml` | neue Variablen — und durchgereicht, sonst hätte ein Eintrag in der `.env` keine Wirkung |
+| `SETUP.md` | DR-Bundle als konkrete Befehlsfolge statt Verweis auf ein Skript, das es im Repo nicht gibt |
 
-4. `provisioning-agent/src/lib/backupHealth.ts` (neu):
-   `checkBackupFreshness()` — letzter `status='ok'`-Eintrag, Schwelle über
-   `BACKUP_MAX_AGE_HOURS` (Default 36). **(B-4)**
-5. In `index.ts` neben `runCleanup` einhängen — gleiches Muster wie
-   `index.ts:598-608`: erster Lauf 5 min nach Start, dann täglich.
-6. `GET /backups/remote` in `routes/backups.ts` über `rclone lsjson`,
-   im Dashboard als zusätzliche Spalte. **(B-5)**
-7. DR-Bundle: `BACKUP_DR_BUNDLE_CONFIRMED_AT` in `.env.example`,
-   Startup-Warnung im Agent, Checkliste in `SETUP.md`. **(B-1)**
+Der Freshness-Check prüft zwei Dinge statt einem. Neben „läuft überhaupt noch
+etwas" auch „fehlt einer *einzelnen* Datenbank ein frisches Backup" — der
+unangenehmere Fall: ein Tenant scheitert jede Nacht, alle anderen laufen durch,
+und die jüngste Zeile in `backups` ist deshalb taufrisch. Beide Fälle haben
+eigene Alarmtexte und eigene Dedupe-Schlüssel.
 
-**Abnahme:** Cron testweise deaktivieren → nach 36 h kommt eine Mail.
+### Phase 3 — Der Test, der von allein läuft
 
-### Phase 3 — Der Test, der von allein läuft (ca. 1 Tag)
+| Datei | Änderung |
+|---|---|
+| `provisioning-agent/src/lib/backupHealth.ts` | `runScheduledRestoreTest()` + `runScheduledRestoreTestIfDue()`; gemeinsame Sperre für geplante und manuelle Läufe |
+| `provisioning-agent/src/index.ts` | alle 6 h prüfen, ob wieder ein Test fällig ist |
+| `dashboard/.../backups/page.tsx` | Testergebnisse als eigene, farbig markierte Zeilen |
+| `docs/OPERATIONS.md` | §Backups auf den tatsächlichen Stand gezogen (B-8) |
 
-8. `runScheduledRestoreTest()` in `lib/backupHealth.ts`: nimmt den jüngsten
-   `ok`-Dump der am längsten ungetesteten Datenbank, ruft
-   `restore-test-script.sh`, schreibt `restore_test_ok` /
-   `restore_test_failed` in `backups`, alarmiert bei Fehlschlag. **(B-6)**
-9. Spalte `last_restore_test_at` in der Backups-Ansicht.
-10. `OPERATIONS.md` §Backups auf den dann tatsächlichen Stand ziehen. **(B-8)**
+Zwei Entscheidungen, die Ärger sparen: Der Takt kommt aus der Datenbank, nicht
+aus einem Zähler im Speicher — ein Agent-Neustart ist bei Deployments Alltag und
+würde einen In-Memory-Takt jedes Mal zurücksetzen. Und die Sperre liegt im
+Modul, nicht in der Route: vorher hätte ein geplanter Lauf nicht gesehen, dass
+im Dashboard gerade jemand denselben Test angestoßen hat.
 
-**Abnahme:** eine Woche laufen lassen, grüner Eintrag ohne manuelles Zutun.
+### Phase 4 — Generationen
 
-### Phase 4 — Generationen (ca. ½ Tag)
+| Datei | Änderung |
+|---|---|
+| `backups/backup-script.sh` | Zielordner aus dem Datum: `monthly/` am Ersten, `weekly/` sonntags, sonst `daily/`; Retention je Ordner |
+| `backups/restore-script.sh` | `resolve_remote_path()` findet eine Datei in allen drei Ordnern und im Altbestand |
 
-11. `backup-script.sh`: Zielpräfix aus dem Datum ableiten
-    (`monthly/` am 1., `weekly/` sonntags, sonst `daily/`).
-12. Retention je Präfix über `rclone delete --min-age`.
-13. Neue Variablen nach `.env.example` und `SETUP.md`. **(B-7)**
+`--max-depth 1` bei jedem `rclone delete` ist hier kein Detail: `rclone delete`
+arbeitet rekursiv, und ohne die Begrenzung nähme der Aufruf für `daily/` mit
+seinen 7 Tagen auch `weekly/` und `monthly/` mit — ein Verlust, der erst
+auffällt, wenn man ein altes Backup braucht.
 
-**Abnahme:** `restore-script.sh list` zeigt drei Präfixe; ein 40 Tage altes
-Monatsbackup ist noch da, ein 10 Tage altes Tagesbackup nicht mehr.
+Aufrufer geben weiterhin nur den Dateinamen an. Das Dashboard kennt ohnehin nur
+den, und ein Restore-Befehl aus einer alten Notiz funktioniert dadurch weiter.
 
 ---
+
+## 5a. Prüfstand
+
+Ausgeführt, nicht behauptet:
+
+| Prüfung | Ergebnis |
+|---|---|
+| `tsc --noEmit` (provisioning-agent) | 0 Fehler |
+| `tsc --noEmit` (dashboard) | 0 Fehler |
+| `next lint` (dashboard) | keine Warnungen |
+| `npm run build` (dashboard) | erfolgreich |
+| `bash -n` für alle geänderten Skripte | Syntax ok |
+| Restore mit Stubs für `rclone`/`age`/`docker` | Dump kommt bei `pg_restore` an; alte Fassung nachweislich nicht |
+| Restore mit fehlender Datei | bricht ab, **null** `DROP DATABASE`-Aufrufe |
+
+Was ein Testlauf hier **nicht** leisten kann: der Totmannschalter und der
+wöchentliche Restore-Test sind zeitgesteuert und brauchen eine laufende
+Installation. Ihre Abnahme steht in §6a.
 
 ## 6. Betrieb: der Ernstfall in sechs Schritten
 
@@ -240,7 +348,44 @@ Reihenfolge ist nicht optional — sie steht so schon im Kopf von
 
 ---
 
-## 7. Bewusst nicht im Plan
+## 6a. Inbetriebnahme und Abnahme
+
+Die Änderungen greifen erst nach diesen drei Schritten:
+
+```bash
+cd /opt/multitenant-platform
+git pull
+./scripts/migrate.sh                       # Migration 23 einspielen
+docker compose -f provisioning-agent/docker-compose.yml up -d --build
+docker compose -f dashboard/docker-compose.yml up -d --build
+```
+
+Neue Einträge in der `.env` (Vorlage: `.env.example`) — ohne sie gelten die
+Defaults aus dem Code, außer beim DR-Bundle:
+
+```
+BACKUP_DR_BUNDLE_CONFIRMED_AT=<Datum, an dem das Bundle abgelegt wurde>
+```
+
+Fehlt dieser Eintrag, alarmiert der Agent ab dem ersten Lauf — das ist Absicht.
+
+**Abnahme, in dieser Reihenfolge:**
+
+1. Im Dashboard „Backup jetzt starten" — lief vor B-9 nie durch, jetzt schon.
+2. Auf einer `kunde_*`-Zeile „Restore-Test" — lief vor B-2 nie durch.
+3. Panel „Im Object Storage" zeigt Dateien und ihre Generation.
+4. `./backups/restore-script.sh list` zeigt `daily/`-Pfade.
+5. Cron testweise auskommentieren → nach 36 h kommt „Backup überfaellig".
+6. Nach spätestens 7 Tagen steht eine `restore_test_ok`-Zeile in der Liste,
+   ohne dass jemand etwas angeklickt hat.
+
+Schritt 5 und 6 brauchen Zeit und lassen sich hier nicht abkürzen. Wer sie
+überspringt, hat den Totmannschalter nicht geprüft, sondern nur eingebaut —
+und ein ungeprüfter Alarm ist genau das, was in §3 unter B-4 steht.
+
+---
+
+## 7. Bewusst nicht umgesetzt
 
 - **WAL-Archivierung / Point-in-Time-Recovery.** Würde das RPO von 24 h auf
   Minuten drücken, kostet aber eine dauerhafte Archivstrecke und laufenden
@@ -249,5 +394,12 @@ Reihenfolge ist nicht optional — sie steht so schon im Kopf von
 - **Restore per Knopfdruck im Dashboard.** Ein Web-Login, das die
   Produktivdatenbank überschreiben kann, vergrößert die Angriffsfläche mehr,
   als es im Ernstfall Zeit spart.
-- **Zweiter Backup-Anbieter.** Sinnvoll, aber erst nachdem B-1 gelöst ist —
-  zwei Kopien nützen nichts, wenn der Schlüssel für beide fehlt.
+- **Zweiter Backup-Anbieter.** Sinnvoll, aber erst wenn das DR-Bundle
+  tatsächlich abgelegt ist — zwei Kopien nützen nichts, wenn der Schlüssel für
+  beide fehlt.
+- **Gemessenes RTO.** Ein Restore der größten Tenant-Datenbank mit der Uhr
+  daneben, Ergebnis nach OPERATIONS.md. Braucht eine Installation mit echten
+  Datenmengen; im Repo lässt sich das nicht beantworten.
+- **Ein Alarm, wenn der Object Storage leer ist.** `GET /backups/remote` zeigt
+  es im Dashboard an, aber niemand schaut dort nachts hin. Der Totmannschalter
+  fragt bisher nur die `backups`-Tabelle, also den Server — nicht den Anbieter.

@@ -12,8 +12,24 @@ interface Backup {
   // zwar, aber der Typ bleibt tolerant — eine ungepatchte Agent-Version darf
   // die Seite nicht kaputtmachen.
   size_bytes: number | string;
-  status: "ok" | "dump_failed" | "upload_failed";
+  status:
+    | "ok"
+    | "dump_failed"
+    | "upload_failed"
+    | "encrypt_failed"
+    | "restore_test_ok"
+    | "restore_test_failed";
   created_at: string;
+}
+
+/** Eine Datei, wie sie tatsaechlich beim Storage-Anbieter liegt. */
+interface RemoteFile {
+  name: string;
+  path: string;
+  /** daily | weekly | monthly | "" */
+  generation: string;
+  size: number;
+  modTime: string;
 }
 
 interface RestoreResultEntry {
@@ -26,7 +42,23 @@ const STATUS_COLOR: Record<string, string> = {
   ok: "#2da44e",
   dump_failed: "var(--danger)",
   upload_failed: "var(--danger)",
+  encrypt_failed: "var(--danger)",
+  restore_test_ok: "#2da44e",
+  restore_test_failed: "var(--danger)",
 };
+
+const STATUS_LABEL: Record<string, string> = {
+  dump_failed: "Dump fehlgeschlagen",
+  upload_failed: "Upload fehlgeschlagen",
+  encrypt_failed: "Verschlüsselung fehlgeschlagen",
+  restore_test_ok: "Restore-Test bestanden",
+  restore_test_failed: "Restore-Test fehlgeschlagen",
+};
+
+/** Zeilen, die kein Backup beschreiben, sondern dessen Überprüfung. */
+function isTestRow(status: string): boolean {
+  return status === "restore_test_ok" || status === "restore_test_failed";
+}
 
 function formatBytes(bytes: number | string | null | undefined): string {
   // Number() statt Verlass auf den Typ: kam der Wert als String an, war
@@ -52,6 +84,8 @@ export default function BackupsPage() {
   const [starting, setStarting] = useState(false);
   const [restoreResult, setRestoreResult] = useState<Record<string, RestoreResultEntry>>({});
   const [restoreTarget, setRestoreTarget] = useState<string | null>(null);
+  const [remote, setRemote] = useState<RemoteFile[] | null>(null);
+  const [remoteError, setRemoteError] = useState<string | null>(null);
   const toast = useToast();
 
   const load = useCallback(() => {
@@ -68,6 +102,28 @@ export default function BackupsPage() {
       })
       .catch(() => setError("Verbindung zum Provisioning Agent fehlgeschlagen"));
   }, []);
+
+  // Der Bestand beim Storage-Anbieter wird getrennt geladen und getrennt
+  // behandelt: er kostet einen rclone-Aufruf und darf, wenn der Anbieter
+  // klemmt, nicht die ganze Seite als kaputt erscheinen lassen.
+  const loadRemote = useCallback(() => {
+    fetch("/api/backups/remote")
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.error) {
+          setRemoteError(d.error);
+          setRemote(null);
+          return;
+        }
+        setRemoteError(null);
+        setRemote(d.files || []);
+      })
+      .catch(() => setRemoteError("Object Storage nicht erreichbar"));
+  }, []);
+
+  useEffect(() => {
+    loadRemote();
+  }, [loadRemote]);
 
   useEffect(() => {
     load();
@@ -157,6 +213,67 @@ export default function BackupsPage() {
         </div>
       )}
 
+      {/*
+        Bestand beim Storage-Anbieter. Die Liste darunter zeigt, was der Server
+        glaubt, gesichert zu haben — nach einem Serververlust ist diese Tabelle
+        selbst weg. Im Ernstfall zählt allein, was hier steht.
+      */}
+      <div
+        style={{
+          border: "1px solid var(--border)",
+          borderRadius: 8,
+          padding: 12,
+          marginBottom: 18,
+          background: "var(--panel)",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+          <strong style={{ fontSize: 13 }}>Im Object Storage</strong>
+          <button className="btn" onClick={loadRemote} style={{ fontSize: 12 }}>
+            Neu laden
+          </button>
+        </div>
+        {remoteError && (
+          <div style={{ marginTop: 8, fontSize: 12, color: "var(--danger)" }}>
+            Bestand nicht abrufbar: {remoteError}
+            <div style={{ color: "var(--text-dim)", marginTop: 4 }}>
+              Solange das so bleibt, ist unbekannt, ob die Sicherungen überhaupt beim
+              Anbieter ankommen. Prüfen: RCLONE_REMOTE_PATH und backups/rclone.conf.
+            </div>
+          </div>
+        )}
+        {!remoteError && remote === null && (
+          <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-dim)" }}>Wird geladen…</div>
+        )}
+        {!remoteError && remote !== null && (
+          <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-dim)" }}>
+            {remote.length === 0 ? (
+              <span style={{ color: "var(--danger)" }}>
+                Keine Datei beim Anbieter. Es existiert derzeit keine verwertbare Off-Site-Sicherung.
+              </span>
+            ) : (
+              <>
+                <span>
+                  {remote.length} Dateien · {formatBytes(remote.reduce((sum, f) => sum + f.size, 0))} ·
+                  neueste {new Date(remote[0].modTime).toLocaleString("de-DE")}
+                </span>
+                <div style={{ marginTop: 6, display: "flex", gap: 12, flexWrap: "wrap" }}>
+                  {["daily", "weekly", "monthly", ""].map((gen) => {
+                    const files = remote.filter((f) => f.generation === gen);
+                    if (files.length === 0) return null;
+                    return (
+                      <span key={gen || "root"} className="pk-badge">
+                        {gen || "ohne Generation"}: {files.length}
+                      </span>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+
       {backups.length === 0 && !error && (
         <div className="empty-state">Noch kein Backup gelaufen.</div>
       )}
@@ -186,11 +303,27 @@ export default function BackupsPage() {
                   }}
                 />
                 <span className="pk-badge">{b.db_name}</span>
+                {STATUS_LABEL[b.status] && (
+                  <span
+                    style={{
+                      fontSize: 11,
+                      color: STATUS_COLOR[b.status],
+                      border: `1px solid ${STATUS_COLOR[b.status]}`,
+                      borderRadius: 4,
+                      padding: "1px 6px",
+                    }}
+                  >
+                    {STATUS_LABEL[b.status]}
+                  </span>
+                )}
                 <span style={{ color: "var(--text-dim)", fontSize: 12, fontFamily: "var(--font-mono)" }}>
                   {b.filename}
                 </span>
                 <span style={{ color: "var(--text-faint)", fontSize: 12 }}>
-                  {formatBytes(b.size_bytes)} · {new Date(b.created_at).toLocaleString("de-DE")}
+                  {/* Testzeilen beschreiben ein Ereignis, keine Datei — eine
+                      Groesse waere dort irrefuehrend. */}
+                  {isTestRow(b.status) ? "" : `${formatBytes(b.size_bytes)} · `}
+                  {new Date(b.created_at).toLocaleString("de-DE")}
                 </span>
               </div>
               {b.status === "ok" && (

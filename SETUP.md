@@ -118,10 +118,50 @@ eintragen, den privaten Identity-File **niemals** ins Repo committen (ist über
 > **Ohne Off-Site-Kopie des age-Keys und der `.env` gibt es kein
 > wiederherstellbares Backup.** Beide liegen sonst ausschließlich auf genau dem
 > Server, gegen dessen Verlust gesichert wird — die Dateien im Object Storage
-> sind dann unlesbare Bytes. `sprint21-06-p0-5-backups.sh` erzeugt dafür ein
-> passphrasenverschlüsseltes DR-Bundle; das gehört in einen Passwort-Manager
-> oder auf ein verschlüsseltes Offline-Medium, **nicht** in dasselbe
-> rclone-Remote.
+> sind dann unlesbare Bytes.
+
+### Das DR-Bundle (nicht überspringen)
+
+Drei Dateien, die **nicht** auf diesem Server liegen dürfen:
+
+| Datei | Ohne sie |
+|---|---|
+| `backups/age-identity.txt` | ist jedes Backup unlesbar |
+| `backups/rclone.conf` | kommt niemand mehr an den Object Storage |
+| `.env` | bleiben alle verschlüsselten Env-Vars und MinIO-Keys tot (`ENCRYPTION_MASTER_KEY`) |
+
+Bundle erzeugen und passphrasenverschlüsselt ablegen:
+
+```bash
+cd /opt/multitenant-platform
+tar czf - backups/age-identity.txt backups/rclone.conf .env \
+  | age -p > ~/dr-bundle-$(date +%F).tar.gz.age
+```
+
+Die Ausgabedatei gehört in einen Passwort-Manager oder auf ein verschlüsseltes
+Offline-Medium — **nicht** in dasselbe rclone-Remote, in dem die Backups
+liegen. Danach das Datum in der `.env` eintragen:
+
+```
+BACKUP_DR_BUNDLE_CONFIRMED_AT=2026-08-20
+```
+
+Der Provisioning Agent prüft diesen Eintrag täglich und schlägt Alarm, wenn er
+fehlt oder älter als `BACKUP_DR_BUNDLE_MAX_AGE_DAYS` (Default 180) ist. Ebenso,
+wenn die Identity-Datei auf dem Server gar nicht mehr existiert — dann ist ein
+Restore schon heute unmöglich, ohne dass es jemandem auffallen würde.
+
+### Was danach von allein läuft
+
+| Wann | Was | Konfiguration |
+|---|---|---|
+| täglich 03:00 | Backup, verschlüsselt in `daily/`, sonntags `weekly/`, am Monatsersten `monthly/` | `BACKUP_*_RETENTION_DAYS` |
+| täglich | Totmannschalter: kein erfolgreiches Backup seit 36 h → Alarm | `BACKUP_MAX_AGE_HOURS` |
+| täglich | Prüfung von age-Identity und DR-Bundle-Bestätigung | `BACKUP_DR_BUNDLE_MAX_AGE_DAYS` |
+| wöchentlich | Restore-Test der am längsten ungeprüften Datenbank | `BACKUP_RESTORE_TEST_INTERVAL_DAYS` |
+
+Alle vier Alarme gehen über Resend an `ADMIN_EMAIL`. Ohne `RESEND_API_KEY`
+landen sie nur im Log des Agents — dann muss jemand aktiv hinsehen.
 
 Restore einmal testen (Dateiname aus `./backups/restore-script.sh list`):
 

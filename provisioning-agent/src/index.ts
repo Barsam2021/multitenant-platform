@@ -22,6 +22,11 @@ import { cleanupRouter } from './routes/cleanup';
 import { analyticsRouter } from './routes/analytics';
 import { cmsRouter } from './routes/cms';
 import { runCleanup } from './lib/cleanup';
+import {
+  checkBackupFreshness,
+  checkDisasterRecoveryReadiness,
+  runScheduledRestoreTestIfDue,
+} from './lib/backupHealth';
 import { ingestAccessLog } from './lib/analytics';
 import { provisionTenantDatabase } from './lib/tenantDatabase';
 import { cleanupProjectResources } from './lib/projectCleanup';
@@ -606,6 +611,50 @@ app.listen(3001, () => {
   setInterval(() => {
     runCleanup().catch((err) => console.error('Taeglicher Cleanup-Lauf fehlgeschlagen:', err.message));
   }, ONE_DAY_MS);
+
+  // Totmannschalter fuers Backup (BACKUP-PLAN.md B-1/B-4).
+  //
+  // Das Backup-Skript alarmiert nur, wenn es selbst laeuft und dabei scheitert.
+  // Laeuft es gar nicht — Cron nie neu geladen, Server war nachts aus, Skript
+  // nicht mehr ausfuehrbar —, meldet niemand etwas, und Stille sieht aus wie
+  // Erfolg. Diese Pruefung dreht das um: sie fragt nach, ob ueberhaupt etwas
+  // passiert ist, und schlaegt bei Schweigen Alarm.
+  //
+  // Zusammen damit die DR-Bereitschaft: existiert der private age-Schluessel,
+  // und hat jemand in den letzten sechs Monaten bestaetigt, dass es eine
+  // Off-Site-Kopie davon gibt? Ohne die ist jedes Backup im Object Storage
+  // nach einem Serververlust nur noch Rauschen.
+  const runBackupHealth = () => {
+    checkBackupFreshness().catch((err) =>
+      console.error('Backup-Frischepruefung fehlgeschlagen:', err.message)
+    );
+    checkDisasterRecoveryReadiness().catch((err) =>
+      console.error('DR-Bereitschaftspruefung fehlgeschlagen:', err.message)
+    );
+  };
+  // 3 Minuten nach Start, also vor dem Cleanup-Lauf: die Pruefung ist billig
+  // (drei Queries) und ihr Ergebnis ist das, was der Betreiber nach einem
+  // Neustart als Erstes wissen will.
+  setTimeout(runBackupHealth, 3 * 60 * 1000);
+  setInterval(runBackupHealth, ONE_DAY_MS);
+
+  // Automatischer Restore-Test (B-6). Ein Backup, das nie zurueckgespielt
+  // wurde, ist kein Backup — bisher musste das jemand von Hand anstossen.
+  //
+  // Alle 6 Stunden nachsehen, ob der letzte Test laenger als
+  // BACKUP_RESTORE_TEST_INTERVAL_DAYS (Default 7) her ist. Der Takt liegt in
+  // der Datenbank, nicht im Speicher, damit ein Agent-Neustart ihn nicht
+  // zuruecksetzt. Der Lauf selbst belastet die Produktiv-Postgres spuerbar
+  // (Dump einspielen, Zeilen zaehlen), deshalb der erste erst eine halbe
+  // Stunde nach Start und nicht in den Boot-Sturm hinein.
+  const RESTORE_TEST_CHECK_MS = 6 * 60 * 60 * 1000;
+  const runRestoreTestIfDue = () => {
+    runScheduledRestoreTestIfDue().catch((err) =>
+      console.error('Geplanter Restore-Test fehlgeschlagen:', err.message)
+    );
+  };
+  setTimeout(runRestoreTestIfDue, 30 * 60 * 1000);
+  setInterval(runRestoreTestIfDue, RESTORE_TEST_CHECK_MS);
 
   // Analytics: Traefik-Accesslog einlesen. Jede Minute, weil die Auswertung
   // "wie viele waren heute da" sonst spuerbar hinterherhinkt — der Lauf selbst

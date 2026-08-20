@@ -32,10 +32,30 @@ RCLONE_CONFIG_PATH="${RCLONE_CONFIG:-$ROOT/backups/rclone.conf}"
 REMOTE="${RCLONE_REMOTE_PATH:?RCLONE_REMOTE_PATH fehlt in .env}"
 : "${BACKUP_AGE_IDENTITY_FILE:?BACKUP_AGE_IDENTITY_FILE fehlt in .env}"
 
-log() { echo "[restore] $*"; }
+# Beide nach stderr. NICHT kosmetisch: fetch() gibt den Pfad der
+# entschluesselten Datei ueber stdout zurueck und wird als PLAIN=$(fetch ...)
+# aufgerufen. Schrieb log() ebenfalls nach stdout, landete die Logzeile mit im
+# Rueckgabewert — PLAIN war dann zweizeilig ("[restore] Lade ...\n/tmp/...")
+# und jedes nachfolgende `gunzip -c "$PLAIN"`, `pg_restore < "$PLAIN"` bzw.
+# `tar xzf "$PLAIN"` lief auf einen Dateinamen, den es nicht gibt. Unter
+# `set -e` brach der Restore damit sofort ab — ausgerechnet das Skript fuer
+# den Ernstfall.
+log() { echo "[restore] $*" >&2; }
 die() { echo "[restore][FEHLER] $*" >&2; exit 1; }
 
+# --- Fundort einer Datei im Object Storage --------------------------------
+# Seit den Generationen liegen die Sicherungen unter daily/, weekly/ oder
+# monthly/; Altbestand von davor direkt im Wurzelverzeichnis. Aufrufer geben
+# weiterhin nur den Dateinamen an — auch das Dashboard kennt nur den.
+resolve_remote_path() {
+  local fn="$1"
+  rclone --config "$RCLONE_CONFIG_PATH" lsf -R --files-only "$REMOTE/" 2>/dev/null \
+    | grep -Fx -e "$fn" -e "daily/$fn" -e "weekly/$fn" -e "monthly/$fn" \
+    | head -1
+}
+
 if [ "$MODE" = "list" ]; then
+  # lsl ist rekursiv und zeigt daher den Generationen-Ordner im Pfad mit.
   rclone --config "$RCLONE_CONFIG_PATH" lsl "$REMOTE/" | sort -k4
   exit 0
 fi
@@ -51,9 +71,13 @@ fetch() {
   local fn="$1" tmp="$2"
   fn=$(basename "$fn")
   [[ "$fn" =~ ^[a-zA-Z0-9_.-]+\.age$ ]] || die "Ungueltiger Dateiname: $fn"
-  log "Lade $fn ..."
-  rclone --config "$RCLONE_CONFIG_PATH" copy "$REMOTE/$fn" "$tmp/" --quiet
-  age -d -i "$BACKUP_AGE_IDENTITY_FILE" -o "$tmp/${fn%.age}" "$tmp/$fn"
+  local path
+  path=$(resolve_remote_path "$fn")
+  [ -n "$path" ] || die "Datei liegt nicht im Object Storage: $fn (siehe: restore-script.sh list)"
+  log "Lade $path ..."
+  rclone --config "$RCLONE_CONFIG_PATH" copy "$REMOTE/$path" "$tmp/" --quiet
+  age -d -i "$BACKUP_AGE_IDENTITY_FILE" -o "$tmp/${fn%.age}" "$tmp/$fn" \
+    || die "Entschluesselung fehlgeschlagen. Passt BACKUP_AGE_IDENTITY_FILE zu dieser Datei?"
   echo "$tmp/${fn%.age}"
 }
 
@@ -63,7 +87,11 @@ case "$MODE" in
   globals)
     FN="${2:-}"
     if [ -z "$FN" ]; then
-      FN=$(rclone --config "$RCLONE_CONFIG_PATH" lsf "$REMOTE/" | grep '^globals_' | sort | tail -1)
+      # Ueber alle Generationen suchen und nach dem Zeitstempel IM DATEINAMEN
+      # sortieren, nicht nach dem Pfad — sonst gewaenne "weekly/" gegen ein
+      # neueres "daily/" allein wegen des Alphabets.
+      FN=$(rclone --config "$RCLONE_CONFIG_PATH" lsf -R --files-only "$REMOTE/" \
+             | sed 's#.*/##' | grep '^globals_' | sort -u | tail -1)
       [ -n "$FN" ] || die "Kein globals_*-Backup gefunden"
       log "Neuestes Globals-Backup: $FN"
     fi
@@ -102,7 +130,26 @@ case "$MODE" in
       docker exec core-postgres psql -U postgres -c \
         "REVOKE ALL ON DATABASE \"$DB\" FROM PUBLIC;" >/dev/null || true
     fi
-    log "Datenbank $DB wiederhergestellt."
+    # Nachsehen, ob wirklich etwas angekommen ist.
+    #
+    # Vorher meldete dieses Skript auch dann "wiederhergestellt." und endete
+    # mit Exitcode 0, wenn pg_restore nichts eingespielt hatte — die Datenbank
+    # war zu dem Zeitpunkt aber schon gedroppt und leer neu angelegt. Genau so
+    # sah der Ausgang aus, solange fetch() einen unbrauchbaren Pfad
+    # zurueckgab: Daten weg, Erfolgsmeldung da. Ein leerer Erfolg ist beim
+    # Restore der gefaehrlichste Ausgang ueberhaupt, weil er die Suche nach der
+    # Ursache beendet, bevor sie beginnt.
+    TABLES=$(docker exec core-postgres psql -U postgres -d "$DB" -tAc \
+      "SELECT count(*) FROM information_schema.tables
+        WHERE table_schema NOT IN ('pg_catalog','information_schema');" 2>/dev/null | tr -dc '0-9')
+    [ -n "$TABLES" ] || TABLES=0
+    if [ "$TABLES" -eq 0 ]; then
+      die "Restore von \"$DB\" hat KEINE Tabelle erzeugt.
+       Die Datenbank wurde vorher gedroppt und ist jetzt leer.
+       NICHT weitermachen — erst die Ausgabe von pg_restore oben pruefen.
+       Der Dump liegt noch entschluesselt unter: $PLAIN"
+    fi
+    log "Datenbank $DB wiederhergestellt ($TABLES Tabellen)."
     ;;
 
   config)

@@ -78,6 +78,15 @@ services:
       RCLONE_CONFIG: ${RCLONE_CONFIG}
       RCLONE_REMOTE_PATH: ${RCLONE_REMOTE_PATH}
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS}
+      # Backup-Ueberwachung (lib/backupHealth.ts): Totmannschalter, DR-Bundle,
+      # automatischer Restore-Test. Alle optional, Defaults stehen im Code —
+      # trotzdem durchgereicht, sonst haette ein Eintrag in der .env keinerlei
+      # Wirkung und niemand wuesste warum (siehe PLATFORM_DEFAULT_NODE_VERSION
+      # weiter unten, genau dieser Fall).
+      BACKUP_MAX_AGE_HOURS: ${BACKUP_MAX_AGE_HOURS:-}
+      BACKUP_RESTORE_TEST_INTERVAL_DAYS: ${BACKUP_RESTORE_TEST_INTERVAL_DAYS:-}
+      BACKUP_DR_BUNDLE_CONFIRMED_AT: ${BACKUP_DR_BUNDLE_CONFIRMED_AT:-}
+      BACKUP_DR_BUNDLE_MAX_AGE_DAYS: ${BACKUP_DR_BUNDLE_MAX_AGE_DAYS:-}
       STARTER_POSTGREST_MEM: ${STARTER_POSTGREST_MEM}
       STARTER_POSTGREST_CPUS: ${STARTER_POSTGREST_CPUS}
       STARTER_GOTRUE_MEM: ${STARTER_GOTRUE_MEM}
