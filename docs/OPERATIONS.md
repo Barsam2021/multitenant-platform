@@ -331,3 +331,15 @@ sein Ergebnis in die `backups`-Tabelle; im Dashboard steht es unter „Backups".
 Der wichtigste Satz zum Thema steht in [SETUP.md](../SETUP.md): ohne Off-Site-Kopie
 des age-Keys **und** der `.env` sind die Dateien im Object Storage unlesbare Bytes.
 Beide liegen sonst ausschließlich auf dem Server, gegen dessen Verlust gesichert wird.
+
+Bewertung des Ist-Zustands, offene Lücken und die geplanten Ausbaustufen (Totmann-
+schalter, automatischer Restore-Test, Generationen-Aufbewahrung) stehen in
+[BACKUP-PLAN.md](BACKUP-PLAN.md).
+
+---
+
+## Versionen & CVEs
+
+Noch nicht umgesetzt. Der Entwurf für die Versionsübersicht aller Plattform-Container
+und gehosteten Projekte samt täglichem Schwachstellen-Scan steht in
+[CVE-PLAN.md](CVE-PLAN.md).
