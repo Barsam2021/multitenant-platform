@@ -226,6 +226,56 @@ Exitcode: 0
    Erfolg ist beim Restore der gefährlichste Ausgang, weil er die Suche nach
    der Ursache beendet, bevor sie beginnt.
 
+### B-11 — Beim Löschen blieb jedes Mal eine Datei liegen  (Schwere: hoch)
+
+*Gefunden durch den Prüfstand zur Budget-Einhaltung.*
+
+Die Löschschleife für einen kompletten Lauf las die Pfadliste mit
+`while IFS= read -r p; do … done < <(printf '%s' "$paths" | tr ',' '\n')`.
+Die Liste endet ohne Zeilenumbruch, und `read` liefert für das letzte Feld
+zwar den Wert, gibt aber einen Fehlercode zurück — der Schleifenrumpf lief für
+dieses Feld nie. **Von jedem gelöschten Lauf blieb genau eine Datei liegen.**
+
+Das ist kein kosmetischer Fehler: Der Bestand wäre Nacht für Nacht um eine
+verwaiste Datei gewachsen, bis das Budget doch gerissen wäre — schleichend und
+ohne erkennbare Ursache.
+
+**Behoben:** `while IFS= read -r p || [ -n "$p" ]`. Zusätzlich löst eine
+teilweise fehlgeschlagene Löschung jetzt ein Neu-Einlesen des echten Bestands
+aus, statt mit einer zu niedrigen Belegungszahl weiterzurechnen.
+
+### B-12 — Die Budgetprüfung kam zu spät und schätzte  (Schwere: kritisch)
+
+*Aufgeworfen durch eine Rückfrage beim Review, bestätigt durch den Prüfstand.*
+
+Der erste Entwurf lud hoch und räumte **danach** auf. Zwischenzeitlich lagen
+alter Bestand und neuer Lauf gleichzeitig beim Anbieter — bei drei
+aufbewahrten Läufen zu je 3 GB kurzzeitig 12 GB. Für ein Gratiskontingent mit
+harter Grenze ist das wertlos.
+
+Der zweite Entwurf prüfte vorher, schätzte die Größe des kommenden Laufs aber
+aus dem jüngsten vorhandenen. War der selbst unvollständig — weil eine frühere
+Nacht abgebrochen war —, fiel die Schätzung beliebig zu klein aus. Der
+Prüfstand zeigte den Ausgang: Das Skript löschte den **letzten vollständigen
+Lauf**, um Platz für einen zu schaffen, der gar nicht hineinpasste, und ließ
+einen unvollständigen zurück.
+
+**Behoben durch einen zweistufigen Ablauf.** Phase 1 erzeugt und
+verschlüsselt alles lokal und misst die *echte* Größe. Phase 2 entscheidet
+damit ohne Schätzung: Passt der Lauf nicht ins Budget, bleibt alles unberührt
+und es gibt einen Alarm. Passt er, wird genau so viel Altbestand entfernt wie
+nötig — notfalls alles — und erst dann hochgeladen.
+
+Nachgewiesen mit einem Prüfstand, der nach **jedem** Upload die Gesamtgröße
+misst:
+
+| Szenario | Ergebnis |
+|---|---|
+| 6 Läufe, Budget 10 MB | 3 Läufe behalten (`KEEP_RUNS` greift), Maximum 9,0 MB |
+| 6 Läufe, Budget 4 MB | 1 Lauf behalten (Budget greift), Maximum 3,0 MB |
+| Budget kleiner als ein Lauf | nichts gelöscht, nichts hochgeladen, Alarm |
+| Budget im Betrieb gesenkt | konvergiert nach unten, kein Upload über der Grenze |
+
 ---
 
 ## 4. Zielbild

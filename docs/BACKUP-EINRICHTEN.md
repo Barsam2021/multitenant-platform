@@ -147,7 +147,6 @@ BACKUP_AGE_IDENTITY_FILE=/opt/multitenant-platform/backups/age-identity.txt
 BACKUP_RETENTION_DAYS=3
 BACKUP_RETENTION_MODE=count
 BACKUP_KEEP_RUNS=3
-BACKUP_MIN_KEEP_RUNS=2
 BACKUP_MAX_TOTAL_BYTES=9000000000
 
 # Überwachung
@@ -166,10 +165,16 @@ Kommt der vierte dazu, fällt der älteste weg — vollständig, nie nur einzeln
 Dateien. Ein Lauf ohne seine Globals wäre im Ernstfall wertlos und sähe
 trotzdem wie ein Backup aus.
 
-Zusätzlich greift `BACKUP_MAX_TOTAL_BYTES` (9 GB, bewusst unter den 10 GB von
-R2). Wächst deine Datenmenge, werden auch bei nur 3 Läufen weitere fallen
-gelassen, bis es wieder passt — aber nie unter `BACKUP_MIN_KEEP_RUNS`. Lieber
-einmal über Budget **mit Alarm** als am Ende mit nur einer einzigen Kopie.
+`BACKUP_MAX_TOTAL_BYTES` (9 GB, bewusst unter den 10 GB von R2) ist eine
+**harte Grenze** — sie wird nie überschritten, auch nicht kurzzeitig während
+des Hochladens. Der Ablauf ist bewusst zweistufig: erst wird der ganze Lauf
+lokal erzeugt und gemessen, dann wird beim Anbieter so viel weggeräumt wie
+nötig, und erst danach wird hochgeladen.
+
+Wächst deine Datenmenge, bleiben eben weniger Läufe übrig: erst 2, dann 1.
+Passt nicht einmal ein einzelner Lauf hinein, bleibt der bisherige Bestand
+**unangetastet** und du bekommst eine Mail — dann ist Handeln gefragt statt
+stillem Löschen.
 
 Die Rechnung:
 

@@ -338,12 +338,13 @@ Für die Aufbewahrung beim Anbieter gibt es zwei Modelle, umgeschaltet über
 - **`generations`** (Standard) — `daily/` (7 Tage), `weekly/` sonntags
   (28 Tage), `monthly/` am Monatsersten (180 Tage). Lange Rückschau, wächst
   mit der Zeit. Für bezahlten Speicher.
-- **`count`** — die letzten `BACKUP_KEEP_RUNS` Läufe, zusätzlich gedeckelt
-  durch `BACKUP_MAX_TOTAL_BYTES`. Für ein festes Gratiskontingent. Gelöscht
-  wird immer ein vollständiger Lauf, nie eine einzelne Datei. Reicht das
-  Budget selbst bei `BACKUP_MIN_KEEP_RUNS` Läufen nicht, wird **nicht** weiter
-  gelöscht, sondern alarmiert — zu wenige Kopien sind das größere Risiko als
-  eine Rechnung.
+- **`count`** — die letzten `BACKUP_KEEP_RUNS` Läufe, hart gedeckelt durch
+  `BACKUP_MAX_TOTAL_BYTES`. Für ein festes Gratiskontingent. Der Lauf wird
+  erst vollständig lokal erzeugt und gemessen, dann wird aufgeräumt, dann
+  hochgeladen — die Grenze wird deshalb auch während des Uploads nie
+  überschritten. Gelöscht wird immer ein vollständiger Lauf, nie eine einzelne
+  Datei. Passt der neue Lauf nicht einmal allein ins Budget, bleibt der
+  Bestand unangetastet und es gibt einen Alarm.
 
 Beim Restore genügt in beiden Fällen der reine Dateiname; das Skript sucht ihn
 in allen Ordnern.

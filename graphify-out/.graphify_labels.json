@@ -33,7 +33,7 @@
   "31": "backupHealth.ts",
   "32": "Docker Stats Monitoring",
   "33": "devDependencies",
-  "34": "ConfirmDialog",
+  "34": "env/page.tsx",
   "35": "Provisioning Agent TS Config",
   "36": "Versions- und CVE-Übersicht",
   "37": "Projects List UI",
@@ -55,7 +55,7 @@
   "53": "scripts",
   "54": "Smoke Test Script",
   "55": "restore-script.sh",
-  "56": "ProjectContext.tsx",
+  "56": "cms service",
   "57": "CMS ESLint Config",
   "58": "5. Umsetzung im Agent",
   "59": "Dashboard ESLint Config",
@@ -126,5 +126,8 @@
   "124": "Traefik Proxy Compose",
   "125": "7. Phasen",
   "126": "23_backups_status.sql",
-  "127": "minio"
+  "127": "Setup Guide",
+  "128": "docs/GRAPHIFY.md",
+  "129": "next",
+  "130": "traefik service"
 }

@@ -114,8 +114,140 @@ record_backup() {
     || log "WARNUNG: backups-Zeile fuer $db konnte nicht geschrieben werden"
 }
 
-# Verschluesselt + laedt hoch + protokolliert. $1=Quelldatei $2=Logischer Name
-encrypt_and_upload() {
+# ===========================================================================
+# Speicherbudget (nur bei BACKUP_RETENTION_MODE=count)
+# ===========================================================================
+# Das Budget ist eine HARTE Obergrenze. Deshalb wird aufgeraeumt, BEVOR etwas
+# hochgeladen wird — nicht danach.
+#
+# Der Unterschied ist nicht theoretisch: Bei "erst hochladen, dann aufraeumen"
+# liegen zwischenzeitlich der alte Bestand UND der neue Lauf beim Anbieter.
+# Bei 3 aufbewahrten Laeufen zu je 3 GB waeren das kurzzeitig 12 GB — das
+# Gratiskontingent waere gesprengt, und zwar genau in dem Moment, in dem
+# niemand hinsieht (03:00). Aufgeraeumt wird deshalb vorher, und vor jeder
+# einzelnen Datei wird erneut geprueft.
+#
+# Reihenfolge der Zusicherungen, wenn es eng wird:
+#   1. Das Budget wird nie ueberschritten. Harte Grenze, ohne Ausnahme.
+#   2. Passt der neue Lauf nicht einmal allein hinein, bleibt ALLES unberuehrt:
+#      nichts geloescht, nichts hochgeladen, dafuer ein Alarm. Ein halb
+#      hochgeladener Lauf, fuer den die alten Kopien geopfert wurden, waere
+#      der schlechteste aller Ausgaenge.
+#   3. Passt er, wird so viel Altbestand entfernt wie noetig — notfalls alles.
+#      Dann gibt es eben nur noch eine Kopie; das ist die bewusste Entscheidung
+#      zugunsten der harten Grenze.
+#   4. Erst danach zaehlt BACKUP_KEEP_RUNS als Obergrenze.
+MAX_TOTAL_BYTES="${BACKUP_MAX_TOTAL_BYTES:-9000000000}"
+KEEP_RUNS="${BACKUP_KEEP_RUNS:-3}"
+REMOTE_USED=0
+RUNS_FILE="$WORK_DIR/remote-runs.tsv"
+
+# Bestand beim Anbieter einlesen und nach Laeufen gruppieren.
+# Ein Lauf = alle Dateien mit demselben Zeitstempel im Namen.
+# Ausgabe je Zeile: <zeitstempel>\t<bytes>\t<pfad1,pfad2,...>, neueste zuerst.
+refresh_remote_state() {
+  : > "$RUNS_FILE"
+  if ! rclone --config "$RCLONE_CONFIG_PATH" lsjson -R --files-only "$REMOTE/" \
+       > "$WORK_DIR/listing.json" 2>/dev/null; then
+    log "WARNUNG: Bestand beim Anbieter nicht abrufbar."
+    return 1
+  fi
+  python3 - "$WORK_DIR/listing.json" > "$RUNS_FILE" << 'PYRUNS'
+import json, re, sys
+try:
+    files = json.load(open(sys.argv[1]))
+except Exception:
+    files = []
+runs = {}
+for f in files:
+    name = f.get("Name", "")
+    if not name.endswith(".age"):
+        continue
+    m = re.search(r"(\d{8}-\d{6})", name)
+    key = m.group(1) if m else name
+    run = runs.setdefault(key, {"size": 0, "paths": []})
+    run["size"] += int(f.get("Size") or 0)
+    run["paths"].append(f.get("Path"))
+for key in sorted(runs, reverse=True):          # neuester Lauf zuerst
+    print("%s\t%d\t%s" % (key, runs[key]["size"], ",".join(runs[key]["paths"])))
+PYRUNS
+  REMOTE_USED=$(awk -F'\t' '{s+=$2} END {print s+0}' "$RUNS_FILE")
+  return 0
+}
+
+runs_count() { wc -l < "$RUNS_FILE" | tr -d ' '; }
+
+# Entfernt den aeltesten Lauf vollstaendig. Nie einzelne Dateien: ein Lauf ohne
+# seine Globals oder ohne MinIO waere im Ernstfall wertlos und saehe trotzdem
+# wie ein Backup aus.
+delete_oldest_run() {
+  local line ts size paths
+  line=$(tail -n 1 "$RUNS_FILE")
+  [ -n "$line" ] || return 1
+  ts=$(printf '%s' "$line" | cut -f1)
+  size=$(printf '%s' "$line" | cut -f2)
+  paths=$(printf '%s' "$line" | cut -f3)
+
+  # `|| [ -n "$p" ]` ist hier zwingend, nicht Stilfrage: die Pfadliste endet
+  # ohne Zeilenumbruch, und `read` liefert fuer das letzte Feld zwar den Wert,
+  # gibt aber einen Fehlercode zurueck. Ohne den Zusatz bliebe von JEDEM
+  # geloeschten Lauf genau eine Datei liegen — der Speicher waere Nacht fuer
+  # Nacht weiter gewachsen, bis das Budget doch gerissen waere.
+  local p fehler=0
+  while IFS= read -r p || [ -n "$p" ]; do
+    [ -n "$p" ] || continue
+    if ! rclone --config "$RCLONE_CONFIG_PATH" deletefile "$REMOTE/$p" --quiet 2>/dev/null; then
+      log "WARNUNG: konnte $p nicht loeschen"
+      fehler=1
+    fi
+  done < <(printf '%s' "$paths" | tr ',' '\n')
+
+  sed -i '$d' "$RUNS_FILE"
+
+  if [ "$fehler" -eq 1 ]; then
+    # Konnte nicht alles geloescht werden, ist die mitgefuehrte Belegung zu
+    # niedrig — und eine zu niedrige Schaetzung ist genau der Weg, auf dem das
+    # Budget doch gerissen wird. Also den echten Stand neu holen.
+    log "Teilweise fehlgeschlagene Loeschung — Bestand wird neu eingelesen."
+    refresh_remote_state || true
+  else
+    REMOTE_USED=$((REMOTE_USED - size))
+  fi
+
+  log "Aeltesten Lauf entfernt: $ts (+$((size / 1024 / 1024)) MB frei)"
+  return 0
+}
+
+# Vor dem ersten Dump nur den Bestand einlesen. Aufgeraeumt wird spaeter, wenn
+# die ECHTE Groesse des neuen Laufs feststeht — eine Schaetzung war hier der
+# falsche Weg: sie stuetzte sich auf den juengsten Lauf, und war der selbst
+# unvollstaendig (weil eine fruehere Nacht abgebrochen war), fiel sie
+# beliebig zu klein aus. Das Skript loeschte daraufhin den letzten
+# vollstaendigen Lauf, um Platz fuer einen zu schaffen, der gar nicht
+# hineinpasste.
+preflight_budget() {
+  refresh_remote_state || { log "Budgetpruefung uebersprungen."; return 0; }
+  log "Bestand: $(runs_count) Lauf/Laeufe, $((REMOTE_USED / 1024 / 1024)) MB von $((MAX_TOTAL_BYTES / 1024 / 1024)) MB."
+  return 0
+}
+
+# ===========================================================================
+# Zweistufig: erst alles erzeugen, dann alles hochladen
+# ===========================================================================
+# Frueher wurde jedes Artefakt sofort nach dem Dump hochgeladen. Damit war die
+# Gesamtgroesse des Laufs erst bekannt, wenn er schon halb beim Anbieter lag —
+# und eine harte Obergrenze laesst sich so nicht einhalten, ohne mittendrin
+# abzubrechen.
+#
+# Jetzt: Phase 1 erzeugt und verschluesselt alles lokal und misst dabei die
+# echte Groesse. Phase 2 raeumt genau so viel weg, wie noetig ist, und laedt
+# dann hoch. Kein Schaetzen, kein halb hochgeladener Lauf, keine Loeschung auf
+# Verdacht.
+STAGED="$WORK_DIR/staged.tsv"
+: > "$STAGED"
+
+# Verschluesselt und legt zum Upload bereit. $1=Quelldatei $2=Logischer Name
+stage_artifact() {
   local src="$1" label="$2"
   local enc="${src}.age"
   if ! age -r "$BACKUP_AGE_PUBLIC_KEY" -o "$enc" "$src"; then
@@ -126,17 +258,103 @@ encrypt_and_upload() {
   rm -f "$src"
   local size
   size=$(stat -c%s "$enc" 2>/dev/null || stat -f%z "$enc")
-  log "Upload $(basename "$enc") -> ${GENERATION:-/} (${size} bytes)"
-  if rclone --config "$RCLONE_CONFIG_PATH" copy "$enc" "$REMOTE_TARGET/" --quiet; then
-    mv "$enc" "$BACKUP_DIR/"
-    record_backup "$label" "$(basename "$enc")" "$size" "ok"
-    return 0
-  fi
-  fail "$label: Upload nach $REMOTE fehlgeschlagen"
-  mv "$enc" "$BACKUP_DIR/" 2>/dev/null || true
-  record_backup "$label" "$(basename "$enc")" "$size" "upload_failed"
-  return 1
+  printf '%s\t%s\t%s\n' "$label" "$enc" "$size" >> "$STAGED"
+  log "Bereit: $(basename "$enc") (${size} bytes)"
+  return 0
 }
+
+# Legt die bereitgestellten Dateien lokal ab, ohne sie hochzuladen. Fuer den
+# Fall, dass das Budget den Upload verbietet: die Sicherung ist dann wenigstens
+# auf dem Server vorhanden, statt ersatzlos verworfen zu werden.
+keep_staged_locally() {
+  local status="$1" label enc size
+  while IFS=$'\t' read -r label enc size; do
+    [ -n "$label" ] || continue
+    mv "$enc" "$BACKUP_DIR/" 2>/dev/null || true
+    record_backup "$label" "$(basename "$enc")" "$size" "$status"
+  done < "$STAGED"
+}
+
+# Phase 2: Platz schaffen (nur count-Modus), dann hochladen.
+flush_uploads() {
+  local gesamt
+  gesamt=$(awk -F'\t' '{s+=$3} END {print s+0}' "$STAGED")
+  [ "$gesamt" -gt 0 ] || { log "Nichts hochzuladen."; return 0; }
+  log "Neuer Lauf: $((gesamt / 1024 / 1024)) MB in $(wc -l < "$STAGED" | tr -d ' ') Dateien."
+
+  if [ "$RETENTION_MODE" = "count" ]; then
+    # 1. Passt der Lauf ueberhaupt? Wenn nicht, bleibt ALLES wie es ist.
+    if [ "$gesamt" -gt "$MAX_TOTAL_BYTES" ]; then
+      fail "Der Lauf ($((gesamt / 1024 / 1024)) MB) passt nicht in das Budget von $((MAX_TOTAL_BYTES / 1024 / 1024)) MB"
+      send_alert "Backup passt nicht ins Speicherbudget" \
+"Der Lauf braucht $((gesamt / 1024 / 1024)) MB, BACKUP_MAX_TOTAL_BYTES liegt bei
+$((MAX_TOTAL_BYTES / 1024 / 1024)) MB.
+
+Es wurde NICHTS geloescht und NICHTS hochgeladen — der bisherige Bestand beim
+Anbieter ist unveraendert erhalten. Ein halb hochgeladener Lauf, fuer den die
+alten Kopien geopfert wurden, waere der schlechteste aller Ausgaenge.
+
+Die Sicherung liegt lokal unter $BACKUP_DIR und ist NICHT off-site.
+
+Moeglichkeiten:
+  - BACKUP_MAX_TOTAL_BYTES anheben (kostet beim Anbieter Geld)
+  - Datenmenge senken; meist ist der MinIO-Spiegel der groesste Posten:
+      docker exec provisioning-agent mc du localminio"
+      keep_staged_locally "upload_failed"
+      return 1
+    fi
+
+    # 2. Auf KEEP_RUNS-1 alte Laeufe kuerzen — der neue kommt ja dazu.
+    while [ "$(runs_count)" -gt $((KEEP_RUNS - 1)) ]; do
+      delete_oldest_run || break
+    done
+
+    # 3. Platz schaffen, solange noch etwas zum Loeschen da ist. Der letzte
+    #    verbliebene Lauf wird zuletzt geopfert — und nur, weil in Schritt 1
+    #    bereits feststeht, dass der neue Lauf danach wirklich hineinpasst.
+    while [ $((REMOTE_USED + gesamt)) -gt "$MAX_TOTAL_BYTES" ] && [ "$(runs_count)" -gt 0 ]; do
+      delete_oldest_run || break
+    done
+
+    if [ $((REMOTE_USED + gesamt)) -gt "$MAX_TOTAL_BYTES" ]; then
+      # Kann nach Schritt 1 eigentlich nicht eintreten. Wenn doch (eine
+      # Loeschung ist fehlgeschlagen), lieber gar nicht hochladen.
+      fail "Platz reicht trotz Aufraeumen nicht — Upload unterbleibt"
+      keep_staged_locally "upload_failed"
+      return 1
+    fi
+
+    if [ "$(runs_count)" -eq 0 ]; then
+      log "HINWEIS: Nach diesem Lauf gibt es nur noch EINE Kopie beim Anbieter."
+    fi
+  fi
+
+  local label enc size
+  while IFS=$'\t' read -r label enc size; do
+    [ -n "$label" ] || continue
+    log "Upload $(basename "$enc") -> ${GENERATION:-/}"
+    if rclone --config "$RCLONE_CONFIG_PATH" copy "$enc" "$REMOTE_TARGET/" --quiet; then
+      mv "$enc" "$BACKUP_DIR/"
+      record_backup "$label" "$(basename "$enc")" "$size" "ok"
+      REMOTE_USED=$((REMOTE_USED + size))
+    else
+      fail "$label: Upload nach $REMOTE fehlgeschlagen"
+      mv "$enc" "$BACKUP_DIR/" 2>/dev/null || true
+      record_backup "$label" "$(basename "$enc")" "$size" "upload_failed"
+    fi
+  done < "$STAGED"
+  return 0
+}
+
+# --- 0. Budget pruefen und Platz schaffen ---------------------------------
+# Steht bewusst VOR jedem Dump: passt der Lauf nicht, soll das auffallen,
+# bevor eine Stunde lang Daten gewaelzt werden.
+if [ "$RETENTION_MODE" = "count" ]; then
+  if ! preflight_budget; then
+    log "Abbruch: Speicherbudget reicht nicht. Bestand unveraendert."
+    exit 1
+  fi
+fi
 
 # --- 1. Globals -----------------------------------------------------------
 # P0-5(c): Rollen (authenticator_* mit Passwoertern, anon_*/authenticated_*/
@@ -145,7 +363,7 @@ encrypt_and_upload() {
 log "Dumping Globals (Rollen)..."
 if docker exec core-postgres pg_dumpall -U postgres --globals-only \
      | gzip > "$WORK_DIR/globals_${TIMESTAMP}.sql.gz"; then
-  encrypt_and_upload "$WORK_DIR/globals_${TIMESTAMP}.sql.gz" "globals"
+  stage_artifact "$WORK_DIR/globals_${TIMESTAMP}.sql.gz" "globals"
 else
   fail "pg_dumpall --globals-only fehlgeschlagen"
   record_backup "globals" "-" 0 "dump_failed"
@@ -160,7 +378,7 @@ DBS=$(docker exec core-postgres psql -U postgres -tAc \
 for db in $DBS; do
   log "Dumping $db..."
   if docker exec core-postgres pg_dump -U postgres -Fc "$db" > "$WORK_DIR/${db}_${TIMESTAMP}.dump"; then
-    encrypt_and_upload "$WORK_DIR/${db}_${TIMESTAMP}.dump" "$db"
+    stage_artifact "$WORK_DIR/${db}_${TIMESTAMP}.dump" "$db"
   else
     fail "pg_dump fehlgeschlagen fuer $db"
     record_backup "$db" "-" 0 "dump_failed"
@@ -176,7 +394,7 @@ if docker exec provisioning-agent mc alias set localminio http://core-minio:9000
       "rm -rf /tmp/minio-mirror && mkdir -p /tmp/minio-mirror && mc mirror --quiet localminio /tmp/minio-mirror" \
    && docker exec provisioning-agent tar czf - -C /tmp minio-mirror > "$WORK_DIR/minio_${TIMESTAMP}.tar.gz"; then
   docker exec provisioning-agent rm -rf /tmp/minio-mirror >/dev/null 2>&1 || true
-  encrypt_and_upload "$WORK_DIR/minio_${TIMESTAMP}.tar.gz" "minio"
+  stage_artifact "$WORK_DIR/minio_${TIMESTAMP}.tar.gz" "minio"
 else
   docker exec provisioning-agent rm -rf /tmp/minio-mirror >/dev/null 2>&1 || true
   fail "MinIO-Spiegelung fehlgeschlagen"
@@ -194,13 +412,18 @@ CONFIG_PATHS=(".env")
 [ -d traefik/dynamic ]     && CONFIG_PATHS+=("traefik/dynamic")
 [ -d kunden-instances ]    && CONFIG_PATHS+=("kunden-instances")
 if tar czf "$WORK_DIR/config_${TIMESTAMP}.tar.gz" -C "$ROOT" "${CONFIG_PATHS[@]}" 2>/dev/null; then
-  encrypt_and_upload "$WORK_DIR/config_${TIMESTAMP}.tar.gz" "config"
+  stage_artifact "$WORK_DIR/config_${TIMESTAMP}.tar.gz" "config"
 else
   fail "Config-Archiv fehlgeschlagen"
   record_backup "config" "-" 0 "dump_failed"
 fi
 
-# --- 5. Retention ---------------------------------------------------------
+# --- 5. Hochladen ---------------------------------------------------------
+# Erst hier verlaesst irgendetwas den Server. Vorher steht die exakte Groesse
+# des Laufs fest, und genau darauf stuetzt sich die Budgetentscheidung.
+flush_uploads || true
+
+# --- 6. Retention ---------------------------------------------------------
 find "$BACKUP_DIR" -maxdepth 1 -name "*.age" -mtime +"$RETENTION_DAYS" -delete 2>/dev/null || true
 
 # Jede Generation raeumt sich selbst auf.
@@ -218,119 +441,7 @@ prune_generation() {
     || log "WARNUNG: Retention fuer $gen fehlgeschlagen"
 }
 
-# Zaehl- und budgetbasierte Aufbewahrung.
-#
-# Ein "Lauf" ist alles, was ein naechtlicher Durchgang erzeugt: Globals, jede
-# Datenbank, MinIO, Config. Alle diese Dateien tragen denselben Zeitstempel im
-# Namen — daran werden sie gruppiert. Geloescht wird immer ein VOLLSTAENDIGER
-# Lauf, nie eine einzelne Datei: ein Lauf ohne seine Globals oder ohne MinIO
-# waere im Ernstfall wertlos und wuerde trotzdem wie ein Backup aussehen.
-#
-# Zwei Grenzen, die zusammenwirken:
-#   BACKUP_KEEP_RUNS      wie viele Laeufe hoechstens
-#   BACKUP_MAX_TOTAL_BYTES wie viel Platz sie hoechstens belegen duerfen
-#
-# Die zweite ist die wichtigere, wenn ein Gratiskontingent eingehalten werden
-# soll: waechst die Datenmenge, reichen "die letzten 3" irgendwann nicht mehr,
-# um unter 10 GB zu bleiben. Dann werden weitere Laeufe fallengelassen — aber
-# nie unter BACKUP_MIN_KEEP_RUNS. Lieber ueber dem Budget und mit Alarm als mit
-# nur noch einer einzigen Kopie.
-prune_by_count_and_budget() {
-  local keep_runs="${BACKUP_KEEP_RUNS:-3}"
-  local min_keep="${BACKUP_MIN_KEEP_RUNS:-2}"
-  local max_bytes="${BACKUP_MAX_TOTAL_BYTES:-9000000000}"
-  local listing="$WORK_DIR/remote-listing.json"
-
-  if ! rclone --config "$RCLONE_CONFIG_PATH" lsjson -R --files-only "$REMOTE/" \
-       > "$listing" 2>/dev/null; then
-    log "WARNUNG: Bestand nicht abrufbar — Aufbewahrung uebersprungen"
-    return 0
-  fi
-
-  local plan
-  plan=$(python3 - "$listing" "$keep_runs" "$min_keep" "$max_bytes" << 'PYPRUNE'
-import json, re, sys
-
-listing, keep_runs, min_keep, max_bytes = sys.argv[1:5]
-keep_runs, min_keep, max_bytes = int(keep_runs), int(min_keep), int(max_bytes)
-
-try:
-    files = json.load(open(listing))
-except Exception:
-    files = []
-
-# Nach Lauf gruppieren. Der Zeitstempel im Dateinamen (YYYYMMDD-HHMMSS) wird
-# einmal pro Durchgang gesetzt und ist damit die Lauf-Kennung.
-runs = {}
-for f in files:
-    name = f.get("Name", "")
-    if not name.endswith(".age"):
-        continue
-    m = re.search(r"(\d{8}-\d{6})", name)
-    key = m.group(1) if m else name
-    run = runs.setdefault(key, {"size": 0, "paths": []})
-    run["size"] += int(f.get("Size") or 0)
-    run["paths"].append(f.get("Path"))
-
-order = sorted(runs, reverse=True)          # neuester Lauf zuerst
-keep, drop = order[:keep_runs], order[keep_runs:]
-
-def total(keys):
-    return sum(runs[k]["size"] for k in keys)
-
-# Ueber Budget? Dann die aeltesten behaltenen Laeufe nachtraeglich fallen
-# lassen — bis zur Untergrenze, nicht darunter.
-while total(keep) > max_bytes and len(keep) > min_keep:
-    drop.append(keep.pop())
-
-for k in drop:
-    for path in runs[k]["paths"]:
-        print("DEL\t%s" % path)
-
-print("STATS\t%d\t%d\t%d" % (len(keep), total(keep), len(drop)))
-print("OVER\t%d" % (1 if total(keep) > max_bytes else 0))
-PYPRUNE
-  ) || { log "WARNUNG: Aufbewahrung konnte nicht berechnet werden"; return 0; }
-
-  local deleted=0
-  while IFS=$'\t' read -r kind a b c; do
-    case "$kind" in
-      DEL)
-        if rclone --config "$RCLONE_CONFIG_PATH" deletefile "$REMOTE/$a" --quiet 2>/dev/null; then
-          deleted=$((deleted+1))
-        else
-          log "WARNUNG: konnte $a nicht loeschen"
-        fi
-        ;;
-      STATS)
-        log "Aufbewahrung: $a Laeufe behalten ($(( b / 1024 / 1024 )) MB), $c Laeufe entfernt."
-        ;;
-      OVER)
-        if [ "$a" = "1" ]; then
-          send_alert "Backup-Speicher ueber Budget" \
-"Der Bestand im Object Storage liegt ueber ${max_bytes} Bytes, obwohl nur noch
-die Mindestzahl von ${min_keep} Laeufen aufbewahrt wird.
-
-Weiter zu loeschen waere gefaehrlich — dann bliebe zu wenig uebrig, um einen
-Fehler zu ueberstehen, der erst spaeter auffaellt.
-
-Moeglichkeiten:
-  - BACKUP_MAX_TOTAL_BYTES anheben (kostet beim Anbieter Geld)
-  - BACKUP_KEEP_RUNS senken
-  - Datenmenge pruefen: meist ist der MinIO-Spiegel der groesste Posten
-    docker exec provisioning-agent mc du localminio"
-        fi
-        ;;
-    esac
-  done <<< "$plan"
-
-  [ "$deleted" -gt 0 ] && log "$deleted Datei(en) beim Anbieter geloescht."
-  return 0
-}
-
-if [ "$RETENTION_MODE" = "count" ]; then
-  prune_by_count_and_budget
-else
+if [ "$RETENTION_MODE" != "count" ]; then
   prune_generation daily   "${BACKUP_DAILY_RETENTION_DAYS:-7}"
   prune_generation weekly  "${BACKUP_WEEKLY_RETENTION_DAYS:-28}"
   prune_generation monthly "${BACKUP_MONTHLY_RETENTION_DAYS:-180}"
@@ -343,9 +454,11 @@ else
       --min-age "${BACKUP_REMOTE_RETENTION_DAYS}d" --max-depth 1 --quiet \
       || log "WARNUNG: Remote-Retention (Altbestand) fehlgeschlagen"
   fi
+else
+  log "Speicherbelegung nach dem Lauf: $((REMOTE_USED / 1024 / 1024)) MB von $((MAX_TOTAL_BYTES / 1024 / 1024)) MB."
 fi
 
-# --- 6. Ergebnis ----------------------------------------------------------
+# --- 7. Ergebnis ----------------------------------------------------------
 if [ "$FAILED" -eq 1 ]; then
   log "Backup mit Fehlern abgeschlossen."
   send_alert "Backup FEHLGESCHLAGEN ($TIMESTAMP)" \
