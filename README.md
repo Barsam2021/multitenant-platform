@@ -84,6 +84,7 @@ Punkte: [docs/CMS-PLAN.md](./docs/CMS-PLAN.md).
 | [SETUP.md](./SETUP.md) | Einrichtung von 0 auf einem frischen Server, Schritt für Schritt |
 | [docs/OPERATIONS.md](./docs/OPERATIONS.md) | Betrieb: diagnostizieren, prüfen, reparieren. Die Befehle, die im Ernstfall gebraucht werden |
 | [docs/CMS-PLAN.md](./docs/CMS-PLAN.md) | Entwurf des CMS-Moduls samt Begründungen und Stand der Umsetzung |
+| [docs/GRAPHIFY.md](./docs/GRAPHIFY.md) | Wissensgraph des Repos (graphify): was im Repo liegt, Einrichtung, Abfragen |
 
 ## Lokal/auf eigenem Server ausprobieren
 
