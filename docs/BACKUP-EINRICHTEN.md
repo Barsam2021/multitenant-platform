@@ -322,6 +322,11 @@ Zum Schluss im Dashboard unter **Backups** nachsehen: Oben steht das Panel
 
 ---
 
+> Damit ist die Einrichtung fertig. Der zweite Teil — **beweisen, dass es auch
+> im Ernstfall trägt** — steht in [BACKUP-TESTPLAN.md](BACKUP-TESTPLAN.md):
+> neun Tests, unter anderem für das Entschlüsseln des DR-Bundles und für die
+> Speichergrenze.
+
 ## Ab jetzt läuft es allein
 
 | Wann | Was |

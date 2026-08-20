@@ -368,6 +368,9 @@ Beide liegen sonst ausschließlich auf dem Server, gegen dessen Verlust gesicher
 
 Noch gar nichts eingerichtet? Schritt-für-Schritt von null bis zur ersten
 geprüften Off-Site-Sicherung: [BACKUP-EINRICHTEN.md](BACKUP-EINRICHTEN.md).
+Abnahme in neun Tests — inklusive der Kniffe, mit denen sich die
+zeitgesteuerten Alarme sofort auslösen lassen:
+[BACKUP-TESTPLAN.md](BACKUP-TESTPLAN.md).
 
 Wie dieser Stand zustande kam, welche Fehler dabei gefunden wurden und was
 bewusst offen blieb: [BACKUP-PLAN.md](BACKUP-PLAN.md).
