@@ -85,6 +85,7 @@ export default function BackupsPage() {
   const [restoreResult, setRestoreResult] = useState<Record<string, RestoreResultEntry>>({});
   const [restoreTarget, setRestoreTarget] = useState<string | null>(null);
   const [remote, setRemote] = useState<RemoteFile[] | null>(null);
+  const [remoteBudget, setRemoteBudget] = useState<number>(0);
   const [remoteError, setRemoteError] = useState<string | null>(null);
   const toast = useToast();
 
@@ -117,6 +118,7 @@ export default function BackupsPage() {
         }
         setRemoteError(null);
         setRemote(d.files || []);
+        setRemoteBudget(Number(d.budgetBytes) || 0);
       })
       .catch(() => setRemoteError("Object Storage nicht erreichbar"));
   }, []);
@@ -257,6 +259,32 @@ export default function BackupsPage() {
                   {remote.length} Dateien · {formatBytes(remote.reduce((sum, f) => sum + f.size, 0))} ·
                   neueste {new Date(remote[0].modTime).toLocaleString("de-DE")}
                 </span>
+                {remoteBudget > 0 &&
+                  (() => {
+                    // Auslastung des Speicherbudgets. Ab 90 % wird es rot: bei
+                    // einem Gratiskontingent ist das die Grenze, ab der die
+                    // naechste Sicherung Geld kostet oder scheitert.
+                    const used = remote.reduce((sum, f) => sum + f.size, 0);
+                    const pct = Math.min(100, Math.round((used / remoteBudget) * 100));
+                    const color = pct >= 90 ? "var(--danger)" : pct >= 75 ? "#bf8700" : "#2da44e";
+                    return (
+                      <div style={{ marginTop: 8 }}>
+                        <div
+                          style={{
+                            height: 6,
+                            borderRadius: 3,
+                            background: "var(--border)",
+                            overflow: "hidden",
+                          }}
+                        >
+                          <div style={{ width: `${pct}%`, height: "100%", background: color }} />
+                        </div>
+                        <div style={{ marginTop: 4, color }}>
+                          {pct}% von {formatBytes(remoteBudget)} belegt
+                        </div>
+                      </div>
+                    );
+                  })()}
                 <div style={{ marginTop: 6, display: "flex", gap: 12, flexWrap: "wrap" }}>
                   {["daily", "weekly", "monthly", ""].map((gen) => {
                     const files = remote.filter((f) => f.generation === gen);

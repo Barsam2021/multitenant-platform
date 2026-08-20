@@ -332,9 +332,21 @@ nicht geprüft wurde, und schreibt das Ergebnis als eigene Zeile in die
 `backups`-Tabelle (`restore_test_ok` / `restore_test_failed`). Im Dashboard steht
 es unter „Backups" zwischen den Sicherungen, chronologisch an der richtigen Stelle.
 
-Die Sicherungen liegen beim Anbieter in drei Generationen — `daily/` (7 Tage),
-`weekly/` sonntags (28 Tage), `monthly/` am Monatsersten (180 Tage). Beim Restore
-genügt weiterhin der reine Dateiname; das Skript sucht ihn in allen dreien.
+Für die Aufbewahrung beim Anbieter gibt es zwei Modelle, umgeschaltet über
+`BACKUP_RETENTION_MODE`:
+
+- **`generations`** (Standard) — `daily/` (7 Tage), `weekly/` sonntags
+  (28 Tage), `monthly/` am Monatsersten (180 Tage). Lange Rückschau, wächst
+  mit der Zeit. Für bezahlten Speicher.
+- **`count`** — die letzten `BACKUP_KEEP_RUNS` Läufe, zusätzlich gedeckelt
+  durch `BACKUP_MAX_TOTAL_BYTES`. Für ein festes Gratiskontingent. Gelöscht
+  wird immer ein vollständiger Lauf, nie eine einzelne Datei. Reicht das
+  Budget selbst bei `BACKUP_MIN_KEEP_RUNS` Läufen nicht, wird **nicht** weiter
+  gelöscht, sondern alarmiert — zu wenige Kopien sind das größere Risiko als
+  eine Rechnung.
+
+Beim Restore genügt in beiden Fällen der reine Dateiname; das Skript sucht ihn
+in allen Ordnern.
 
 Der Agent überwacht das Ganze täglich und alarmiert per Mail, wenn
 

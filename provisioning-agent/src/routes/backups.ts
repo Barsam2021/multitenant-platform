@@ -156,6 +156,8 @@ backupsRouter.get('/backups/remote', async (_req, res) => {
     res.json({
       files,
       totalBytes: files.reduce((sum, f) => sum + f.size, 0),
+      // 0 = kein Budget gesetzt; das Dashboard blendet die Auslastung dann aus.
+      budgetBytes: Number(process.env.BACKUP_MAX_TOTAL_BYTES || 0),
     });
   } catch (err: any) {
     // Bewusst 502 und nicht 500: der Agent ist gesund, der Object Storage

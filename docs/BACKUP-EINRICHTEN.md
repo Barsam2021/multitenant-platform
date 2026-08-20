@@ -143,11 +143,12 @@ RCLONE_REMOTE_PATH=r2:multitenant-backup
 BACKUP_AGE_PUBLIC_KEY=age1ql3z7hjy54pw3...
 BACKUP_AGE_IDENTITY_FILE=/opt/multitenant-platform/backups/age-identity.txt
 
-# Wie lange aufbewahrt wird
+# Wie viel aufbewahrt wird — Modus "count" hält das Gratiskontingent ein
 BACKUP_RETENTION_DAYS=3
-BACKUP_DAILY_RETENTION_DAYS=7
-BACKUP_WEEKLY_RETENTION_DAYS=28
-BACKUP_MONTHLY_RETENTION_DAYS=180
+BACKUP_RETENTION_MODE=count
+BACKUP_KEEP_RUNS=3
+BACKUP_MIN_KEEP_RUNS=2
+BACKUP_MAX_TOTAL_BYTES=9000000000
 
 # Überwachung
 BACKUP_MAX_AGE_HOURS=36
@@ -156,6 +157,43 @@ BACKUP_DR_BUNDLE_MAX_AGE_DAYS=180
 ```
 
 Speichern mit `Strg+O`, `Enter`, dann `Strg+X`.
+
+### Bleibt das im Gratiskontingent?
+
+`BACKUP_RETENTION_MODE=count` bewahrt die letzten **3 Läufe** auf. Ein „Lauf"
+ist alles, was eine Nacht erzeugt: Globals, jede Datenbank, MinIO, Config.
+Kommt der vierte dazu, fällt der älteste weg — vollständig, nie nur einzelne
+Dateien. Ein Lauf ohne seine Globals wäre im Ernstfall wertlos und sähe
+trotzdem wie ein Backup aus.
+
+Zusätzlich greift `BACKUP_MAX_TOTAL_BYTES` (9 GB, bewusst unter den 10 GB von
+R2). Wächst deine Datenmenge, werden auch bei nur 3 Läufen weitere fallen
+gelassen, bis es wieder passt — aber nie unter `BACKUP_MIN_KEEP_RUNS`. Lieber
+einmal über Budget **mit Alarm** als am Ende mit nur einer einzigen Kopie.
+
+Die Rechnung:
+
+```
+Größe eines Laufs × 3  ≤  9 GB      →  ein Lauf darf ~3 GB groß sein
+```
+
+Nach dem ersten Backup (Schritt 8) siehst du deine echte Größe:
+
+```bash
+rclone --config /opt/multitenant-platform/backups/rclone.conf size r2:multitenant-backup
+```
+
+Im Dashboard steht dasselbe als Balken: „X % von 9 GB belegt", ab 90 % rot.
+
+Passt es nicht, ist fast immer der MinIO-Spiegel der dicke Posten — er enthält
+alle hochgeladenen Kundendateien und wächst mit jedem Upload. Dann entweder
+`BACKUP_KEEP_RUNS=2` setzen oder auf bezahlten Speicher wechseln (Hetzner
+Storage Box: 1 TB für rund 4 €/Monat).
+
+> **Was das Kontingent nicht belastet:** die Zugriffe selbst. R2 gibt pro Monat
+> 1 Mio. Schreib- und 10 Mio. Leseoperationen frei; ein nächtliches Backup
+> braucht davon eine Handvoll. Und Downloads sind bei R2 kostenlos — der
+> Restore im Ernstfall kostet dich also nichts.
 
 Damit die Alarme per Mail ankommen, müssen `RESEND_API_KEY` und `ADMIN_EMAIL`
 gesetzt sein — die stehen weiter oben in derselben Datei und sind für andere
@@ -245,8 +283,11 @@ Nicht auf die Nacht warten. Jetzt einmal von Hand:
 Das dauert je nach Datenmenge einige Minuten. Die letzte Zeile muss lauten:
 
 ```
-Backup vollstaendig (daily): Globals, N Datenbanken, MinIO, Config.
+Backup vollstaendig: Globals, N Datenbanken, MinIO, Config.
 ```
+
+Darüber steht eine Zeile wie `Aufbewahrung: 1 Laeufe behalten (820 MB),
+0 Laeufe entfernt.` — das ist die Selbstabrechnung gegen dein Budget.
 
 **Was liegt jetzt beim Anbieter?**
 
@@ -254,8 +295,7 @@ Backup vollstaendig (daily): Globals, N Datenbanken, MinIO, Config.
 ./backups/restore-script.sh list
 ```
 
-Erwartet: mehrere Zeilen mit `daily/…age` — Globals, jede Datenbank, MinIO,
-Config.
+Erwartet: mehrere Zeilen mit `…age` — Globals, jede Datenbank, MinIO, Config.
 
 **Und lässt sich das auch zurückspielen?** Nimm einen Datenbank-Dateinamen aus
 der Liste:
@@ -281,7 +321,7 @@ Zum Schluss im Dashboard unter **Backups** nachsehen: Oben steht das Panel
 
 | Wann | Was |
 |---|---|
-| täglich 03:00 | Sicherung nach `daily/`, sonntags `weekly/`, am Monatsersten `monthly/` |
+| täglich 03:00 | Sicherung hochladen, Läufe über der Grenze entfernen |
 | täglich | Alarm, wenn seit 36 h kein Backup erfolgreich war |
 | täglich | Alarm, wenn der age-Schlüssel fehlt oder die DR-Bestätigung veraltet |
 | wöchentlich | automatischer Restore-Test der am längsten ungeprüften Datenbank |
