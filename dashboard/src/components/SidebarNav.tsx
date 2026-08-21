@@ -8,6 +8,7 @@ const NAV_ITEMS: { href: string; label: string; exact?: boolean }[] = [
   { href: "/dashboard", label: "Übersicht", exact: true },
   { href: "/dashboard/projects", label: "Projekte" },
   { href: "/dashboard/backups", label: "Backups" },
+  { href: "/dashboard/security", label: "Versionen & CVEs" },
   { href: "/dashboard/audit", label: "Audit-Log" },
 ];
 
