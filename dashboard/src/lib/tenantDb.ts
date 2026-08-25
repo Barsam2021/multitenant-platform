@@ -11,7 +11,15 @@ const PGBOUNCER_HOST = process.env.PGBOUNCER_HOST || "pgbouncer";
 const tenantPools = new Map<string, Pool>();
 
 function getTenantPool(dbName: string): Pool {
-  if (!/^[a-z0-9_]+$/.test(dbName)) {
+  // Bindestrich MUSS erlaubt sein: Tenant-Slugs werden ueberall sonst gegen
+  // /^[a-z0-9-]+$/ geprueft (provisioning-agent/src/index.ts:441 u.a.), die DB
+  // heisst kunde_<slug>. Ein Tenant "up2-web" bekommt also die Datenbank
+  // "kunde_up2-web" — die legt CREATE DATABASE %I sauber an, aber diese Pruefung
+  // hat sie abgelehnt: der SQL-Editor war fuer jeden Tenant mit Bindestrich im
+  // Slug dauerhaft unbenutzbar ("invalid db name").
+  // Der Wert landet ausschliesslich im Connection-String, nie in SQL-Text —
+  // die Allowlist bleibt trotzdem, damit hier nichts Fremdes durchrutscht.
+  if (!/^[a-z0-9_-]+$/.test(dbName)) {
     throw new Error("invalid db name");
   }
   let pool = tenantPools.get(dbName);

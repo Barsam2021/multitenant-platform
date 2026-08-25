@@ -58,7 +58,7 @@
       "file_type": "code",
       "norm_label": "columninfo",
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L45"
+      "source_location": "L53"
     },
     {
       "id": "dashboard_src_lib_tenantdb_getrowsoptions",
@@ -71,7 +71,7 @@
       "file_type": "code",
       "norm_label": "getrowsoptions",
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L79"
+      "source_location": "L87"
     },
     {
       "id": "dashboard_src_lib_tenantdb_runsqlresult",
@@ -84,7 +84,7 @@
       "file_type": "code",
       "norm_label": "runsqlresult",
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L200"
+      "source_location": "L208"
     },
     {
       "id": "dashboard_src_lib_tenantdb_tableinfo",
@@ -97,7 +97,7 @@
       "file_type": "code",
       "norm_label": "tableinfo",
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L28"
+      "source_location": "L36"
     },
     {
       "id": "dashboard_src_app_dashboard_page_diskusage",
@@ -1900,7 +1900,7 @@
       "file_type": "code",
       "norm_label": "deleterow()",
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L189"
+      "source_location": "L197"
     },
     {
       "id": "dashboard_src_lib_tenantdb_getrows",
@@ -1912,7 +1912,7 @@
       "file_type": "code",
       "norm_label": "getrows()",
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L89"
+      "source_location": "L97"
     },
     {
       "id": "dashboard_src_lib_tenantdb_gettablecolumns",
@@ -1924,7 +1924,7 @@
       "file_type": "code",
       "norm_label": "gettablecolumns()",
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L53"
+      "source_location": "L61"
     },
     {
       "id": "dashboard_src_lib_tenantdb_gettenantpool",
@@ -1948,7 +1948,7 @@
       "file_type": "code",
       "norm_label": "insertrow()",
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L138"
+      "source_location": "L146"
     },
     {
       "id": "dashboard_src_lib_tenantdb_listtables",
@@ -1960,7 +1960,7 @@
       "file_type": "code",
       "norm_label": "listtables()",
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L33"
+      "source_location": "L41"
     },
     {
       "id": "dashboard_src_lib_tenantdb_runsql",
@@ -1972,7 +1972,7 @@
       "file_type": "code",
       "norm_label": "runsql()",
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L239"
+      "source_location": "L247"
     },
     {
       "id": "dashboard_src_lib_tenantdb_trywrapwithlimit",
@@ -1984,7 +1984,7 @@
       "file_type": "code",
       "norm_label": "trywrapwithlimit()",
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L218"
+      "source_location": "L226"
     },
     {
       "id": "dashboard_src_lib_tenantdb_updaterow",
@@ -1996,7 +1996,7 @@
       "file_type": "code",
       "norm_label": "updaterow()",
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L168"
+      "source_location": "L176"
     },
     {
       "id": "dashboard_src_lib_tenantdb_whereclausefor",
@@ -2008,7 +2008,7 @@
       "file_type": "code",
       "norm_label": "whereclausefor()",
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L161"
+      "source_location": "L169"
     },
     {
       "id": "dashboard_src_app_dashboard_page_barcolor",
@@ -17574,7 +17574,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L195",
+      "source_location": "L203",
       "weight": 1.0
     },
     {
@@ -17586,7 +17586,19 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L196",
+      "source_location": "L204",
+      "weight": 1.0
+    },
+    {
+      "source": "dashboard_src_lib_tenantdb_getrows",
+      "target": "dashboard_src_lib_tenantdb_gettenantpool",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "dashboard/src/lib/tenantDb.ts",
+      "source_location": "L107",
       "weight": 1.0
     },
     {
@@ -17598,19 +17610,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L100",
-      "weight": 1.0
-    },
-    {
-      "source": "dashboard_src_lib_tenantdb_getrows",
-      "target": "dashboard_src_lib_tenantdb_gettenantpool",
-      "relation": "calls",
-      "_origin": "ast",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "context": "call",
-      "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L99",
+      "source_location": "L108",
       "weight": 1.0
     },
     {
@@ -17622,7 +17622,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L54",
+      "source_location": "L62",
       "weight": 1.0
     },
     {
@@ -17634,7 +17634,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L143",
+      "source_location": "L151",
       "weight": 1.0
     },
     {
@@ -17646,7 +17646,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L34",
+      "source_location": "L42",
       "weight": 1.0
     },
     {
@@ -17658,7 +17658,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L244",
+      "source_location": "L252",
       "weight": 1.0
     },
     {
@@ -17670,7 +17670,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L253",
+      "source_location": "L261",
       "weight": 1.0
     },
     {
@@ -17682,7 +17682,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L175",
+      "source_location": "L183",
       "weight": 1.0
     },
     {
@@ -17694,7 +17694,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L178",
+      "source_location": "L186",
       "weight": 1.0
     },
     {
@@ -32318,7 +32318,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L138",
+      "source_location": "L146",
       "weight": 1.0
     },
     {
@@ -32329,7 +32329,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L161",
+      "source_location": "L169",
       "weight": 1.0
     },
     {
@@ -32340,7 +32340,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L168",
+      "source_location": "L176",
       "weight": 1.0
     },
     {
@@ -32351,7 +32351,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L189",
+      "source_location": "L197",
       "weight": 1.0
     },
     {
@@ -32362,7 +32362,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L200",
+      "source_location": "L208",
       "weight": 1.0
     },
     {
@@ -32373,7 +32373,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L218",
+      "source_location": "L226",
       "weight": 1.0
     },
     {
@@ -32384,7 +32384,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L239",
+      "source_location": "L247",
       "weight": 1.0
     },
     {
@@ -32395,7 +32395,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L28",
+      "source_location": "L36",
       "weight": 1.0
     },
     {
@@ -32406,7 +32406,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L33",
+      "source_location": "L41",
       "weight": 1.0
     },
     {
@@ -32417,7 +32417,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L45",
+      "source_location": "L53",
       "weight": 1.0
     },
     {
@@ -32428,7 +32428,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L53",
+      "source_location": "L61",
       "weight": 1.0
     },
     {
@@ -32439,7 +32439,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L79",
+      "source_location": "L87",
       "weight": 1.0
     },
     {
@@ -32450,7 +32450,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "dashboard/src/lib/tenantDb.ts",
-      "source_location": "L89",
+      "source_location": "L97",
       "weight": 1.0
     },
     {
@@ -36982,5 +36982,5 @@
       "source_file": "README.md"
     }
   ],
-  "built_at_commit": "683498174e99d4e9093fb08af312743e9974ec16"
+  "built_at_commit": "2705de95a67dade2b9c964e137b16321904f44f5"
 }
