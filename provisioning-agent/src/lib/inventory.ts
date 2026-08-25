@@ -199,7 +199,12 @@ export async function collectInventory(): Promise<Component[]> {
       const pin = pins.get(name);
       components.push({
         scope,
-        projectId: slug ? projectIdBySlug.get(slug) ?? null : null,
+        // Nur Projekt-Container bekommen eine project_id. Der Slug eines
+        // Tenant-Containers (`api-<slug>`) ist ein KUNDEN-Slug — dass es
+        // daneben ein Projekt gleichen Namens gibt, ist Zufall und keine
+        // Zugehoerigkeit. Sonst haengt an "postgrest/postgrest" ploetzlich
+        // ein Projektname, der nichts damit zu tun hat.
+        projectId: scope === 'project' && slug ? projectIdBySlug.get(slug) ?? null : null,
         target: c.name,
         kind: 'image',
         name,
