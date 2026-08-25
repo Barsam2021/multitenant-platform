@@ -11,8 +11,10 @@
 import { Client as PGClient } from 'pg';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { readFile } from 'fs/promises';
+import { readFile, mkdtemp, rm, readlink, lstat } from 'fs/promises';
 import { existsSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 const execFileP = promisify(execFile);
 
@@ -166,6 +168,142 @@ export function classifyContainer(
   return { scope: 'platform', slug: null };
 }
 
+/* ------------------------------------------------------------------ Ebene C
+ *
+ * Was IN einem Kundenprojekt steckt (docs/CVE-PLAN.md, Ebene C).
+ *
+ * Das Image eines Projekts traegt als Version den Commit-SHA — der sagt, WAS
+ * gebaut wurde, aber nichts darueber, WOMIT. Genau diese Nummern werden hier
+ * nachgetragen: Basis-Distribution, Node-Laufzeit und die direkten npm-
+ * Abhaengigkeiten in der Version, die tatsaechlich installiert ist.
+ *
+ * Alles ueber `docker cp` und `docker inspect`, bewusst NICHT ueber
+ * `docker exec`: der Socket-Proxy hat EXEC=0 (P0-1 im docker-compose.yml des
+ * Agents). Das Inventar ist kein Grund, diese Grenze aufzumachen.
+ */
+
+/** Eine Datei aus einem laufenden Container lesen. `null`, wenn es sie nicht gibt. */
+async function readFromContainer(container: string, path: string, dir: string): Promise<string | null> {
+  const dest = join(dir, path.replace(/[^a-zA-Z0-9]/g, '_'));
+  try {
+    await execFileP('docker', ['cp', `${container}:${path}`, dest], { timeout: 30_000 });
+    return await readFile(dest, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Exakte Node-Version eines Nixpacks-Images.
+ *
+ * Nixpacks legt `node` als Symlink in den Nix-Store, und der Store-Pfad
+ * enthaelt die volle Version: `/nix/store/<hash>-nodejs-20.18.1/bin/node`.
+ * `docker cp` kopiert den Symlink als Symlink — es werden also 4 KB uebertragen,
+ * nicht die 100 MB der Binary. Die `nixpacks.toml` kennt nur die Major-Version
+ * ("nodejs_20"), und genau die Patch-Nummer ist die, die bei einem CVE zaehlt.
+ */
+async function nodeVersionOf(container: string, dir: string): Promise<string | null> {
+  const dest = join(dir, 'node-link');
+  try {
+    await execFileP('docker', ['cp', `${container}:/nix/var/nix/profiles/default/bin/node`, dest], {
+      timeout: 30_000,
+    });
+    // Kein Symlink? Dann ist es kein Nixpacks-Layout — nichts ableiten.
+    if (!(await lstat(dest)).isSymbolicLink()) return null;
+    const target = await readlink(dest);
+    return target.match(/-nodejs-([0-9][^/]*)\//)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Basis-Distribution aus den OCI-Labels des Images (z. B. ubuntu 24.04). */
+async function baseImageOf(container: string): Promise<{ name: string; version: string } | null> {
+  try {
+    const { stdout } = await execFileP(
+      'docker',
+      [
+        'inspect', container, '--format',
+        '{{index .Config.Labels "org.opencontainers.image.ref.name"}}\t{{index .Config.Labels "org.opencontainers.image.version"}}',
+      ],
+      { timeout: 30_000 }
+    );
+    const [name, version] = stdout.trim().split('\t');
+    // Fehlt ein Label, druckt Go "<no value>" — das ist keine Version.
+    if (!name || !version || name === '<no value>' || version === '<no value>') return null;
+    return { name, version };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Direkte npm-Abhaengigkeiten in der installierten Version.
+ *
+ * Bewusst nur die direkten aus `package.json`, aufgeloest ueber die
+ * `package-lock.json` — nicht der komplette Abhaengigkeitsbaum (hier: 13 statt
+ * 525 Eintraege). Der vollstaendige Baum ist Aufgabe des Image-Scans in Phase 2
+ * (docs/CVE-PLAN.md, Ebene C): Trivy zaehlt ihn ohnehin selbst auf, und ihn
+ * vorher per Lockfile-Parser nachzubauen waere dieselbe Arbeit zweimal.
+ * `devDependencies` bleiben draussen — sie laufen im Betrieb nicht.
+ */
+function directNpmDeps(pkgJson: string, lockJson: string | null): { name: string; version: string }[] {
+  let pkg: any, lock: any = null;
+  try {
+    pkg = JSON.parse(pkgJson);
+    if (lockJson) lock = JSON.parse(lockJson);
+  } catch {
+    return [];
+  }
+  const deps: { name: string; version: string }[] = [];
+  for (const name of Object.keys(pkg?.dependencies ?? {})) {
+    // Aufgeloeste Version aus dem Lockfile (v2/v3: packages["node_modules/<name>"]).
+    // Ohne Lockfile bleibt nur der Bereich aus package.json ("^15.1.0") — der ist
+    // keine Version, und "ungefaehr 15.1" hilft bei einem CVE niemandem.
+    const resolved = lock?.packages?.[`node_modules/${name}`]?.version;
+    if (typeof resolved === 'string') deps.push({ name, version: resolved });
+  }
+  return deps;
+}
+
+/**
+ * Alle Nummern eines Kundenprojekts einsammeln. `target` ist der Container,
+ * damit die Zeilen im Dashboard beim Projekt stehen und die UNIQUE-Bedingung
+ * (scope, target, kind, name, version) zwei Projekte nicht vermischt.
+ */
+export async function collectProjectComponents(
+  container: string,
+  projectId: string | null
+): Promise<Component[]> {
+  const dir = await mkdtemp(join(tmpdir(), 'inv-'));
+  try {
+    const rows: Component[] = [];
+    const add = (kind: Component['kind'], name: string, version: string) =>
+      rows.push({ scope: 'project', projectId, target: container, kind, name, version, pinnedVersion: null });
+
+    const base = await baseImageOf(container);
+    if (base) add('other', base.name, base.version);
+
+    const node = await nodeVersionOf(container, dir);
+    if (node) add('other', 'node', node);
+
+    // Nixpacks setzt WORKDIR auf /app. Bringt ein Repo ein eigenes Dockerfile
+    // mit, kann der Pfad ein anderer sein — dann gibt es hier eben keine
+    // npm-Zeilen statt einer falschen Annahme.
+    const pkgJson = await readFromContainer(container, '/app/package.json', dir);
+    if (pkgJson) {
+      const lockJson = await readFromContainer(container, '/app/package-lock.json', dir);
+      if (!lockJson) {
+        console.warn(`${container}: package.json ohne package-lock.json — keine npm-Versionen erfassbar`);
+      }
+      for (const d of directNpmDeps(pkgJson, lockJson)) add('npm', d.name, d.version);
+    }
+    return rows;
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 /**
  * Vollstaendiges Inventar erheben und in `components` fortschreiben.
  *
@@ -215,9 +353,25 @@ export async function collectInventory(): Promise<Component[]> {
       });
     }
 
+    // Ebene C: was in den Kundenprojekten steckt. Nacheinander, nicht parallel
+    // — pro Projekt sind es vier Docker-Aufrufe, und das Inventar laeuft im
+    // Hintergrund. Faellt eines aus, fehlen dessen Zeilen, nicht das Inventar.
+    for (const c of [...components]) {
+      if (c.scope !== 'project') continue;
+      const rows = await collectProjectComponents(c.target, c.projectId).catch((err) => {
+        console.error(`Projekt-Inventar fuer ${c.target} fehlgeschlagen:`, err.message);
+        return [] as Component[];
+      });
+      components.push(...rows);
+    }
+
     // Gepinnte Images, zu denen gerade KEIN Container laeuft. Auch das ist
     // eine Aussage: der Dienst ist konfiguriert, aber nicht oben.
-    const laufendeNamen = new Set(components.map((c) => c.name));
+    //
+    // Nur Image-Zeilen vergleichen: npm kennt Paketnamen wie `postgres`, und
+    // ein Projekt, das so eines benutzt, wuerde sonst den Pin des echten
+    // Postgres-Images verdecken.
+    const laufendeNamen = new Set(components.filter((c) => c.kind === 'image').map((c) => c.name));
     for (const [name, pin] of pins) {
       if (laufendeNamen.has(name)) continue;
       components.push({

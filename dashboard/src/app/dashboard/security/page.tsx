@@ -25,8 +25,93 @@ const SCOPE_LABEL: Record<string, string> = {
 const SCOPE_HINT: Record<string, string> = {
   platform: "Container der Plattform selbst — Updates liegen beim Betreiber.",
   tenant: "Läuft je Mandant. Ein Update betrifft alle Tenants gleichzeitig.",
-  project: "Aus dem Kundenrepo gebaut. Die Version ist der Commit, nicht ein Pin.",
+  project: "Aus dem Kundenrepo gebaut. Die Version des Images ist der Commit — darunter steht, womit gebaut wurde.",
 };
+
+/** Eine Zeile „name version", monospace. */
+function VersionRow({ name, version }: { name: string; version: string }) {
+  return (
+    <div style={{ display: "flex", gap: 8, fontSize: 12, padding: "2px 0" }}>
+      <span style={{ color: "var(--text-dim)", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>
+        {name}
+      </span>
+      <span style={{ fontFamily: "var(--font-mono)", marginLeft: "auto" }}>{version}</span>
+    </div>
+  );
+}
+
+/**
+ * Ein Kundenprojekt: das Image oben, darunter die Nummern aus dem Image.
+ * Die npm-Pakete sind eingeklappt — bei einem Dutzend Projekten waeren das
+ * sonst mehrere hundert Zeilen auf einer Seite.
+ */
+function ProjectCard({ target, rows }: { target: string; rows: Component[] }) {
+  const [open, setOpen] = useState(false);
+  const image = rows.find((r) => r.kind === "image");
+  const npm = rows.filter((r) => r.kind === "npm").sort((a, b) => a.name.localeCompare(b.name));
+  const runtime = rows.filter((r) => r.kind === "other").sort((a, b) => a.name.localeCompare(b.name));
+  const slug = rows.find((r) => r.project_slug)?.project_slug;
+
+  return (
+    <div
+      style={{
+        border: "1px solid var(--border)", borderRadius: 8, padding: "10px 12px",
+        marginBottom: 8, background: "var(--panel)",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <span className="pk-badge">{image?.name ?? target}</span>
+        {image && (
+          <span
+            style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}
+            title="Commit, aus dem das Image gebaut wurde"
+          >
+            {image.version}
+          </span>
+        )}
+        <span style={{ marginLeft: "auto", fontSize: 12, color: "var(--text-faint)" }}>
+          {slug ? `${slug} · ` : ""}{target}
+        </span>
+      </div>
+
+      <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", fontSize: 12 }}>
+        {runtime.map((r) => (
+          <span key={r.id} style={{ color: "var(--text-dim)" }}>
+            {r.name} <span style={{ fontFamily: "var(--font-mono)" }}>{r.version}</span>
+          </span>
+        ))}
+        {npm.length > 0 && (
+          <button
+            onClick={() => setOpen((v) => !v)}
+            style={{
+              background: "none", border: "none", padding: 0, cursor: "pointer",
+              color: "var(--accent, #6ea8fe)", fontSize: 12,
+            }}
+          >
+            {open ? "▾" : "▸"} {npm.length} npm-{npm.length === 1 ? "Paket" : "Pakete"}
+          </button>
+        )}
+        {runtime.length === 0 && npm.length === 0 && (
+          <span style={{ color: "var(--text-faint)" }}>
+            Keine Detailversionen erfasst — Inventar noch nicht gelaufen oder kein Node-Projekt.
+          </span>
+        )}
+      </div>
+
+      {open && (
+        <div style={{ marginTop: 8, borderTop: "1px solid var(--border)", paddingTop: 6 }}>
+          {npm.map((r) => (
+            <VersionRow key={r.id} name={r.name} version={r.version} />
+          ))}
+          <div style={{ fontSize: 11, color: "var(--text-faint)", marginTop: 6 }}>
+            Direkte Abhängigkeiten aus <code>package.json</code>, aufgelöst über das Lockfile.
+            Der vollständige Baum kommt mit dem Image-Scan.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function SecurityPage() {
   const [components, setComponents] = useState<Component[]>([]);
@@ -113,6 +198,31 @@ export default function SecurityPage() {
       {scopes.map((scope) => {
         const rows = components.filter((c) => c.scope === scope);
         if (rows.length === 0) return null;
+
+        // Projekte werden je Container zusammengefasst: ein Projekt hat neben
+        // dem Image noch Laufzeit- und npm-Zeilen, die zusammengehoeren.
+        if (scope === "project") {
+          const byTarget = new Map<string, Component[]>();
+          for (const c of rows) {
+            const list = byTarget.get(c.target);
+            if (list) list.push(c);
+            else byTarget.set(c.target, [c]);
+          }
+          return (
+            <div key={scope} style={{ marginBottom: 24 }}>
+              <h3 style={{ fontSize: 14, margin: "0 0 2px" }}>{SCOPE_LABEL[scope]}</h3>
+              <div style={{ fontSize: 12, color: "var(--text-faint)", marginBottom: 8 }}>
+                {SCOPE_HINT[scope]}
+              </div>
+              {[...byTarget.entries()]
+                .sort(([a], [b]) => a.localeCompare(b))
+                .map(([target, targetRows]) => (
+                  <ProjectCard key={target} target={target} rows={targetRows} />
+                ))}
+            </div>
+          );
+        }
+
         return (
           <div key={scope} style={{ marginBottom: 24 }}>
             <h3 style={{ fontSize: 14, margin: "0 0 2px" }}>{SCOPE_LABEL[scope]}</h3>
