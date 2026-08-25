@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { Client as PGClient } from 'pg';
-import { collectInventory, hasDrift } from '../lib/inventory';
+import { runInventoryOnce, hasDrift } from '../lib/inventory';
 import { logAudit } from '../lib/audit';
 
 const PGBOUNCER_HOST = process.env.PGBOUNCER_HOST || 'pgbouncer';
@@ -16,8 +16,6 @@ function adminClient(): PGClient {
 
 export const securityRouter = Router();
 
-let inventoryRunning = false;
-
 /**
  * Versionsinventar. Liefert den zuletzt erhobenen Stand aus der Datenbank —
  * nicht live, weil jeder Aufruf sonst die Docker-API belasten wuerde und die
@@ -26,8 +24,11 @@ let inventoryRunning = false;
 securityRouter.get('/security/components', async (req, res) => {
   const scope = typeof req.query.scope === 'string' ? req.query.scope : null;
   const db = adminClient();
-  await db.connect();
+  // connect() gehoert mit in den try: schlaegt es fehl (PgBouncer weg), lief
+  // das finally darunter vorher nie und der Fehler ging an der 500-Antwort
+  // dieser Route vorbei in die zentrale Error-Middleware.
   try {
+    await db.connect();
     const { rows } = await db.query(
       `SELECT c.id, c.scope, c.project_id, c.target, c.kind, c.name, c.version,
               c.pinned_version, c.first_seen, c.last_seen, p.slug AS project_slug
@@ -52,21 +53,20 @@ securityRouter.get('/security/components', async (req, res) => {
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   } finally {
-    await db.end();
+    await db.end().catch(() => {});
   }
 });
 
 /** Inventar neu erheben (Docker-API + Compose-Dateien). */
 securityRouter.post('/security/inventory', async (_req, res) => {
-  if (inventoryRunning) return res.status(409).json({ error: 'inventory already running' });
-  inventoryRunning = true;
   try {
-    const components = await collectInventory();
+    // Der Guard sitzt in lib/inventory.ts, gemeinsam mit dem Timer aus
+    // index.ts — ein Flag hier haette den Timerlauf nicht gesehen.
+    const components = await runInventoryOnce();
+    if (!components) return res.status(409).json({ error: 'inventory already running' });
     await logAudit('security.inventory.collected', null, { count: components.length });
     res.json({ status: 'ok', count: components.length });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
-  } finally {
-    inventoryRunning = false;
   }
 });

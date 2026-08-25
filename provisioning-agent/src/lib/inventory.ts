@@ -61,6 +61,13 @@ const COMPOSE_SOURCES: { file: string; scope: Scope }[] = [
 
 /** Zerlegt eine Image-Referenz in Name und Version. */
 export function splitImageRef(ref: string): { name: string; version: string } {
+  // Per Digest referenzierte Images (`foo@sha256:abc…`) zuerst: der Doppelpunkt
+  // im Digest ist kein Tag-Trenner. Ohne diesen Zweig hiesse die Komponente
+  // "foo@sha256" und die Version waere der blanke Hash.
+  const at = ref.indexOf('@');
+  if (at > 0) {
+    return { name: ref.slice(0, at), version: ref.slice(at + 1) };
+  }
   // Der Doppelpunkt eines Registry-Ports (registry:5000/foo) darf nicht als
   // Tag-Trenner gelesen werden: nur ein Doppelpunkt NACH dem letzten Slash
   // trennt den Tag ab.
@@ -129,15 +136,32 @@ export async function collectRunningContainers(): Promise<RunningContainer[]> {
 /**
  * Ordnet einen laufenden Container einem Scope zu.
  *
- * Kundenprojekte laufen als `app-<slug>` mit dem Image `app-<slug>:<sha>`
- * (lib/deploy.ts). Tenant-Dienste heissen `tenant-auth-<slug>` bzw.
- * `tenant-postgrest-<slug>`. Alles andere ist Plattform.
+ * Die Namen sind nicht frei gewaehlt, sondern kommen aus zwei Stellen:
+ *   - Kundenprojekte: `app-<slug>` (live) bzw. `app-<slug>-<sha8>` waehrend
+ *     eines laufenden Deploys, Image `app-<slug>:<sha12>` (lib/deploy.ts).
+ *   - Tenant-Dienste: `api-<slug>` (PostgREST) und `auth-<slug>` (GoTrue),
+ *     siehe templates/tenant-compose.yml — dort stehen `container_name:
+ *     api-${SLUG}` und `auth-${SLUG}`. NICHT `tenant-*`, wie hier urspruenglich
+ *     angenommen: mit dem alten Muster landete jeder Tenant-Dienst unter
+ *     "Plattform" und die Ebene B der Uebersicht blieb dauerhaft leer.
+ * Alles andere ist Plattform.
+ *
+ * `knownSlugs` sind die bekannten Projekt-Slugs. Ohne sie muesste der
+ * `-<sha8>`-Suffix blind abgeschnitten werden — ein Slug, der selbst auf acht
+ * Hexzeichen endet (`app-deadbeef`), verloere dabei sein letztes Segment.
  */
-export function classifyContainer(name: string, image: string): { scope: Scope; slug: string | null } {
-  if (/^app-/.test(name) || /^app-/.test(image)) {
-    return { scope: 'project', slug: name.replace(/^app-/, '').replace(/-[0-9a-f]{8}$/, '') };
+export function classifyContainer(
+  name: string,
+  image: string,
+  knownSlugs?: Set<string>
+): { scope: Scope; slug: string | null } {
+  const app = name.match(/^app-(.+)$/);
+  if (app) {
+    const raw = app[1];
+    const slug = knownSlugs?.has(raw) ? raw : raw.replace(/-[0-9a-f]{8}$/, '');
+    return { scope: 'project', slug };
   }
-  const tenant = name.match(/^tenant-(?:auth|postgrest)-(.+)$/);
+  const tenant = name.match(/^(?:api|auth)-(.+)$/);
   if (tenant) return { scope: 'tenant', slug: tenant[1] };
   return { scope: 'platform', slug: null };
 }
@@ -159,18 +183,19 @@ export async function collectInventory(): Promise<Component[]> {
   ]);
 
   const db = adminClient();
-  await db.connect();
   try {
+    await db.connect();
     // slug -> project_id, fuer die Zuordnung der Kundencontainer.
     const { rows: projectRows } = await db.query<{ id: string; slug: string }>(
       'SELECT id, slug FROM projects'
     );
     const projectIdBySlug = new Map(projectRows.map((r) => [r.slug, r.id]));
+    const knownSlugs = new Set(projectIdBySlug.keys());
 
     const components: Component[] = [];
     for (const c of containers) {
       const { name, version } = splitImageRef(c.image);
-      const { scope, slug } = classifyContainer(c.name, c.image);
+      const { scope, slug } = classifyContainer(c.name, c.image, knownSlugs);
       const pin = pins.get(name);
       components.push({
         scope,
@@ -204,7 +229,7 @@ export async function collectInventory(): Promise<Component[]> {
     await upsertComponents(db, components);
     return components;
   } finally {
-    await db.end();
+    await db.end().catch(() => {});
   }
 }
 
@@ -220,6 +245,27 @@ async function upsertComponents(db: PGClient, components: Component[]): Promise<
         [c.scope, c.projectId, c.target, c.kind, c.name, c.version, c.pinnedVersion ?? null]
       )
       .catch((err) => console.error(`components-Zeile fuer ${c.name} fehlgeschlagen:`, err.message));
+  }
+}
+
+// Ein einziger Lauf zur Zeit — prozessweit. Der Timer in index.ts und der
+// Knopf im Dashboard hatten je ein eigenes Flag; zwei Flags verhindern nichts,
+// wenn beide denselben Lauf ausloesen koennen. Der teure Teil ist die
+// Container-Abfrage, und zwei gleichzeitige Laeufe schreiben dieselben Zeilen.
+let laufend = false;
+
+/**
+ * Inventarlauf, sofern nicht schon einer laeuft. `null` heisst "laeuft
+ * bereits" — der Aufrufer entscheidet, ob das ein 409 oder ein stilles
+ * Ueberspringen ist.
+ */
+export async function runInventoryOnce(): Promise<Component[] | null> {
+  if (laufend) return null;
+  laufend = true;
+  try {
+    return await collectInventory();
+  } finally {
+    laufend = false;
   }
 }
 

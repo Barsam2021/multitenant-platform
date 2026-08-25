@@ -23,7 +23,7 @@ import { analyticsRouter } from './routes/analytics';
 import { cmsRouter } from './routes/cms';
 import { securityRouter } from './routes/security';
 import { runCleanup } from './lib/cleanup';
-import { collectInventory } from './lib/inventory';
+import { runInventoryOnce } from './lib/inventory';
 import { ingestAccessLog } from './lib/analytics';
 import { provisionTenantDatabase } from './lib/tenantDatabase';
 import { cleanupProjectResources } from './lib/projectCleanup';
@@ -614,14 +614,14 @@ app.listen(3001, () => {
   // Versionsinventar (docs/CVE-PLAN.md). Billig — eine `docker ps`-Abfrage
   // plus ein paar Dateien —, deshalb oefter als taeglich: nach einem Deploy
   // soll die Uebersicht nicht bis zum naechsten Tag falsch bleiben.
-  const INVENTORY_INTERVAL_MS = Number(process.env.INVENTORY_INTERVAL_MS || 60 * 60 * 1000);
-  let inventoryRunning = false;
+  // `|| default` NACH dem Number(): ein Tippfehler in der .env ergibt sonst
+  // NaN, und setInterval(fn, NaN) feuert so schnell es geht.
+  const INVENTORY_INTERVAL_MS = Number(process.env.INVENTORY_INTERVAL_MS) || 60 * 60 * 1000;
   const runInventory = () => {
-    if (inventoryRunning) return;
-    inventoryRunning = true;
-    collectInventory()
-      .catch((err) => console.error('Versionsinventar fehlgeschlagen:', err.message))
-      .finally(() => { inventoryRunning = false; });
+    // Guard sitzt in lib/inventory.ts, gemeinsam mit dem Dashboard-Knopf.
+    runInventoryOnce().catch((err) =>
+      console.error('Versionsinventar fehlgeschlagen:', err.message)
+    );
   };
   setTimeout(runInventory, 2 * 60 * 1000);
   setInterval(runInventory, INVENTORY_INTERVAL_MS);
