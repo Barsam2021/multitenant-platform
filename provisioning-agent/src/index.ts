@@ -21,7 +21,9 @@ import { statsRouter } from './routes/stats';
 import { cleanupRouter } from './routes/cleanup';
 import { analyticsRouter } from './routes/analytics';
 import { cmsRouter } from './routes/cms';
+import { securityRouter } from './routes/security';
 import { runCleanup } from './lib/cleanup';
+import { collectInventory } from './lib/inventory';
 import { ingestAccessLog } from './lib/analytics';
 import { provisionTenantDatabase } from './lib/tenantDatabase';
 import { cleanupProjectResources } from './lib/projectCleanup';
@@ -457,7 +459,8 @@ app.delete('/tenants/:slug', sensitiveOpLimiter, async (req, res) => {
 // als unhandledRejection den Prozess zu beenden.
 for (const r of [projectsRouter, tenantsRouter, deploymentsRouter, domainsRouter,
                  githubRouter, backupsRouter, secretsRouter, auditRouter,
-                 statsRouter, cleanupRouter, analyticsRouter, cmsRouter, webhooksRouter]) {
+                 statsRouter, cleanupRouter, analyticsRouter, cmsRouter, securityRouter,
+                 webhooksRouter]) {
   wrapRouterAsync(r);
 }
 
@@ -473,6 +476,7 @@ app.use(statsRouter); // P1-8: /stats + /stats/overview, siehe routes/stats.ts
 app.use(cleanupRouter); // P3-6: /cleanup/run
 app.use(analyticsRouter); // Besucherstatistik, siehe lib/analytics.ts
 app.use(cmsRouter); // CMS-Rolle + Tabellenrechte, siehe lib/cms.ts
+app.use(securityRouter); // Versionsinventar + CVEs, siehe docs/CVE-PLAN.md
 
 
 // Die direkt auf `app` registrierten Handler (POST/DELETE /tenants) haengen im
@@ -606,6 +610,21 @@ app.listen(3001, () => {
   setInterval(() => {
     runCleanup().catch((err) => console.error('Taeglicher Cleanup-Lauf fehlgeschlagen:', err.message));
   }, ONE_DAY_MS);
+
+  // Versionsinventar (docs/CVE-PLAN.md). Billig — eine `docker ps`-Abfrage
+  // plus ein paar Dateien —, deshalb oefter als taeglich: nach einem Deploy
+  // soll die Uebersicht nicht bis zum naechsten Tag falsch bleiben.
+  const INVENTORY_INTERVAL_MS = Number(process.env.INVENTORY_INTERVAL_MS || 60 * 60 * 1000);
+  let inventoryRunning = false;
+  const runInventory = () => {
+    if (inventoryRunning) return;
+    inventoryRunning = true;
+    collectInventory()
+      .catch((err) => console.error('Versionsinventar fehlgeschlagen:', err.message))
+      .finally(() => { inventoryRunning = false; });
+  };
+  setTimeout(runInventory, 2 * 60 * 1000);
+  setInterval(runInventory, INVENTORY_INTERVAL_MS);
 
   // Analytics: Traefik-Accesslog einlesen. Jede Minute, weil die Auswertung
   // "wie viele waren heute da" sonst spuerbar hinterherhinkt — der Lauf selbst

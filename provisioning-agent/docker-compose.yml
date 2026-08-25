@@ -110,6 +110,8 @@ services:
       # Bestand, aber nie durchgereicht: lib/nixpacks.ts liest die Variable,
       # im Container kam sie nie an.
       PLATFORM_DEFAULT_NODE_VERSION: ${PLATFORM_DEFAULT_NODE_VERSION:-}
+      # Versionsinventar + CVE-Scan (docs/CVE-PLAN.md)
+      INVENTORY_INTERVAL_MS: ${INVENTORY_INTERVAL_MS:-}
     volumes:
       - /opt/multitenant-platform:/opt/multitenant-platform
       # Nur fuer nixpacks/BuildKit-Builds (siehe lib/nixpacks.ts) — der Proxy kann das
