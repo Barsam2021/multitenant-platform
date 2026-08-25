@@ -115,6 +115,11 @@ Verschlüsselung läuft über `age` — den Public Key in `BACKUP_AGE_PUBLIC_KEY
 eintragen, den privaten Identity-File **niemals** ins Repo committen (ist über
 `.gitignore` bereits ausgeschlossen: `backups/age-identity.txt`).
 
+Lokale Kopien in `backups/files` verfallen nach `BACKUP_RETENTION_DAYS`
+(Default 3). Fürs Remote gibt es **kein** implizites Limit: ohne
+`BACKUP_REMOTE_RETENTION_DAYS` (Tage) löscht `backup-script.sh` dort nie etwas
+— der Object-Storage wächst unbegrenzt.
+
 > **Ohne Off-Site-Kopie des age-Keys und der `.env` gibt es kein
 > wiederherstellbares Backup.** Beide liegen sonst ausschließlich auf genau dem
 > Server, gegen dessen Verlust gesichert wird — die Dateien im Object Storage

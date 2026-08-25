@@ -70,11 +70,15 @@ PYJSON
 record_backup() {
   local db="$1" filename="$2" size="$3" status="$4"
   # P2-19: Werte als psql-Variablen binden statt in den SQL-String zu interpolieren.
+  # WICHTIG: :'var'-Interpolation funktioniert nur, wenn psql das SQL ueber
+  # stdin liest -- mit -c bleibt ":" ein Syntaxfehler und jedes INSERT
+  # scheitert still (nur log(), kein fail()). Daher hier <<'SQL' statt -c.
   docker exec -i core-postgres psql -U postgres -d admin_dashboard -v ON_ERROR_STOP=1 \
-    -v db="$db" -v fn="$filename" -v sz="$size" -v st="$status" \
-    -c "INSERT INTO backups (db_name, filename, size_bytes, status, created_at)
-        VALUES (:'db', :'fn', :'sz'::bigint, :'st', now());" >/dev/null \
-    || log "WARNUNG: backups-Zeile fuer $db konnte nicht geschrieben werden"
+    -v db="$db" -v fn="$filename" -v sz="$size" -v st="$status" >/dev/null <<'SQL' \
+    || fail "backups-Zeile fuer $db konnte nicht geschrieben werden"
+INSERT INTO backups (db_name, filename, size_bytes, status, created_at)
+VALUES (:'db', :'fn', :'sz'::bigint, :'st', now());
+SQL
 }
 
 # Verschluesselt + laedt hoch + protokolliert. $1=Quelldatei $2=Logischer Name

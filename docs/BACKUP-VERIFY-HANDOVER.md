@@ -68,26 +68,67 @@ Erfolgskriterium: im Dashboard sind die Env-Vars eines Kunden lesbar. Das
 beweist, dass der `ENCRYPTION_MASTER_KEY` durchgekommen ist — der Punkt, an dem
 ein Restore am ehesten still scheitert.
 
-## Drei offene Bugs (bewusst noch nicht gefixt)
+## Stand nach der VPS-Session vom 2026-08-25: alle vier Punkte erledigt
 
-1. **Restore-Test-Button im Dashboard ist für jede Datenbank tot.**
-   `provisioning-agent/src/routes/backups.ts:76` validiert
-   `/^[a-zA-Z0-9_.-]+\.sql\.gz\.age$/`, seit der Umstellung auf `pg_dump -Fc`
-   heißen DB-Backups aber `*.dump.age` → `400 invalid filename`. Nur
-   `globals_*` kommt durch. Das Shell-Skript kann beide Formate.
-2. **`encrypt_failed` kann nie in der Tabelle landen.** `backup-script.sh:86`
-   schreibt diesen Status, der CHECK-Constraint in
-   `core-postgres/init-scripts/05_backups.sql` erlaubt nur
-   `('ok','dump_failed','upload_failed')`. Das INSERT scheitert und wird als
-   Log-Warnung geschluckt. Auch das TS-Interface in
-   `dashboard/src/app/dashboard/backups/page.tsx:15` kennt den Status nicht.
-3. **`BACKUP_REMOTE_RETENTION_DAYS` ist nirgends dokumentiert** — weder in
-   `.env.example` noch in SETUP.md. Ohne die Variable wächst das Remote
-   unbegrenzt.
+### Die eigentliche Diskrepanz (Stufe 0b KRIT vs. Stufe 1 OK)
 
-## Nächste Schritte auf der VPS
+Beim ersten Lauf von `verify-backups.sh` zeigte Stufe 0b "jüngstes Backup
+371h alt, RPO verletzt" für alle drei Tenants, obwohl Stufe 1 taggenau frische
+Dateien im Remote fand. Ursache: `record_backup()` in `backup-script.sh` schrieb
+die INSERTs über `psql -c "... :'var' ..."` — psql interpoliert `:'var'`
+**nicht** im `-c`-Modus, nur wenn das SQL über stdin gelesen wird. Jedes INSERT
+scheiterte seit der Umstellung auf `pg_dump -Fc` (~10.08.) mit
+`syntax error at or near ":"`, nur als Log-Zeile geschluckt. Die Backups selbst
+liefen die ganze Zeit fehlerfrei — nur die Tabelle war blind.
 
-1. `./backups/verify-backups.sh` laufen lassen, Ampel auswerten.
-2. Bei Grün/Gelb: `--with-restore-test` für alle Tenants.
-3. Danach die drei Bugs oben fixen.
-4. Stufe 4 als eigenen Termin planen.
+**Fix:** `record_backup()` schickt das SQL jetzt per Heredoc über stdin statt
+per `-c`, und ein gescheitertes INSERT löst jetzt `fail()` statt nur `log()`
+aus — ein künftiges Logging-Problem alarmiert damit tatsächlich. Verifiziert:
+echter `backup-script.sh`-Lauf → Tabelle korrekt befüllt →
+`verify-backups.sh --with-restore-test` → **GELB**, alle drei DBs erfolgreich
+in Wegwerf-DBs restored (Tabellen **und** Zeilen geprüft).
+
+### Die drei ursprünglich dokumentierten Bugs — gefixt
+
+1. **Restore-Test-Regex** in `provisioning-agent/src/routes/backups.ts`
+   akzeptiert jetzt `.dump.age` **und** `.sql.gz.age`.
+2. **`encrypt_failed`** ist jetzt im CHECK-Constraint erlaubt (Migration
+   `core-postgres/init-scripts/23_fix_backups_status.sql`, live angewendet)
+   und im TS-Interface in `dashboard/src/app/dashboard/backups/page.tsx`
+   nachgezogen.
+3. **`BACKUP_REMOTE_RETENTION_DAYS=14`** ist gesetzt (`.env`,
+   `.env.example`) und in SETUP.md dokumentiert.
+
+### Neuer Befund beim Testen: Dashboard-Buttons sind komplett tot
+
+Mit gefixter Regex schlug der Restore-Test-Endpoint (direkt über die
+Agent-API mit `x-agent-secret` getestet) immer noch fehl:
+`unable to upgrade to tcp, received 403`. Ursache: `docker-socket-proxy` hat
+`EXEC: 0` (bewusste Härtung, Kommentar in
+`provisioning-agent/docker-compose.yml` referenziert einen Sicherheits-Audit —
+`docker exec` über den Proxy wäre sonst praktisch root-äquivalent).
+`backup-script.sh` **und** `restore-test-script.sh` basieren aber komplett auf
+`docker exec`.
+
+Test bestätigt: **beide** Dashboard-Buttons ("Backup jetzt starten" und
+"Restore-Test") sind seit dieser Härtung tot, nicht nur wegen der Regex. Der
+nächtliche Cron-Job läuft unabhängig davon mit vollem Docker-Zugriff auf dem
+Host und ist davon nie betroffen gewesen — verifiziert, GELB.
+
+Ein echter Architektur-Fix (z. B. ein eng beschränkter Ausführungspfad nur für
+Backup-Kommandos) ist eine eigene Sicherheitsabwägung und wurde bewusst nicht
+spontan umgesetzt. Stattdessen: beide Buttons in
+`dashboard/src/app/dashboard/backups/page.tsx` sind jetzt klar als
+`disabled` markiert mit Tooltip/Hinweistext ("nur über Cron verfügbar"),
+damit niemand einen toten Klick für einen echten Fehlschlag hält.
+
+## Nächste Schritte
+
+1. ~~`./backups/verify-backups.sh` laufen lassen~~ — erledigt, GELB.
+2. ~~`--with-restore-test` für alle Tenants~~ — erledigt, alle drei OK.
+3. ~~Die drei Bugs oben fixen~~ — erledigt.
+4. **Stufe 5 (neu, offen):** Dashboard-Buttons für Backup/Restore-Test
+   funktionsfähig machen, ohne die EXEC=0-Härtung aufzuweichen. Eigener
+   Termin, eigene Sicherheitsabwägung — nicht spontan ändern.
+5. Stufe 4 (Restore auf fremder Maschine, nur aus Remote + Off-Site-Bundle)
+   als eigenen Termin planen — weiterhin offen, siehe oben.

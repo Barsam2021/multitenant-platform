@@ -12,7 +12,7 @@ interface Backup {
   // zwar, aber der Typ bleibt tolerant — eine ungepatchte Agent-Version darf
   // die Seite nicht kaputtmachen.
   size_bytes: number | string;
-  status: "ok" | "dump_failed" | "upload_failed";
+  status: "ok" | "dump_failed" | "upload_failed" | "encrypt_failed";
   created_at: string;
 }
 
@@ -22,10 +22,23 @@ interface RestoreResultEntry {
   error?: string;
 }
 
+// docker-socket-proxy hat EXEC bewusst deaktiviert (P0-1-Haertung, siehe
+// provisioning-agent/docker-compose.yml) -- jedes `docker exec`, das
+// backup-script.sh/restore-test-script.sh ueber den Agent auslaesen wollen,
+// scheitert daran mit "unable to upgrade to tcp, received 403". Nur der
+// naechtliche Cron-Job auf dem Host hat vollen Docker-Zugriff und funktioniert.
+// Ein Architektur-Fix ist eine eigene Sicherheitsabwaegung (siehe
+// docs/BACKUP-VERIFY-HANDOVER.md) -- bis dahin sind diese Buttons hier bewusst
+// tot geschaltet, statt ein irrefuehrendes "failed" nach jedem Klick zu zeigen.
+const DASHBOARD_TRIGGERS_DISABLED = true;
+const DASHBOARD_TRIGGERS_DISABLED_REASON =
+  "Nur über den nächtlichen Cron-Job verfügbar — docker-socket-proxy blockiert `docker exec` aus dem Dashboard heraus (bewusste Sicherheitshärtung). Siehe docs/BACKUP-VERIFY-HANDOVER.md.";
+
 const STATUS_COLOR: Record<string, string> = {
   ok: "#2da44e",
   dump_failed: "var(--danger)",
   upload_failed: "var(--danger)",
+  encrypt_failed: "var(--danger)",
 };
 
 function formatBytes(bytes: number | string | null | undefined): string {
@@ -139,11 +152,22 @@ export default function BackupsPage() {
         <button
           className="btn btn-primary"
           onClick={handleRunBackup}
-          disabled={starting || backupRunning}
+          disabled={DASHBOARD_TRIGGERS_DISABLED || starting || backupRunning}
+          title={DASHBOARD_TRIGGERS_DISABLED ? DASHBOARD_TRIGGERS_DISABLED_REASON : undefined}
         >
           {backupRunning ? "Backup läuft…" : starting ? "Starte…" : "Backup jetzt starten"}
         </button>
       </div>
+
+      {DASHBOARD_TRIGGERS_DISABLED && (
+        <div
+          style={{ marginBottom: 12, color: "var(--text-dim)", fontSize: 13 }}
+          title={DASHBOARD_TRIGGERS_DISABLED_REASON}
+        >
+          ⓘ Backup läuft ausschließlich über den nächtlichen Cron-Job (03:00) — die Buttons hier sind aus
+          Sicherheitsgründen deaktiviert (docker-socket-proxy blockiert `docker exec` aus dem Dashboard).
+        </div>
+      )}
 
       {error && (
         <div className="error-box" style={{ marginBottom: 12 }}>
@@ -197,7 +221,8 @@ export default function BackupsPage() {
                 <button
                   className="btn"
                   onClick={() => setRestoreTarget(b.filename)}
-                  disabled={result?.status === "running" || restoreTestRunning}
+                  disabled={DASHBOARD_TRIGGERS_DISABLED || result?.status === "running" || restoreTestRunning}
+                  title={DASHBOARD_TRIGGERS_DISABLED ? DASHBOARD_TRIGGERS_DISABLED_REASON : undefined}
                 >
                   {result?.status === "running" ? "Läuft…" : "Restore-Test"}
                 </button>

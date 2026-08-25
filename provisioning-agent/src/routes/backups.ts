@@ -73,7 +73,7 @@ backupsRouter.post('/backups/run', async (_req, res) => {
 
 backupsRouter.post('/backups/restore-test', async (req, res) => {
   const { filename } = req.body;
-  if (!filename || !/^[a-zA-Z0-9_.-]+\.sql\.gz\.age$/.test(filename)) {
+  if (!filename || !/^[a-zA-Z0-9_.-]+\.(dump|sql\.gz)\.age$/.test(filename)) {
     return res.status(400).json({ error: 'invalid filename' });
   }
   if (restoreTestRunning) return res.status(409).json({ error: 'restore test already running' });
