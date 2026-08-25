@@ -1,16 +1,16 @@
 # Graph Report - multitenant-platform  (2026-08-25)
 
 ## Corpus Check
-- 210 files · ~103,159 words
+- 212 files · ~105,311 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1158 nodes · 1987 edges · 128 communities (87 shown, 41 thin omitted)
+- 1187 nodes · 2015 edges · 124 communities (83 shown, 41 thin omitted)
 - Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS · INFERRED: 8 edges (avg confidence: 0.63)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `2705de95`
+- Built from commit: `5f01d78a`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -18,7 +18,7 @@
 - agentFetch
 - Tenant Query API Routes
 - deploy.ts
-- dns.ts
+- domains.ts
 - cmsDb.ts
 - index.ts
 - Analytics Aggregation
@@ -26,7 +26,7 @@
 - Platform Tech Stack
 - CMS Auth & App Layout
 - Platform Overview Dashboard
-- CMS Database Role Management
+- lib/cms.ts
 - CMS Row Editing UI
 - CMS Rows & Media API
 - Core Database Schema
@@ -46,28 +46,25 @@
 - Dashboard Layout & Toasts
 - dependencies
 - lib/cleanup.ts
-- Tenant Database Provisioning
+- 01_schema.sql
 - stats.ts
 - devDependencies
 - Environment Variables UI
 - Provisioning Agent TS Config
-- domains.ts
+- Tenant-Migration: up2-site
 - Projects List UI
 - Redeploy Script
 - cms/package.json
 - devDependencies
 - CMS Media & Row Forms
-- git.ts
 - Project Overview Page
 - @types/react
 - CMS Media Page
 - Backups Management UI
 - Project Documentation Guides
 - CMS Schema Tables
-- traefikDynamic.ts
 - Dashboard Layout Nav
 - Backup Script
-- crypto.ts
 - verify-backups.sh
 - Smoke Test Script
 - Restore Script
@@ -79,7 +76,6 @@
 - Restore Test Script
 - Backup-Verifikation — Arbeitsstand
 - scripts
-- nixpacks.ts
 - App Icon Route
 - minio
 - CMS Root Layout
@@ -150,7 +146,7 @@
 ## Hyperedges (group relationships)
 - **Security Hardening Measures** — docker_socket_proxy, webhook_hmac_verification, rate_limiting_cf_connecting_ip, cms_session_validation, upload_hardening [EXTRACTED 0.80]
 
-## Communities (128 total, 41 thin omitted)
+## Communities (124 total, 41 thin omitted)
 
 ### Community 0 - "agentFetch"
 Cohesion: 0.05
@@ -161,20 +157,20 @@ Cohesion: 0.10
 Nodes (41): GET(), POST(), requestMeta(), DELETE(), GET(), POST(), GET(), DELETE() (+33 more)
 
 ### Community 2 - "deploy.ts"
-Cohesion: 0.14
-Nodes (18): reattachProjectNetworks(), detectBuildErrorHint(), truncateBuildLog(), activeDeployments, ActiveDeployState, adminClient(), cancelDeployment(), deployLocks (+10 more)
+Cohesion: 0.08
+Nodes (37): reattachProjectNetworks(), detectBuildErrorHint(), truncateBuildLog(), decrypt(), encrypt(), getKey(), maskSecrets(), activeDeployments (+29 more)
 
-### Community 3 - "dns.ts"
-Cohesion: 0.14
-Nodes (16): buildInstructions(), cfFetch(), cfZoneId(), checkDns(), cloudflare, configuredProviders(), DnsCheckResult, DnsProvider (+8 more)
+### Community 3 - "domains.ts"
+Cohesion: 0.07
+Nodes (49): buildInstructions(), cfFetch(), cfZoneId(), checkDns(), checkTls(), cloudflare, configuredProviders(), DnsCheckResult (+41 more)
 
 ### Community 4 - "cmsDb.ts"
 Cohesion: 0.14
 Nodes (29): DELETE(), PATCH(), POST(), GET(), POST(), PATCH(), GET(), POST() (+21 more)
 
 ### Community 5 - "index.ts"
-Cohesion: 0.10
-Nodes (17): app, cleanupTenantResources(), execFileP, globalLimiter, sensitiveOpLimiter, webhookLimiter, alert(), lastSent (+9 more)
+Cohesion: 0.11
+Nodes (15): app, cleanupTenantResources(), execFileP, globalLimiter, sensitiveOpLimiter, webhookLimiter, alert(), lastSent (+7 more)
 
 ### Community 6 - "Analytics Aggregation"
 Cohesion: 0.14
@@ -196,9 +192,9 @@ Nodes (17): clientIp(), POST(), AppLayout(), StartPage(), SidebarNav(), CmsUserR
 Cohesion: 0.13
 Nodes (22): barColor(), DiskUsage, DOMAIN_STATUS_LABEL, formatBytes(), formatNumber(), MemoryConsumer, OrphanContainer, Overview (+14 more)
 
-### Community 11 - "CMS Database Role Management"
-Cohesion: 0.22
-Nodes (20): assertRealTable(), cmsKey(), cmsRoleName(), describeTenantTable(), dropCmsRole(), encryptForCms(), ensureCmsRole(), execFileP (+12 more)
+### Community 11 - "lib/cms.ts"
+Cohesion: 0.20
+Nodes (21): assertRealTable(), cmsKey(), cmsRoleName(), describeTenantTable(), dropCmsRole(), encryptForCms(), ensureCmsRole(), execFileP (+13 more)
 
 ### Community 12 - "CMS Row Editing UI"
 Cohesion: 0.20
@@ -273,16 +269,16 @@ Cohesion: 0.06
 Nodes (34): express-rate-limit, jsonwebtoken, dependencies, express, express-rate-limit, jsonwebtoken, pg, pg-format (+26 more)
 
 ### Community 30 - "lib/cleanup.ts"
-Cohesion: 0.24
-Nodes (13): adminClient(), ANALYTICS_DAILY_RETENTION_DAYS, ANALYTICS_DETAIL_RETENTION_DAYS, ANALYTICS_VISITOR_RETENTION_DAYS, CleanupResult, dirSize(), execFileP, getDiskUsage() (+5 more)
+Cohesion: 0.22
+Nodes (14): adminClient(), ANALYTICS_DAILY_RETENTION_DAYS, ANALYTICS_DETAIL_RETENTION_DAYS, ANALYTICS_VISITOR_RETENTION_DAYS, CleanupResult, dirSize(), execFileP, getDiskUsage() (+6 more)
 
-### Community 31 - "Tenant Database Provisioning"
-Cohesion: 0.38
-Nodes (10): execFileP, provisionTenantDatabase(), startTenantServices(), stopTenantServices(), tenantComposeExists(), tenantComposeFile(), tenantDir(), waitForGotrue() (+2 more)
+### Community 31 - "01_schema.sql"
+Cohesion: 0.09
+Nodes (17): public.sync_client_public, public.sync_submission_status, public.sync_visited_at, public.update_updated_at, posts_updated_at, public.client_public, public.clients, public.posts (+9 more)
 
 ### Community 32 - "stats.ts"
-Cohesion: 0.19
-Nodes (9): BUILDS_ROOT, directorySize(), DockerStatsLine, execFileP, parseMemUsage(), parseSize(), readBucketSizes(), readDockerStats() (+1 more)
+Cohesion: 0.21
+Nodes (8): directorySize(), DockerStatsLine, execFileP, parseMemUsage(), parseSize(), readBucketSizes(), readDockerStats(), statsRouter
 
 ### Community 33 - "devDependencies"
 Cohesion: 0.05
@@ -296,9 +292,9 @@ Nodes (4): ApiKeys, EnvVar, EnvVarsPage(), ConfirmDialog()
 Cohesion: 0.17
 Nodes (11): compilerOptions, esModuleInterop, module, outDir, resolveJsonModule, rootDir, skipLibCheck, strict (+3 more)
 
-### Community 36 - "domains.ts"
-Cohesion: 0.38
-Nodes (11): checkTls(), writeCustomDomainRouter(), adminClient(), DomainRow, healMissingRouters(), loadDomain(), pollDomain(), resumePendingDomainChecks() (+3 more)
+### Community 36 - "Tenant-Migration: up2-site"
+Cohesion: 0.40
+Nodes (4): Bewusst nicht uebernommen, Daten, Einspielen, Tenant-Migration: up2-site
 
 ### Community 37 - "Projects List UI"
 Cohesion: 0.27
@@ -320,10 +316,6 @@ Nodes (17): devDependencies, eslint, eslint-config-next, @types/bcryptjs, @types
 Cohesion: 0.24
 Nodes (4): MediaPicker(), FormField, RowForm(), toInputValue()
 
-### Community 42 - "git.ts"
-Cohesion: 0.29
-Nodes (8): Project, checkoutRepo(), execFileP, gitEnv(), normalizeRepoUrl(), remoteMatches(), verifyGithubSignature(), webhooksRouter
-
 ### Community 43 - "Project Overview Page"
 Cohesion: 0.20
 Nodes (3): GithubRepo, ProjectOverviewPage(), Tenant
@@ -344,10 +336,6 @@ Nodes (8): Architecture Overview, Contributing Guide, cms_config role (Migration
 Cohesion: 0.43
 Nodes (8): cms service, cms_audit table, cms_collections table, cms_fields table, cms_media table, cms_users table, Migration 21: CMS schema, CMS Implementation Plan
 
-### Community 49 - "traefikDynamic.ts"
-Cohesion: 0.27
-Nodes (10): API_RATE_LIMIT, ensureRateLimitMiddlewares(), removeCustomDomainRouter(), removeRouterFile(), removeTenantServiceRouter(), resyncTenantServiceRouters(), routerFileName(), safeHost() (+2 more)
-
 ### Community 50 - "Dashboard Layout Nav"
 Cohesion: 0.32
 Nodes (3): NAV_ITEMS, SidebarNav(), ThemeToggle()
@@ -355,10 +343,6 @@ Nodes (3): NAV_ITEMS, SidebarNav(), ThemeToggle()
 ### Community 51 - "Backup Script"
 Cohesion: 0.81
 Nodes (6): encrypt_and_upload(), fail(), log(), record_backup(), send_alert(), backup-script.sh script
-
-### Community 52 - "crypto.ts"
-Cohesion: 0.40
-Nodes (8): decrypt(), encrypt(), getKey(), adminClient(), buildEnvVars(), getProjectEnvVars(), getTenantSecrets(), TenantSecrets
 
 ### Community 53 - "verify-backups.sh"
 Cohesion: 0.53
@@ -400,12 +384,8 @@ Nodes (7): Antwort auf (1): beides, mit einem Vorbehalt, Antwort auf (2): `backu
 Cohesion: 0.40
 Nodes (5): scripts, build, dev, lint, start
 
-### Community 64 - "nixpacks.ts"
-Cohesion: 0.80
-Nodes (4): maskSecrets(), capBuildkitMemory(), execFileP, nixpacksBuild()
-
 ## Knowledge Gaps
-- **330 isolated node(s):** `graphify-guard.sh script`, `graphify-session-start.sh script`, `bootstrap.sh script`, `__filename`, `__dirname` (+325 more)
+- **340 isolated node(s):** `graphify-guard.sh script`, `graphify-session-start.sh script`, `bootstrap.sh script`, `__filename`, `__dirname` (+335 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **41 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
@@ -417,12 +397,12 @@ _Questions this graph is uniquely positioned to answer:_
 - **Why does `agentFetch()` connect `agentFetch` to `Tenant Query API Routes`, `cmsDb.ts`?**
   _High betweenness centrality (0.007) - this node is a cross-community bridge._
 - **Why does `dependencies` connect `dependencies` to `minio`, `pg`, `cms/package.json`?**
-  _High betweenness centrality (0.007) - this node is a cross-community bridge._
+  _High betweenness centrality (0.006) - this node is a cross-community bridge._
 - **What connects `graphify-guard.sh script`, `graphify-session-start.sh script`, `bootstrap.sh script` to the rest of the system?**
-  _330 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _340 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `agentFetch` be split into smaller, more focused modules?**
   _Cohesion score 0.05132788559754852 - nodes in this community are weakly interconnected._
 - **Should `Tenant Query API Routes` be split into smaller, more focused modules?**
   _Cohesion score 0.1003921568627451 - nodes in this community are weakly interconnected._
 - **Should `deploy.ts` be split into smaller, more focused modules?**
-  _Cohesion score 0.14130434782608695 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.08418367346938775 - nodes in this community are weakly interconnected._
