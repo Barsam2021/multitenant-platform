@@ -19,6 +19,16 @@ backups/rclone.conf
 _backup-*/
 _archive-patches/
 _schema-live-*.sql
+
+# Ungetrackte Datenbank-Auszuege aus dem Live-Betrieb. Sie enthalten echte
+# Kundendaten (Name, E-Mail, Telefon in clients/quiz_leads/roi_leads/
+# submissions) und gehoeren nicht ins Repo. Ohne diese Zeilen genuegt ein
+# einzelnes `git add -A`, um sie dauerhaft in die History zu schreiben —
+# herausholen ginge danach nur per History-Rewrite. Gleiche Klasse wie
+# _schema-live-*.sql darueber, nur ohne gemeinsames Namensmuster.
+up2web-schema.sql
+dashboard/up2site-data.sql
+
 diagnose-*.log
 .env.bak-*
 *.bak-*
