@@ -185,6 +185,63 @@ export async function pruneOldDockerImages(): Promise<{ removed: string[]; error
 }
 
 /**
+ * Build-Cache von BuildKit. R-05 der Ressourcen-Analyse (2026-08-27): der Cache
+ * lag bei zwei Projekten nach drei Wochen Betrieb bei 57,7 GB — mehr als
+ * Images, Snapshots und Volumes zusammen — und war damit der bindende
+ * Skalierungsfaktor der Maschine: die Platte laeuft vor dem RAM voll.
+ * runCleanup() hat ihn bis hier nie angefasst, er wuchs also mit jedem Deploy
+ * monoton weiter. Die Groesse haengt an der Deploy-Haeufigkeit, nicht an der
+ * Projektzahl — ein einzelnes aktives Projekt genuegt.
+ *
+ * `until=` statt `--all`: der Cache der letzten Tage ist genau der, der die
+ * naechsten Builds schnell macht. Ihn mitzuloeschen liesse jeden Deploy nach
+ * einem Cleanup einmal voll durchbauen — bei 10 Minuten hartem Build-Timeout
+ * (nixpacks.ts) ist das ein realer Fehlschlagsgrund, nicht nur eine
+ * Verzoegerung.
+ *
+ * Erfasst wird der Default-Builder, der laut Messung den Cache haelt. Nutzt
+ * nixpacks eine eigene buildx-Instanz mit eigenem State-Volume, braeuchte die
+ * ein separates `docker buildx prune --builder <name>`; nach derselben Messung
+ * haelt sie aber nur einen Bruchteil (7,7 MiB gegen 796 MiB).
+ */
+const BUILD_CACHE_KEEP_HOURS = Number(process.env.BUILD_CACHE_KEEP_HOURS || 168);
+const BUILD_CACHE_PRUNE_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * "Total reclaimed space: 55.76GB" -> Bytes. Docker rechnet dezimal
+ * (go-units HumanSize), kB/MB/GB sind also 10^3/10^6/10^9 und nicht 2^10 ff.
+ * Exportiert, weil das Parsen fremder Ausgabe die einzige echte Logik hier ist
+ * und ohne laufenden Docker-Daemon pruefbar sein soll.
+ */
+export function parseReclaimedBytes(stdout: string): number {
+  const m = /Total reclaimed space:\s*([\d.]+)\s*([a-zA-Z]*)/.exec(stdout);
+  if (!m) return 0;
+  const factors: Record<string, number> = {
+    b: 1, kb: 1e3, mb: 1e6, gb: 1e9, tb: 1e12, pb: 1e15,
+  };
+  return Math.round(Number(m[1]) * (factors[m[2].toLowerCase()] ?? 1));
+}
+
+export async function pruneBuildCache(): Promise<{ freedBytes: number; errors: string[] }> {
+  const errors: string[] = [];
+  try {
+    const { stdout } = await execFileP(
+      'docker',
+      ['builder', 'prune', '--force', '--filter', `until=${BUILD_CACHE_KEEP_HOURS}h`],
+      { maxBuffer: 8 * 1024 * 1024, timeout: BUILD_CACHE_PRUNE_TIMEOUT_MS }
+    );
+    return { freedBytes: parseReclaimedBytes(stdout), errors };
+  } catch (e: any) {
+    // Wie ueberall in diesem Modul: ein fehlgeschlagener Teilschritt darf den
+    // restlichen Cleanup nicht abbrechen. Erwartbarer Sonderfall ist ein
+    // docker-socket-proxy ohne BUILD=1 — dann kommt hier ein 403 an, und der
+    // Fehler gehoert sichtbar ins Audit-Log statt in eine stille Ausnahme.
+    errors.push(`docker builder prune: ${e.message}`);
+    return { freedBytes: 0, errors };
+  }
+}
+
+/**
  * Analytics-Retention. Drei unterschiedliche Fristen, weil die drei Tabellen
  * unterschiedlich schnell wachsen und unterschiedlich lange interessant sind:
  *
@@ -236,6 +293,7 @@ export async function pruneAnalytics(): Promise<{ deleted: Record<string, number
 export interface CleanupResult {
   snapshots: { removed: string[]; freedBytes: number; errors: string[] };
   images: { removed: string[]; errors: string[] };
+  buildCache: { freedBytes: number; errors: string[] };
   analytics: { deleted: Record<string, number>; errors: string[] };
 }
 
@@ -247,15 +305,17 @@ export interface CleanupResult {
 export async function runCleanup(): Promise<CleanupResult> {
   const snapshots = await pruneOldBuildSnapshots();
   const images = await pruneOldDockerImages();
+  const buildCache = await pruneBuildCache();
   const analytics = await pruneAnalytics();
   await logAudit('cleanup.run', null, {
     snapshotsRemoved: snapshots.removed.length,
     freedBytes: snapshots.freedBytes,
     imagesRemoved: images.removed.length,
+    buildCacheFreedBytes: buildCache.freedBytes,
     analyticsDeleted: analytics.deleted,
-    errors: [...snapshots.errors, ...images.errors, ...analytics.errors],
+    errors: [...snapshots.errors, ...images.errors, ...buildCache.errors, ...analytics.errors],
   });
-  return { snapshots, images, analytics };
+  return { snapshots, images, buildCache, analytics };
 }
 
 export async function getDiskUsage(): Promise<{ totalBytes: number; usedBytes: number; availableBytes: number; usedPercent: number } | null> {
