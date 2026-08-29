@@ -465,7 +465,7 @@ for (const r of [projectsRouter, tenantsRouter, deploymentsRouter, domainsRouter
 }
 
 app.use(projectsRouter);
-app.use(tenantsRouter);
+app.use(tenantsRouter); // /tenants/:slug/api-keys limitiert sich selbst, siehe routes/tenants.ts (S-01)
 app.use(deploymentsRouter);
 app.use(domainsRouter);
 app.use(githubRouter);

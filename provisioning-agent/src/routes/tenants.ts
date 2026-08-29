@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { rateLimit, ipKeyGenerator } from 'express-rate-limit';
 import { Client as PGClient } from 'pg';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
@@ -33,6 +34,32 @@ function adminClient(): PGClient {
   return client;
 }
 
+// S-01 (Security-Report 2026-08-27): der globalLimiter in index.ts ueberspringt
+// bewusst JEDEN GET (`skip: (req) => req.method === 'GET'`), weil das
+// Dashboard-Polling sonst das Budget aufbraucht. Fuer diese eine Route ist das
+// die falsche Ausnahme: sie gibt anon_jwt und service_role_jwt im Klartext
+// heraus, und service_role_<slug> hat BYPASSRLS auf die komplette Tenant-DB.
+// Die Tokens tragen kein exp (lib/jwt.ts), sind also unbefristet gueltig —
+// widerrufbar nur ueber eine Secret-Rotation, die jede Kunden-App bricht, die
+// den alten Schluessel haelt. Wer das Agent-Secret hatte, konnte damit bisher
+// ohne jede Bremse die Schluessel aller Tenants abziehen.
+//
+// Kein Polling-Endpunkt (das sind Backups, Domains, Deployments), 30/h stoert
+// den Normalbetrieb also nicht. Fenster und Limit wie der sensitiveOpLimiter
+// in index.ts; ein eigener Zaehler statt eines Imports, weil index.ts diesen
+// Router importiert — gleiches Vorgehen wie in routes/secrets.ts.
+const apiKeysLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  // X-Actor ist der Admin hinter dem Dashboard (lib/agent.ts); alle Requests
+  // kommen sonst aus demselben Container und teilten sich einen Zaehler.
+  // ipKeyGenerator normalisiert den Fallback — ohne ihn quittiert
+  // express-rate-limit v8 jeden Start mit ERR_ERL_KEY_GEN_IPV6.
+  keyGenerator: (req) => (req.headers['x-actor'] as string) || ipKeyGenerator(req.ip || 'unknown'),
+});
+
 export const tenantsRouter = Router();
 
 // POST /tenants/:slug/postgrest/reload — Schema-Cache der Kunden-API neu einlesen.
@@ -52,7 +79,7 @@ tenantsRouter.post('/tenants/:slug/postgrest/reload', async (req, res) => {
 // (siehe lib/jwt.ts + Migration 09_tenant_api_keys.sql). Kein logAudit() mit den
 // Werten selbst — nur die Tatsache des Zugriffs, analog zu project.env.set in
 // routes/projects.ts, das den Wert bewusst nicht loggt.
-tenantsRouter.get('/tenants/:slug/api-keys', async (req, res) => {
+tenantsRouter.get('/tenants/:slug/api-keys', apiKeysLimiter, async (req, res) => {
   const { slug } = req.params;
   if (!slug || !/^[a-z0-9-]+$/.test(slug)) return res.status(400).json({ error: 'invalid slug' });
 
