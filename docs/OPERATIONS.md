@@ -272,6 +272,47 @@ docker inspect app-<slug> --format '{{json .Config.Labels}}' | tr ',' '\n' | gre
 
 ---
 
+## Accesslog: Rotation und Aufbewahrung
+
+Der Traefik-Accesslog (`traefik/logs/access.log`) enthaelt die echte Besucher-IP
+im Klartext — `--accesslog.fields.headers.names.Cf-Connecting-Ip=keep` in
+`traefik/docker-compose.yml`. Er unterliegt damit einer Loeschfrist nach
+Art. 5 Abs. 1 lit. e DSGVO.
+
+Die Frist setzt `traefik/logrotate.d-traefik-access`: taeglich, 7 Archive,
+komprimiert. Installation und Begruendung stehen im Kopf der Datei.
+
+Pruefen, ob die Regel greift:
+
+```bash
+# Ist sie installiert?
+ls -l /etc/logrotate.d/traefik-access
+
+# Wann wurde zuletzt rotiert?
+grep access.log /var/lib/logrotate/status
+
+# Wie alt ist der aelteste Stand? Nichts hier darf aelter als 7 Tage sein.
+ls -la --time-style=long-iso traefik/logs/
+```
+
+Es gibt **zwei** Rotationswege, das ist Absicht:
+
+| Weg | Ausloeser | Rolle |
+|---|---|---|
+| logrotate | taeglich per Zeit | der eigentliche, fristwahrende Weg |
+| `rotateIfNeeded()` in `lib/analytics.ts` | 200 MB Dateigroesse | Notbremse, falls logrotate nicht laeuft |
+
+Sie stoeren sich nicht: der Analytics-Ingest merkt sich seinen Lesestand am
+Inode der Datei, erkennt nach jeder Rotation die neue Datei und faengt bei
+Offset 0 an. Die logrotate-Regel nutzt `dateext`, damit ihre Archive
+(`access.log-20260829`) nie den Zwischennamen `access.log.1` belegen, den die
+Notbremse benutzt.
+
+Was in beiden Faellen verloren geht: die Zeilen zwischen dem letzten
+Ingest-Lauf (minuetlich) und der Rotation, weil nur `access.log` gelesen wird,
+nie ein Archiv. Bei ~1,3 MB/Tag sind das unter 1 KB pro Rotation.
+
+
 ## Ressourcen: wer verbraucht was
 
 Die Übersichtsseite des Dashboards beantwortet das grafisch. Auf der Kommandozeile:

@@ -1,0 +1,60 @@
+# Traefik-Accesslog. Wird nach /etc/logrotate.d/traefik-access installiert:
+#
+#   sudo install -o root -g root -m 0644 \
+#     /opt/multitenant-platform/traefik/logrotate.d-traefik-access \
+#     /etc/logrotate.d/traefik-access
+#   sudo logrotate --debug /etc/logrotate.d/traefik-access   # Probelauf, aendert nichts
+#
+# Hinweis zum Probelauf mit --force: wegen dateformat unten traegt das Archiv
+# nur das Datum. Ein zweiter erzwungener Lauf am selben Tag bricht deshalb mit
+# "destination ... already exists, skipping rotation" ab. Das ist erwartet und
+# harmlos (es wird nichts geloescht); im taeglichen Betrieb tritt es nicht auf.
+#
+# D-02 (Security-/DSGVO-Report 2026-08-27): der Accesslog enthaelt wegen
+# --accesslog.fields.headers.names.Cf-Connecting-Ip=keep (traefik/docker-compose.yml)
+# die echte IP jedes Besuchers jeder Kundenseite im Klartext — gemessen 2.910
+# Zeilen. Geloescht wurde er bisher ausschliesslich GROESSENabhaengig:
+# lib/analytics.ts rotiert bei 200 MB, was bei den gemessenen 1,3 MB/Tag rund
+# 154 Tagen entspricht. Eine Aufbewahrungsfrist, die am Besucheraufkommen
+# haengt, ist keine Frist im Sinne von Art. 5 Abs. 1 lit. e DSGVO. Diese Regel
+# macht daraus 7 Tage, unabhaengig vom Traffic.
+#
+# Die 200-MB-Rotation in lib/analytics.ts bleibt bewusst bestehen: sie ist ab
+# jetzt die Notbremse fuer den Fall, dass logrotate nicht laeuft. Beide
+# Mechanismen vertragen sich, weil der Ingest seinen Lesestand am INODE
+# festmacht (analytics.ts: `signature = String(fileStat.ino)`) — nach einer
+# Rotation erkennt er die neue Datei und setzt den Offset auf 0, statt in der
+# neuen Datei an alter Position weiterzulesen.
+
+/opt/multitenant-platform/traefik/logs/access.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    nocreate
+
+    # WICHTIG, nicht kosmetisch: ohne dateext benennt logrotate nach
+    # "access.log.1". Genau diesen Namen benutzt rotateIfNeeded() in
+    # lib/analytics.ts als Zwischenschritt (`${ACCESS_LOG}.1`) und loescht ihn
+    # danach. Feuert die 200-MB-Notbremse, waehrend hier ein aufbewahrtes
+    # access.log.1 liegt, wuerde sie es ueberschreiben und anschliessend
+    # entfernen — ein stiller Verlust eines Archivstands. Mit dateext heissen
+    # die Archive access.log-20260829 und koennen nicht kollidieren.
+    dateext
+    dateformat -%Y%m%d
+
+    # Traefik oeffnet die Logdatei beim Start und haelt den Descriptor. Ohne
+    # SIGUSR1 schreibt es nach dem Umbenennen in die bereits rotierte Datei
+    # weiter, und die neue bleibt leer. Gleiches Vorgehen wie
+    # lib/analytics.ts:296.
+    #
+    # Bewusst OHNE "|| true": analytics.ts kann das Umbenennen bei einem
+    # fehlgeschlagenen Signal zurueckdrehen, logrotate kann das nicht. Ein
+    # verschlucktes Fehlschlagen wuerde einen ganzen Tag Logs ins Leere laufen
+    # lassen, ohne dass es jemand merkt. So steht der Fehler im journal.
+    postrotate
+        docker kill --signal=USR1 global-traefik > /dev/null
+    endscript
+}
