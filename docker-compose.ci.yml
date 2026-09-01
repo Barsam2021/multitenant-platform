@@ -1,0 +1,125 @@
+# =============================================================================
+# Isolierter Stack fuer die CI-Pipeline. Laeuft AUSSCHLIESSLICH im GitHub-Runner.
+#
+# WARUM EIGENE DATEI und nicht die Produktions-Compose-Dateien:
+#   - kein `restart: always` (ein CI-Job endet, er laeuft nicht weiter)
+#   - keine mem_limits (der Runner hat andere Groessenverhaeltnisse als die VPS)
+#   - keine Traefik-Router, kein Cloudflare-Tunnel, kein Provisioning-Agent
+#   - Volumes sind fluechtig: jeder Lauf startet mit leerem Datenverzeichnis,
+#     damit `docker-entrypoint-initdb.d` die Plattform-Migrationen wirklich
+#     ausfuehrt (Postgres tut das nur bei leerem Volume)
+#
+# WAS BEWUSST GLEICH BLEIBT: Image-Versionen, Container-/Hostnamen und die
+# sicherheitsrelevante PgBouncer-Konfiguration (AUTH_QUERY/AUTH_DBNAME). Die
+# Namen sind hartkodiert im Agent-Code (`core-postgres`, `pgbouncer`,
+# `core-minio`) — eine Umbenennung hier wuerde die Tests an der Konfiguration
+# vorbei laufen lassen.
+#
+# ACHTUNG: Die Container-Namen sind identisch mit denen der Produktion. Diese
+# Datei darf deshalb NIE auf der Live-VPS gestartet werden. `scripts/ci/
+# assert-not-production.sh` bricht genau das ab; jedes Skript ruft es zuerst auf.
+#
+# Kein Port wird auf den Runner-Host veroeffentlicht: die Tests laufen selbst als
+# Container in `traefik-net` (scripts/ci/in-net.sh) und sprechen die Dienste unter
+# denselben Namen an wie die Produktion. Das erspart Port-Kollisionen mit den
+# Diensten, die ein GitHub-Runner-Image vorinstalliert mitbringt.
+#
+# Start: scripts/ci/up.sh   Abbau: docker compose -f docker-compose.ci.yml down -v
+# =============================================================================
+name: mtp-ci
+
+services:
+  core-postgres:
+    image: postgres:16.14-bookworm
+    container_name: core-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${MASTER_DB_PASSWORD:?MASTER_DB_PASSWORD fehlt - scripts/ci/env.sh nicht gesourct}
+    command:
+      - postgres
+      # Bewusst kleiner als in Produktion: der Runner hat 7 GB fuer alles.
+      - -c
+      - shared_buffers=128MB
+      # Gleich wie Produktion: das Verbindungsbudget ist testrelevant (TC-POOL-*).
+      - -c
+      - max_connections=60
+      - -c
+      - log_connections=on
+      - -c
+      - idle_session_timeout=600000
+    volumes:
+      # Ohne :ro — der Runner-User muss nichts schreiben, aber manche
+      # Runner-Images stolpern ueber ro-Mounts aus dem Workspace.
+      - ./core-postgres/init-scripts:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    networks: [traefik-net]
+
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.25.2-p0
+    container_name: pgbouncer
+    environment:
+      DB_HOST: core-postgres
+      DB_USER: postgres
+      DB_PASSWORD: ${MASTER_DB_PASSWORD}
+      AUTH_TYPE: scram-sha-256
+      IGNORE_STARTUP_PARAMETERS: search_path
+      POOL_MODE: transaction
+      DEFAULT_POOL_SIZE: 5
+      MIN_POOL_SIZE: 0
+      RESERVE_POOL_SIZE: 2
+      RESERVE_POOL_TIMEOUT: 3
+      MAX_DB_CONNECTIONS: 20
+      MAX_USER_CONNECTIONS: 15
+      MAX_CLIENT_CONN: 500
+      SERVER_IDLE_TIMEOUT: 120
+      QUERY_WAIT_TIMEOUT: 15
+      # Der sicherheitskritische Teil, 1:1 aus core-postgres/docker-compose.yml.
+      # Ohne AUTH_QUERY mappt das Image jede unbekannte Rolle still auf
+      # `postgres` — PostgREST waere dann in jeder Tenant-DB Superuser und RLS
+      # ueberall wirkungslos. TC-ISO-03/TC-POOL-01 pruefen genau das.
+      AUTH_USER: pgbouncer_auth
+      DB_PASSWORD_AUTH: ${PGBOUNCER_AUTH_PASSWORD:?PGBOUNCER_AUTH_PASSWORD fehlt}
+      AUTH_QUERY: "SELECT usename, passwd FROM pgbouncer_auth.user_lookup($1)"
+      AUTH_DBNAME: postgres
+    depends_on:
+      core-postgres:
+        condition: service_healthy
+    networks: [traefik-net]
+
+  core-minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1
+    container_name: core-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER fehlt}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD fehlt}
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 3s
+      timeout: 10s
+      retries: 20
+    networks: [traefik-net]
+
+  # ---------------------------------------------------------------- Profil ci
+  # `mc` als Einweg-Container: das MinIO-Image bringt den Client mit, der Runner
+  # nicht. Wird von scripts/ci/up.sh und den Storage-Tests per `run --rm`
+  # aufgerufen, laeuft nie dauerhaft.
+  mc:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z-cpuv1
+    entrypoint: ["/bin/sh"]
+    profiles: [tools]
+    depends_on:
+      core-minio:
+        condition: service_healthy
+    networks: [traefik-net]
+
+networks:
+  # NICHT external: die CI erzeugt das Netz selbst. Der Name bleibt gleich,
+  # weil die aus dem echten Template gerenderten Tenant-Compose-Dateien
+  # `traefik-net` als external erwarten.
+  traefik-net:
+    name: traefik-net

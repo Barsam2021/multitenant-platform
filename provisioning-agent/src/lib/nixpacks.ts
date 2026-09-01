@@ -24,6 +24,28 @@ const DEFAULT_NODE_VERSION_MAJOR = (process.env.PLATFORM_DEFAULT_NODE_VERSION ||
  *
  * Rückgabe: gebauter Image-Tag + (secret-maskiertes) Build-Log für die `deployments.build_log`-Spalte.
  */
+/**
+ * Darf diese Env-Var dem BUILD-Schritt sichtbar gemacht werden?
+ * Auf Modulebene und exportiert, damit die Regel testbar ist (TC-DEPL-01, P0) —
+ * was hier durchrutscht, landet als ENV-Layer im Image und ist per
+ * `docker history` lesbar.
+ */
+const BUILD_TIME_DENYLIST = [
+  'JWT_SECRET',
+  'SUPABASE_SERVICE_ROLE_KEY',
+  'MINIO_SECRET_KEY',
+  'DATABASE_URL',
+  'POSTGRES_PASSWORD',
+];
+export const isBuildTimeSafe = (key: string): boolean => {
+  if (BUILD_TIME_DENYLIST.includes(key)) return false;
+  // Framework-Konventionen fuer "landet im Browser-Bundle" — per Definition oeffentlich.
+  if (/^(NEXT_PUBLIC_|VITE_|PUBLIC_|REACT_APP_|NUXT_PUBLIC_|GATSBY_|EXPO_PUBLIC_)/.test(key)) return true;
+  // Alles, was nach Secret aussieht, bleibt draussen.
+  if (/SECRET|PASSWORD|PASSWD|PRIVATE_KEY|ACCESS_KEY|_KEY$|^KEY$|TOKEN|CREDENTIAL/i.test(key)) return false;
+  return true;
+};
+
 export async function nixpacksBuild(
   buildPath: string,
   imageTag: string,
@@ -61,21 +83,6 @@ export async function nixpacksBuild(
   // Alles andere ausschliesslich zur Laufzeit ueber `docker run -e` (siehe
   // deploy.ts, envArgs) — dort ist es zwar per `docker inspect` sichtbar, aber
   // nicht im weitergebbaren Image und nicht im Build-Log.
-  const BUILD_TIME_DENYLIST = [
-    'JWT_SECRET',
-    'SUPABASE_SERVICE_ROLE_KEY',
-    'MINIO_SECRET_KEY',
-    'DATABASE_URL',
-    'POSTGRES_PASSWORD',
-  ];
-  const isBuildTimeSafe = (key: string): boolean => {
-    if (BUILD_TIME_DENYLIST.includes(key)) return false;
-    // Framework-Konventionen fuer "landet im Browser-Bundle" — per Definition oeffentlich.
-    if (/^(NEXT_PUBLIC_|VITE_|PUBLIC_|REACT_APP_|NUXT_PUBLIC_|GATSBY_|EXPO_PUBLIC_)/.test(key)) return true;
-    // Alles, was nach Secret aussieht, bleibt draussen.
-    if (/SECRET|PASSWORD|PASSWD|PRIVATE_KEY|ACCESS_KEY|_KEY$|^KEY$|TOKEN|CREDENTIAL/i.test(key)) return false;
-    return true;
-  };
 
   const skippedAtBuildTime: string[] = [];
   for (const [key, value] of Object.entries(envVars || {})) {

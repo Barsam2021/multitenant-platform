@@ -1,8 +1,22 @@
 name: CI
 
 # P3-4: bisher war "npm run build" der einzige Schutz, und der lief erst beim
-# Deployment auf dem Server - ein Typfehler landete fruehestens dort. Diese
-# Workflow-Datei laeuft bei jedem Push/PR und blockt vorher.
+# Deployment auf dem Server - ein Typfehler landete fruehestens dort.
+#
+# Seit TESTPLAN.md kommen Tests dazu. Die Aufteilung folgt der Machbarkeits-
+# Staffelung aus TESTPLAN.md §4:
+#   unit         Stufe 1 - reine Logik und Dateiscans, kein Stack noetig
+#   integration  Stufe 3 - isolierter Docker-Stack IM RUNNER
+#   security     Stufe 3 - Mandantentrennung gegen denselben isolierten Stack
+#
+# NICHT hier, bewusst (Begruendung in CI-SETUP.md):
+#   - E2E- und Lasttests: gehoeren gegen einen isolierten Test-Tenant, nicht in
+#     die Standard-Pipeline
+#   - Deployment: kein Job dieser Datei fasst die Live-VPS an
+#
+# KEIN Job dieser Pipeline verbindet sich mit der Produktion. Der Stack laeuft
+# ausschliesslich im Runner; scripts/ci/assert-not-production.sh bricht ab,
+# sobald er Merkmale einer echten Installation findet.
 
 on:
   push:
@@ -10,8 +24,48 @@ on:
   pull_request:
     branches: [main]
 
+# Ein neuer Push macht den vorherigen Lauf desselben Branches gegenstandslos.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
+  # ---------------------------------------------------------------- Stufe 1
+  # Sekunden statt Minuten, laeuft vor allem anderen und blockt bei P0.
+  unit:
+    name: Unit- und Struktur-Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: provisioning-agent/package-lock.json
+      - name: Abhaengigkeiten
+        working-directory: provisioning-agent
+        run: npm ci
+      - name: Agent bauen
+        # Die Unit-Tests laufen gegen dist/ - dieselbe Ausgabe, die auch in den
+        # Container geht. Kein zusaetzlicher Test-Transpiler noetig.
+        working-directory: provisioning-agent
+        run: npm run build
+
+      - name: "P0 - Unit-Tests (blockierend)"
+        run: scripts/ci/run-tests.sh '\[P0\]' provisioning-agent/test/ scripts/ci/unit/
+
+      - name: "P1-P3 - Unit-Tests (Warnung, noch nicht blockierend)"
+        # Wird ab dem Zeitpunkt blockierend, an dem die P0-Suite eine Woche lang
+        # stabil gruen war - siehe CI-SETUP.md, "Ab wann blockiert was".
+        continue-on-error: true
+        run: scripts/ci/run-tests.sh '\[P[123]\]' provisioning-agent/test/ scripts/ci/unit/
+
+  # ------------------------------------------------- bestehende Build-Kette
   dashboard:
+    name: dashboard - Typecheck/Lint/Build
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -32,6 +86,7 @@ jobs:
         run: npm run build
 
   provisioning-agent:
+    name: provisioning-agent - Typecheck/Build
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -48,6 +103,7 @@ jobs:
         run: npm run build
 
   cms:
+    name: cms - Typecheck/Lint/Build
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -66,3 +122,97 @@ jobs:
         run: npx next lint
       - name: Build
         run: npm run build
+
+  # ---------------------------------------------------------------- Stufe 3
+  integration:
+    name: Integration (isolierter Stack im Runner)
+    runs-on: ubuntu-latest
+    # Erst wenn die billige Stufe gruen ist - ein Stack-Aufbau fuer einen
+    # Tippfehler waere verschwendete Runner-Zeit.
+    needs: [unit]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: provisioning-agent/package-lock.json
+      - name: Abhaengigkeiten + Build
+        working-directory: provisioning-agent
+        run: npm ci && npm run build
+
+      - name: Wegwerf-Secrets erzeugen und Stack starten
+        # env.sh wuerfelt alle Secrets pro Lauf neu. Es wird KEIN GitHub-Secret
+        # gelesen und kein Produktionswert verwendet - siehe CI-SETUP.md.
+        run: |
+          set -euo pipefail
+          source scripts/ci/env.sh
+          scripts/ci/up.sh
+          # Fuer die folgenden Steps erhalten bleiben:
+          env | grep -E '^(MASTER_DB_PASSWORD|PGBOUNCER_AUTH_PASSWORD|MINIO_ROOT_USER|MINIO_ROOT_PASSWORD|ENCRYPTION_MASTER_KEY|CMS_ENCRYPTION_KEY|ANALYTICS_SALT|PLATFORM_DOMAIN|CI_TENANT_)' >> "$GITHUB_ENV"
+
+      - name: "P0 - Integrationstests (blockierend)"
+        run: scripts/ci/in-net.sh scripts/ci/run-tests.sh '\[P0\]' scripts/ci/integration/
+
+      - name: "P1-P3 - Integrationstests (Warnung)"
+        continue-on-error: true
+        run: scripts/ci/in-net.sh scripts/ci/run-tests.sh '\[P[123]\]' scripts/ci/integration/
+
+      - name: Diagnose bei Fehlschlag
+        if: failure()
+        run: |
+          docker ps -a
+          docker compose -f docker-compose.ci.yml logs --tail=100 || true
+          docker logs "auth-${CI_TENANT_A}" --tail=80 2>&1 || true
+          docker logs "api-${CI_TENANT_A}" --tail=80 2>&1 || true
+
+      - name: Stack abbauen
+        if: always()
+        run: |
+          docker compose -f "kunden-instances/${CI_TENANT_A:-ci-alpha}/docker-compose.yml" down -v || true
+          docker compose -f docker-compose.ci.yml down -v || true
+
+  security:
+    name: Security - Mandantentrennung
+    runs-on: ubuntu-latest
+    needs: [unit]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: provisioning-agent/package-lock.json
+      - name: Abhaengigkeiten + Build
+        working-directory: provisioning-agent
+        run: npm ci && npm run build
+
+      - name: Wegwerf-Secrets erzeugen und Stack starten
+        run: |
+          set -euo pipefail
+          source scripts/ci/env.sh
+          scripts/ci/up.sh
+          env | grep -E '^(MASTER_DB_PASSWORD|PGBOUNCER_AUTH_PASSWORD|MINIO_ROOT_USER|MINIO_ROOT_PASSWORD|ENCRYPTION_MASTER_KEY|CMS_ENCRYPTION_KEY|ANALYTICS_SALT|PLATFORM_DOMAIN|CI_TENANT_)' >> "$GITHUB_ENV"
+
+      - name: "P0 - Zugriffs- und Isolationstests (blockierend)"
+        # Diese Suite ist der Grund, warum es die Pipeline gibt. Sie besteht
+        # ausschliesslich aus Negativtests: jeder pruefen einen Zugriff, der
+        # FEHLSCHLAGEN muss.
+        run: scripts/ci/in-net.sh scripts/ci/run-tests.sh '\[P0\]' scripts/ci/security/
+
+      - name: "P1-P3 - Zugriffstests (Warnung)"
+        continue-on-error: true
+        run: scripts/ci/in-net.sh scripts/ci/run-tests.sh '\[P[123]\]' scripts/ci/security/
+
+      - name: Diagnose bei Fehlschlag
+        if: failure()
+        run: |
+          docker compose -f docker-compose.ci.yml logs --tail=100 || true
+
+      - name: Stack abbauen
+        if: always()
+        run: |
+          docker compose -f "kunden-instances/${CI_TENANT_A:-ci-alpha}/docker-compose.yml" down -v || true
+          docker compose -f docker-compose.ci.yml down -v || true

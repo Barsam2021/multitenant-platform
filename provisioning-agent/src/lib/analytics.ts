@@ -98,7 +98,7 @@ function dailySalt(day: string): Buffer {
   return salt;
 }
 
-function visitorHash(day: string, ip: string, userAgent: string, host: string): string {
+export function visitorHash(day: string, ip: string, userAgent: string, host: string): string {
   return crypto
     .createHmac('sha256', dailySalt(day))
     .update(`${ip}|${userAgent}|${host}`)
@@ -107,12 +107,12 @@ function visitorHash(day: string, ip: string, userAgent: string, host: string): 
 }
 
 /** "example.com:443" -> "example.com", Grossschreibung vereinheitlicht. */
-function normalizeHost(raw: string): string {
+export function normalizeHost(raw: string): string {
   return raw.split(':')[0].trim().toLowerCase();
 }
 
 /** Query-String weg (sonst ist jeder UTM-Link ein eigener Pfad), Laenge gekappt. */
-function normalizePath(raw: string): string {
+export function normalizePath(raw: string): string {
   const path = (raw.split('?')[0] || '/').trim();
   const cleaned = path.startsWith('/') ? path : `/${path}`;
   return cleaned.length > 200 ? cleaned.slice(0, 200) : cleaned;
@@ -123,7 +123,7 @@ function normalizePath(raw: string): string {
  * Suchbegriffe oder interne URLs des verweisenden Systems enthalten.
  * Verweise von der eigenen Seite zaehlen nicht als Referrer.
  */
-function normalizeReferrer(raw: string | undefined, ownHost: string): string | null {
+export function normalizeReferrer(raw: string | undefined, ownHost: string): string | null {
   if (!raw || raw === '-') return null;
   try {
     const url = new URL(raw);
