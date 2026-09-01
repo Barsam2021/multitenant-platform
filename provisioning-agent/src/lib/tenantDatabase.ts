@@ -119,6 +119,26 @@ export async function provisionTenantDatabase(opts: {
   authenticatorPassword: string;
 }): Promise<void> {
   const { slug, tariff, jwtSecret, authenticatorPassword } = opts;
+
+  await provisionTenantDatabaseSchema({ slug, authenticatorPassword });
+
+  const dir = await writeTenantCompose(slug, tariff, jwtSecret, authenticatorPassword);
+  await execFileP('docker', ['compose', '-f', `${dir}/docker-compose.yml`, 'up', '-d', 'auth']);
+  await waitForGotrue(slug);
+  await execFileP('docker', ['compose', '-f', `${dir}/docker-compose.yml`, 'up', '-d', 'api']);
+}
+
+/**
+ * Datenbank + Rollen des Tenants — der Teil des Provisionings, der ohne Docker
+ * auskommt. Getrennt von provisionTenantDatabase(), damit die Isolationstests
+ * (TC-ISO-01/02, P0) genau diesen Code ausfuehren koennen statt einer
+ * Nachbildung: was hier steht, IST die Mandantentrennung auf Ebene 1 und 2.
+ */
+export async function provisionTenantDatabaseSchema(opts: {
+  slug: string;
+  authenticatorPassword: string;
+}): Promise<void> {
+  const { slug, authenticatorPassword } = opts;
   const dbName = `kunde_${slug}`;
   const authenticatorRole = `authenticator_${slug}`;
 
@@ -168,11 +188,6 @@ export async function provisionTenantDatabase(opts: {
   } finally {
     await tenant.end().catch(() => {});
   }
-
-  const dir = await writeTenantCompose(slug, tariff, jwtSecret, authenticatorPassword);
-  await execFileP('docker', ['compose', '-f', `${dir}/docker-compose.yml`, 'up', '-d', 'auth']);
-  await waitForGotrue(slug);
-  await execFileP('docker', ['compose', '-f', `${dir}/docker-compose.yml`, 'up', '-d', 'api']);
 }
 
 /**

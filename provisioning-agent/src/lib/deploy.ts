@@ -28,7 +28,7 @@ function adminClient(): PGClient {
   return client;
 }
 
-const TARIFF_LIMITS: Record<string, { mem: string; cpus: string }> = {
+export const TARIFF_LIMITS: Record<string, { mem: string; cpus: string }> = {
   // 256m war zu knapp fuer einen Next.js-Production-Server (Standalone-Server
   // allein braucht beim Start meist schon 150-250 MB) und fuehrte regelmaessig
   // zu OOM-Kills, die im Deploy-Log nur als unspezifisches "Healthcheck FAILED"
